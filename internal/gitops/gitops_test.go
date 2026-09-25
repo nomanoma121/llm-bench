@@ -15,6 +15,8 @@ type fakeGH struct {
 	prs      map[string]string            // head -> "open"|"merged"|"closed"
 	baseSHA  string
 	events   []string
+	// onFileAt is invoked on every read (test hook for race scenarios).
+	onFileAt func()
 }
 
 func newFakeGH(baseManifest string) *fakeGH {
@@ -29,6 +31,12 @@ func newFakeGH(baseManifest string) *fakeGH {
 }
 
 func (g *fakeGH) FileAt(_ context.Context, path, ref string) ([]byte, string, error) {
+	if ref == g.baseSHA {
+		ref = "main" // the pinned revision resolves to the base content
+	}
+	if g.onFileAt != nil {
+		g.onFileAt()
+	}
 	content, ok := g.files[ref][path]
 	if !ok {
 		return nil, "", errors.New("not found")
@@ -75,14 +83,28 @@ func (g *fakeGH) ClosePR(_ context.Context, headBranch string) error {
 	return nil
 }
 
+func (g *fakeGH) DeleteBranch(_ context.Context, branch string) error {
+	delete(g.branches, branch)
+	delete(g.files, branch)
+	g.events = append(g.events, "delete-branch:"+branch)
+	return nil
+}
+
 type fakeKube struct {
 	synced   bool
+	stopped  bool
+	ready    bool
 	replicas int32
 }
 
 func (k *fakeKube) ArgoSynced(_ context.Context, _, _, _ string) (bool, error) { return k.synced, nil }
-func (k *fakeKube) ReadyReplicas(_ context.Context, _, _ string) (int32, error) {
-	return k.replicas, nil
+
+func (k *fakeKube) WorkloadStopped(_ context.Context, _, _ string) (bool, error) {
+	return k.stopped, nil
+}
+
+func (k *fakeKube) WorkloadReady(_ context.Context, _, _ string, _ int32) (bool, error) {
+	return k.ready, nil
 }
 
 const manifest = `replicaCount: "1"
@@ -113,7 +135,7 @@ func hookOn(gh *fakeGH, kube *fakeKube) *PauseRestore {
 
 func TestAcquireFirstTimeCreatesPausePR(t *testing.T) {
 	gh := newFakeGH(manifest)
-	h := hookOn(gh, &fakeKube{synced: false, replicas: 1})
+	h := hookOn(gh, &fakeKube{synced: false, stopped: false})
 	err := h.Acquire(context.Background())
 	if !errors.Is(err, ErrNotConverged) {
 		t.Fatalf("want ErrPending, got %v", err)
@@ -137,7 +159,7 @@ func TestAcquireFirstTimeCreatesPausePR(t *testing.T) {
 func TestAcquireConvergedAfterMerge(t *testing.T) {
 	gh := newFakeGH(`replicaCount: "0"`)
 	gh.prs["llmbench/pause-abc"] = "merged"
-	h := hookOn(gh, &fakeKube{synced: true, replicas: 0})
+	h := hookOn(gh, &fakeKube{synced: true, stopped: true})
 	if err := h.Acquire(context.Background()); err != nil {
 		t.Fatalf("acquire should complete, got %v", err)
 	}
@@ -146,7 +168,7 @@ func TestAcquireConvergedAfterMerge(t *testing.T) {
 func TestAcquireConvergeWaitsForArgoAndPods(t *testing.T) {
 	gh := newFakeGH(`replicaCount: "0"`)
 	gh.prs["llmbench/pause-abc"] = "merged"
-	kube := &fakeKube{synced: false, replicas: 1}
+	kube := &fakeKube{synced: false, stopped: false}
 	h := hookOn(gh, kube)
 	if err := h.Acquire(context.Background()); !errors.Is(err, ErrNotConverged) {
 		t.Fatalf("want ErrPending, got %v", err)
@@ -155,7 +177,7 @@ func TestAcquireConvergeWaitsForArgoAndPods(t *testing.T) {
 	if err := h.Acquire(context.Background()); !errors.Is(err, ErrNotConverged) {
 		t.Fatalf("pods still running: got %v", err)
 	}
-	kube.replicas = 0
+	kube.stopped = true
 	if err := h.Acquire(context.Background()); err != nil {
 		t.Fatalf("converged acquire failed: %v", err)
 	}
@@ -183,19 +205,22 @@ func TestAcquireForeignPauseRejected(t *testing.T) {
 func TestReleaseRollbackClosesUnmergedPausePR(t *testing.T) {
 	gh := newFakeGH(manifest) // never paused
 	gh.prs["llmbench/pause-abc"] = "open"
-	h := hookOn(gh, &fakeKube{replicas: 1})
+	h := hookOn(gh, &fakeKube{stopped: false, ready: true})
 	if err := h.Release(context.Background()); err != nil {
 		t.Fatalf("rollback failed: %v", err)
 	}
 	if gh.prs["llmbench/pause-abc"] != "closed" {
 		t.Fatal("pause PR not closed")
 	}
+	if _, ok := gh.branches["llmbench/pause-abc"]; ok {
+		t.Fatal("rollback must delete the pause branch")
+	}
 }
 
 func TestReleaseRestoreCycle(t *testing.T) {
 	gh := newFakeGH(`replicaCount: "0"`)
 	gh.prs["llmbench/pause-abc"] = "merged"
-	kube := &fakeKube{synced: true, replicas: 0}
+	kube := &fakeKube{synced: true, stopped: true, ready: false}
 	h := hookOn(gh, kube)
 
 	// First release creates the restore PR.
@@ -214,7 +239,7 @@ func TestReleaseRestoreCycle(t *testing.T) {
 	if err := h.Release(context.Background()); !errors.Is(err, ErrNotConverged) {
 		t.Fatalf("want ErrPending while pods restart, got %v", err)
 	}
-	kube.replicas = 1
+	kube.ready = true
 	if err := h.Release(context.Background()); err != nil {
 		t.Fatalf("release should complete, got %v", err)
 	}
@@ -242,5 +267,73 @@ func TestScalarRoundTrip(t *testing.T) {
 	}
 	if _, err := GetYAMLScalar(doc, []string{"missing", "path"}); err == nil {
 		t.Fatal("missing path must fail")
+	}
+}
+
+func TestReleaseRefusesForeignPause(t *testing.T) {
+	// Paused, but this run never merged a pause PR: not ours to restore.
+	gh := newFakeGH(`replicaCount: "0"`)
+	h := hookOn(gh, &fakeKube{synced: true, stopped: true})
+	err := h.Release(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "did not create") {
+		t.Fatalf("foreign pause must be refused, got %v", err)
+	}
+	if gh.prs["llmbench/restore-abc"] == "open" {
+		t.Fatal("no restore PR may be opened for a foreign pause")
+	}
+}
+
+func TestReleaseRefusesForeignRestore(t *testing.T) {
+	// Our pause merged, the manifest is active again without our restore PR:
+	// someone else brought the workload back.
+	gh := newFakeGH(manifest)
+	gh.prs["llmbench/pause-abc"] = "merged"
+	h := hookOn(gh, &fakeKube{synced: true, ready: true})
+	err := h.Release(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "foreign change") {
+		t.Fatalf("foreign restore must be refused, got %v", err)
+	}
+}
+
+func TestReleaseDetectsRestoreDrift(t *testing.T) {
+	// Our restore PR merged but the manifest still shows paused.
+	gh := newFakeGH(`replicaCount: "0"`)
+	gh.prs["llmbench/pause-abc"] = "merged"
+	gh.prs["llmbench/restore-abc"] = "merged"
+	h := hookOn(gh, &fakeKube{synced: true, stopped: true})
+	err := h.Release(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "drift") {
+		t.Fatalf("restore drift must be permanent, got %v", err)
+	}
+}
+
+func TestAcquireReReadsBeforeDeclaringDrift(t *testing.T) {
+	// The pause merge is observed while the pinned revision still shows the
+	// active value; the re-read sees the merged value and stays pending
+	// instead of declaring drift.
+	gh := newFakeGH(manifest)
+	gh.prs["llmbench/pause-abc"] = "merged"
+	count := 0
+	gh.onFileAt = func() {
+		count++
+		if count == 2 { // the re-read
+			gh.files["main"]["apps/inference/values.yaml"] = `replicaCount: "0"`
+		}
+	}
+	h := hookOn(gh, &fakeKube{synced: true, stopped: true})
+	if err := h.Acquire(context.Background()); !errors.Is(err, ErrNotConverged) {
+		t.Fatalf("want pending after the merge lands, got %v", err)
+	}
+}
+
+func TestOpenPausePRRefusesUnexpectedValue(t *testing.T) {
+	gh := newFakeGH(`replicaCount: "7"`)
+	h := hookOn(gh, &fakeKube{})
+	err := h.Acquire(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "unexpected value") {
+		t.Fatalf("unexpected value must be refused before writing, got %v", err)
+	}
+	if gh.prs["llmbench/pause-abc"] == "open" {
+		t.Fatal("no PR may be opened for an unexpected value")
 	}
 }

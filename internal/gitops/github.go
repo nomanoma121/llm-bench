@@ -162,6 +162,15 @@ func (g *githubAPI) ClosePR(ctx context.Context, headBranch string) error {
 	return nil
 }
 
+// DeleteBranch implements GitHubAPI.
+func (g *githubAPI) DeleteBranch(ctx context.Context, branch string) error {
+	_, err := g.gh.Git.DeleteRef(ctx, g.owner, g.repo, "heads/"+branch)
+	if isNotFound(err) {
+		return nil
+	}
+	return err
+}
+
 func isNotFound(err error) bool {
 	var ghErr *github.ErrorResponse
 	return errors.As(err, &ghErr) && ghErr.Response != nil && ghErr.Response.StatusCode == http.StatusNotFound

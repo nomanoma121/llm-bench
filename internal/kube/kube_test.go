@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -73,17 +74,70 @@ func TestArgoSyncedMissingApplication(t *testing.T) {
 	}
 }
 
-func TestReadyReplicas(t *testing.T) {
-	dep := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "inference", Namespace: "inference"},
-		Status:     appsv1.DeploymentStatus{ReadyReplicas: 2},
+func readyPod(name string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "inference", Labels: map[string]string{"app": "inference"}},
+		Status: corev1.PodStatus{
+			Phase:      corev1.PodRunning,
+			Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+		},
 	}
-	c := fakeChecker(t, nil, dep)
-	n, err := c.ReadyReplicas(context.Background(), "inference", "inference")
+}
+
+func terminatingPod(name string) *corev1.Pod {
+	p := readyPod(name)
+	now := metav1.Now()
+	p.DeletionTimestamp = &now
+	p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}}
+	return p
+}
+
+func workloadDeployment(ready int32) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "inference", Namespace: "inference"},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "inference"}},
+		},
+		Status: appsv1.DeploymentStatus{ReadyReplicas: ready},
+	}
+}
+
+func TestWorkloadStoppedRequiresPodsGone(t *testing.T) {
+	// Zero ready replicas but a terminating pod still holds the GPU.
+	c := fakeChecker(t, nil, workloadDeployment(0), terminatingPod("inference-0"))
+	stopped, err := c.WorkloadStopped(context.Background(), "inference", "inference")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 2 {
-		t.Fatalf("ready replicas = %d", n)
+	if stopped {
+		t.Fatal("a terminating pod must not count as stopped")
+	}
+	// No pods: stopped.
+	c2 := fakeChecker(t, nil, workloadDeployment(0))
+	stopped, err = c2.WorkloadStopped(context.Background(), "inference", "inference")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stopped {
+		t.Fatal("workload without pods must be stopped")
+	}
+}
+
+func TestWorkloadReadyRequiresReadyPods(t *testing.T) {
+	c := fakeChecker(t, nil, workloadDeployment(1), readyPod("inference-1"))
+	ready, err := c.WorkloadReady(context.Background(), "inference", "inference", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ready {
+		t.Fatal("ready deployment with a ready pod must report ready")
+	}
+	c2 := fakeChecker(t, nil, workloadDeployment(1), terminatingPod("inference-2"))
+	ready, err = c2.WorkloadReady(context.Background(), "inference", "inference", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready {
+		t.Fatal("a terminating pod must not count as ready")
 	}
 }

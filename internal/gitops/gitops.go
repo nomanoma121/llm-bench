@@ -42,6 +42,8 @@ type GitHubAPI interface {
 	CreatePR(ctx context.Context, title, headBranch, body string) error
 	// ClosePR closes an open PR.
 	ClosePR(ctx context.Context, headBranch string) error
+	// DeleteBranch removes the deterministic branch of a rolled-back PR.
+	DeleteBranch(ctx context.Context, branch string) error
 }
 
 // Kube gates convergence of the cluster after manifest changes. Implemented
@@ -49,8 +51,12 @@ type GitHubAPI interface {
 type Kube interface {
 	// ArgoSynced reports whether the Application is Synced at revision.
 	ArgoSynced(ctx context.Context, namespace, name, revision string) (bool, error)
-	// ReadyReplicas returns the ready replica count of the deployment.
-	ReadyReplicas(ctx context.Context, namespace, name string) (int32, error)
+	// WorkloadStopped reports that the deployment has no ready replicas AND
+	// its pods are gone (terminating pods still hold the GPU).
+	WorkloadStopped(ctx context.Context, namespace, name string) (bool, error)
+	// WorkloadReady reports that the deployment has the wanted ready
+	// replicas, with that many pods ready.
+	WorkloadReady(ctx context.Context, namespace, name string, want int32) (bool, error)
 }
 
 // PauseRestore is the run.Hook implementation for one run's GitOps plan.
@@ -66,7 +72,7 @@ func (h *PauseRestore) Name() string { return "gitops" }
 // Acquire pauses the inference workload.
 func (h *PauseRestore) Acquire(ctx context.Context) error {
 	p := h.Plan
-	value, err := h.current(ctx)
+	value, content, baseSHA, err := h.snapshot(ctx)
 	if err != nil {
 		return err
 	}
@@ -80,14 +86,20 @@ func (h *PauseRestore) Acquire(ctx context.Context) error {
 		case "open":
 			return ErrNotConverged // waiting for the human merge
 		case "":
-			if err := h.openPausePR(ctx); err != nil {
+			if err := h.openPausePR(ctx, content, baseSHA); err != nil {
 				return err
 			}
 			return ErrNotConverged
 		case "closed":
 			return fmt.Errorf("gitops: pause PR %s was closed without merge; manual intervention required", p.PauseBranch)
 		case "merged":
-			// Drift: merged but the manifest is still active.
+			// The merge we just observed may be reflected in a newer base
+			// revision than the one we read; re-read before declaring drift.
+			if again, _, _, err := h.snapshot(ctx); err != nil {
+				return err
+			} else if again != p.ActiveValue {
+				return ErrNotConverged // the merge landed; the next tick proceeds
+			}
 			return fmt.Errorf("gitops: drift: pause PR %s is merged but %s is still %q", p.PauseBranch, p.YAMLPathString(), value)
 		default:
 			return fmt.Errorf("gitops: unknown PR state %q", prState)
@@ -110,7 +122,7 @@ func (h *PauseRestore) Acquire(ctx context.Context) error {
 // releasing phase: restoration completes before the run becomes terminal.
 func (h *PauseRestore) Release(ctx context.Context) error {
 	p := h.Plan
-	value, err := h.current(ctx)
+	value, content, baseSHA, err := h.snapshot(ctx)
 	if err != nil {
 		return err
 	}
@@ -118,9 +130,13 @@ func (h *PauseRestore) Release(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// Rollback: the pause PR never merged, nothing to restore — close it.
+	// Rollback: the pause PR never merged, nothing to restore — close it and
+	// drop the branch so the next run starts from a clean slate.
 	if pauseState == "open" && value == p.ActiveValue {
-		return h.GH.ClosePR(ctx, p.PauseBranch)
+		if err := h.GH.ClosePR(ctx, p.PauseBranch); err != nil {
+			return err
+		}
+		return h.GH.DeleteBranch(ctx, p.PauseBranch)
 	}
 
 	restoreState, err := h.GH.PRState(ctx, p.RestoreBranch)
@@ -129,18 +145,25 @@ func (h *PauseRestore) Release(ctx context.Context) error {
 	}
 	switch value {
 	case p.PausedValue:
+		if pauseState != "merged" {
+			// Someone else paused the workload: restoring it is not ours to do.
+			return fmt.Errorf("gitops: %s is %q but this run's pause PR is %q; refusing to restore a pause we did not create", p.YAMLPathString(), value, pauseState)
+		}
 		switch restoreState {
 		case "open":
 			return ErrNotConverged
 		case "":
-			if err := h.openRestorePR(ctx); err != nil {
+			if err := h.openRestorePR(ctx, content, baseSHA); err != nil {
 				return err
 			}
 			return ErrNotConverged
 		case "closed":
 			return fmt.Errorf("gitops: restore PR %s was closed without merge; manual intervention required", p.RestoreBranch)
+		case "merged":
+			// Drift: our restore merged but the manifest still shows paused.
+			return fmt.Errorf("gitops: drift: restore PR %s is merged but %s is still %q", p.RestoreBranch, p.YAMLPathString(), value)
 		default:
-			return ErrNotConverged // merged but the manifest has not caught up
+			return ErrNotConverged
 		}
 	case p.ActiveValue:
 		switch restoreState {
@@ -151,8 +174,13 @@ func (h *PauseRestore) Release(ctx context.Context) error {
 		case "closed":
 			return fmt.Errorf("gitops: restore PR %s was closed without merge; manual intervention required", p.RestoreBranch)
 		default:
-			// Active without any of our PRs: the acquire never paused, so the
-			// workload must simply be back (or never stopped).
+			if pauseState == "merged" {
+				// We paused it, yet the manifest is active without our
+				// restore: someone else brought it back.
+				return fmt.Errorf("gitops: drift: %s is %q again but this run's restore PR does not exist; refusing to treat a foreign change as our restore", p.YAMLPathString(), value)
+			}
+			// No pause of ours (never paused, or the pause PR was rolled
+			// back): the workload simply must be up.
 			return h.convergeActive(ctx)
 		}
 	default:
@@ -160,32 +188,37 @@ func (h *PauseRestore) Release(ctx context.Context) error {
 	}
 }
 
-func (h *PauseRestore) current(ctx context.Context) (string, error) {
-	content, _, err := h.GH.FileAt(ctx, h.Plan.FilePath, h.Plan.BaseBranch)
+// snapshot reads the manifest at a pinned base revision, returning the value,
+// the raw document and the revision. Every later read/write uses this
+// revision so the decision and the edit see the same tree.
+func (h *PauseRestore) snapshot(ctx context.Context) (value string, content []byte, baseSHA string, err error) {
+	baseSHA, err = h.GH.BaseBranchSHA(ctx)
 	if err != nil {
-		return "", fmt.Errorf("gitops: read %s: %w", h.Plan.FilePath, err)
+		return "", nil, "", err
 	}
-	value := string(content)
-	current, err := GetYAMLScalar([]byte(value), h.Plan.YAMLPath)
+	content, _, err = h.GH.FileAt(ctx, h.Plan.FilePath, baseSHA)
 	if err != nil {
-		return "", fmt.Errorf("gitops: %w", err)
+		return "", nil, "", fmt.Errorf("gitops: read %s: %w", h.Plan.FilePath, err)
 	}
-	return current, nil
+	value, err = GetYAMLScalar(content, h.Plan.YAMLPath)
+	if err != nil {
+		return "", nil, "", fmt.Errorf("gitops: %w", err)
+	}
+	return value, content, baseSHA, nil
 }
 
-func (h *PauseRestore) openPausePR(ctx context.Context) error {
+func (h *PauseRestore) openPausePR(ctx context.Context, content []byte, baseSHA string) error {
 	p := h.Plan
-	value, err := h.rawFile(ctx)
-	if err != nil {
-		return err
-	}
-	updated, err := SetYAMLScalar(value, p.YAMLPath, p.PausedValue)
+	current, err := GetYAMLScalar(content, p.YAMLPath)
 	if err != nil {
 		return fmt.Errorf("gitops: %w", err)
 	}
-	baseSHA, err := h.GH.BaseBranchSHA(ctx)
+	if current != p.ActiveValue {
+		return fmt.Errorf("gitops: %s is %q, not %q; refusing to overwrite an unexpected value", p.YAMLPathString(), current, p.ActiveValue)
+	}
+	updated, err := SetYAMLScalar(content, p.YAMLPath, p.PausedValue)
 	if err != nil {
-		return err
+		return fmt.Errorf("gitops: %w", err)
 	}
 	if err := h.GH.CreateBranchFrom(ctx, p.PauseBranch, baseSHA); err != nil {
 		return err
@@ -200,19 +233,18 @@ func (h *PauseRestore) openPausePR(ctx context.Context) error {
 		fmt.Sprintf("Sets `%s` to `%s` for a benchmark run. Merge to start the run; the run restores it afterwards.", p.YAMLPathString(), p.PausedValue))
 }
 
-func (h *PauseRestore) openRestorePR(ctx context.Context) error {
+func (h *PauseRestore) openRestorePR(ctx context.Context, content []byte, baseSHA string) error {
 	p := h.Plan
-	value, err := h.rawFile(ctx)
-	if err != nil {
-		return err
-	}
-	updated, err := SetYAMLScalar(value, p.YAMLPath, p.ActiveValue)
+	current, err := GetYAMLScalar(content, p.YAMLPath)
 	if err != nil {
 		return fmt.Errorf("gitops: %w", err)
 	}
-	baseSHA, err := h.GH.BaseBranchSHA(ctx)
+	if current != p.PausedValue {
+		return fmt.Errorf("gitops: %s is %q, not %q; refusing to overwrite an unexpected value", p.YAMLPathString(), current, p.PausedValue)
+	}
+	updated, err := SetYAMLScalar(content, p.YAMLPath, p.ActiveValue)
 	if err != nil {
-		return err
+		return fmt.Errorf("gitops: %w", err)
 	}
 	if err := h.GH.CreateBranchFrom(ctx, p.RestoreBranch, baseSHA); err != nil {
 		return err
@@ -225,15 +257,6 @@ func (h *PauseRestore) openRestorePR(ctx context.Context) error {
 		fmt.Sprintf("llmbench: restore inference for %s", shortID(p.RestoreBranch)),
 		p.RestoreBranch,
 		fmt.Sprintf("Restores `%s` to `%s` after the benchmark run.", p.YAMLPathString(), p.ActiveValue))
-}
-
-// rawFile re-reads the file at the base branch for scalar rewriting.
-func (h *PauseRestore) rawFile(ctx context.Context) ([]byte, error) {
-	content, _, err := h.GH.FileAt(ctx, h.Plan.FilePath, h.Plan.BaseBranch)
-	if err != nil {
-		return nil, fmt.Errorf("gitops: read %s: %w", h.Plan.FilePath, err)
-	}
-	return content, nil
 }
 
 // convergePaused gates on Argo CD sync and the workload being stopped.
@@ -249,12 +272,12 @@ func (h *PauseRestore) convergePaused(ctx context.Context) error {
 	if !synced {
 		return ErrNotConverged // Argo CD has not converged yet
 	}
-	replicas, err := h.Kube.ReadyReplicas(ctx, h.Plan.WorkloadNamespace, h.Plan.Deployment)
+	stopped, err := h.Kube.WorkloadStopped(ctx, h.Plan.WorkloadNamespace, h.Plan.Deployment)
 	if err != nil {
 		return err
 	}
-	if replicas != 0 {
-		return ErrNotConverged // inference pods are still running
+	if !stopped {
+		return ErrNotConverged // pods are still running or terminating
 	}
 	return nil
 }
@@ -272,11 +295,11 @@ func (h *PauseRestore) convergeActive(ctx context.Context) error {
 	if !synced {
 		return ErrNotConverged
 	}
-	replicas, err := h.Kube.ReadyReplicas(ctx, h.Plan.WorkloadNamespace, h.Plan.Deployment)
+	ready, err := h.Kube.WorkloadReady(ctx, h.Plan.WorkloadNamespace, h.Plan.Deployment, int32(h.Plan.ActiveReplicas))
 	if err != nil {
 		return err
 	}
-	if int(replicas) != h.Plan.ActiveReplicas {
+	if !ready {
 		return ErrNotConverged
 	}
 	return nil

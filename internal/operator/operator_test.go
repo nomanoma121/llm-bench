@@ -1,6 +1,7 @@
 package operator
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -118,6 +119,35 @@ targets:
 			t.Fatalf("expected sandbox error, got %v", err)
 		}
 	})
+}
+
+func TestValidateRejectsAmbiguousGitOpsValues(t *testing.T) {
+	base := `
+targets:
+  gpu:
+    gitops:
+      owner: o
+      repository: r
+      base_branch: main
+      file_path: apps/values.yaml
+      yaml_path: [replicas]
+      active_value: "1"
+      paused_value: "%s"
+      application: {namespace: argocd, name: app}
+      workload: {namespace: inference, deployment: app, active_replicas: %d}
+`
+	// active == paused is ambiguous and must be refused.
+	if _, err := Parse(strings.NewReader(fmt.Sprintf(base, "1", 1))); err == nil || !strings.Contains(err.Error(), "must differ") {
+		t.Fatalf("identical values accepted: %v", err)
+	}
+	// active_replicas must be positive: 0 would make "restored" indistinguishable
+	// from "stopped".
+	if _, err := Parse(strings.NewReader(fmt.Sprintf(base, "0", 0))); err == nil || !strings.Contains(err.Error(), "active_replicas") {
+		t.Fatalf("zero active_replicas accepted: %v", err)
+	}
+	if _, err := Parse(strings.NewReader(fmt.Sprintf(base, "0", 2))); err != nil {
+		t.Fatalf("valid gitops target rejected: %v", err)
+	}
 }
 
 func TestValidateRecipe(t *testing.T) {

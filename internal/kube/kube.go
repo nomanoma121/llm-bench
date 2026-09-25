@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -77,11 +78,83 @@ func (c *Checker) ArgoSynced(ctx context.Context, namespace, name, revision stri
 	return syncStatus == "Synced" && (revision == "" || rev == revision), nil
 }
 
-// ReadyReplicas implements gitops.Kube.
-func (c *Checker) ReadyReplicas(ctx context.Context, namespace, name string) (int32, error) {
+// WorkloadStopped implements gitops.Kube: the deployment reports no ready
+// replicas AND every pod selected by it has actually gone away. Zero ready
+// replicas alone is not enough: terminating pods still hold the GPU.
+func (c *Checker) WorkloadStopped(ctx context.Context, namespace, name string) (bool, error) {
 	d, err := c.client.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return 0, fmt.Errorf("kube: get deployment %s/%s: %w", namespace, name, err)
+		return false, fmt.Errorf("kube: get deployment %s/%s: %w", namespace, name, err)
 	}
-	return d.Status.ReadyReplicas, nil
+	if d.Status.ReadyReplicas != 0 {
+		return false, nil
+	}
+	remaining, err := c.livePods(ctx, namespace, d.Spec.Selector)
+	if err != nil {
+		return false, err
+	}
+	return remaining == 0, nil
+}
+
+// WorkloadReady implements gitops.Kube: the deployment reports the wanted
+// number of ready replicas and that many pods are ready.
+func (c *Checker) WorkloadReady(ctx context.Context, namespace, name string, want int32) (bool, error) {
+	d, err := c.client.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return false, fmt.Errorf("kube: get deployment %s/%s: %w", namespace, name, err)
+	}
+	if d.Status.ReadyReplicas != want {
+		return false, nil
+	}
+	ready, err := c.readyPods(ctx, namespace, d.Spec.Selector)
+	if err != nil {
+		return false, err
+	}
+	return ready >= int(want), nil
+}
+
+// livePods counts pods that still exist (not fully deleted) for a selector.
+func (c *Checker) livePods(ctx context.Context, namespace string, selector *metav1.LabelSelector) (int, error) {
+	pods, err := c.listPods(ctx, namespace, selector)
+	if err != nil {
+		return 0, err
+	}
+	return len(pods), nil
+}
+
+// readyPods counts pods that are running and ready (terminating pods do not
+// count).
+func (c *Checker) readyPods(ctx context.Context, namespace string, selector *metav1.LabelSelector) (int, error) {
+	pods, err := c.listPods(ctx, namespace, selector)
+	if err != nil {
+		return 0, err
+	}
+	ready := 0
+	for i := range pods {
+		if pods[i].DeletionTimestamp != nil {
+			continue
+		}
+		for _, cond := range pods[i].Status.Conditions {
+			if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+				ready++
+				break
+			}
+		}
+	}
+	return ready, nil
+}
+
+func (c *Checker) listPods(ctx context.Context, namespace string, selector *metav1.LabelSelector) ([]corev1.Pod, error) {
+	if selector == nil {
+		return nil, nil
+	}
+	sel, err := metav1.LabelSelectorAsSelector(selector)
+	if err != nil {
+		return nil, fmt.Errorf("kube: deployment selector: %w", err)
+	}
+	list, err := c.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: sel.String()})
+	if err != nil {
+		return nil, fmt.Errorf("kube: list pods for %s: %w", sel, err)
+	}
+	return list.Items, nil
 }

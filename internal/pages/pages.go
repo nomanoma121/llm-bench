@@ -43,9 +43,42 @@ func New(owner, repository, branch, baseURL string, extra map[string]string) (*P
 	return &Publisher{gh: gh, owner: owner, repo: repository, branch: branch, baseURL: strings.TrimRight(baseURL, "/"), extra: extra}, nil
 }
 
+// publishAttempts bounds the retry loop for concurrent publishes: the branch
+// may move between reading the base commit and updating the ref.
+const publishAttempts = 3
+
 // Publish commits runs/<run-id>/index.html (plus extra files) to the site
-// branch in a single tree commit and returns the public URL.
+// branch in a single tree commit and returns the public URL. Re-publishing is
+// idempotent; a concurrent publish that moved the branch is retried from the
+// new head instead of force-overwriting it.
 func (p *Publisher) Publish(ctx context.Context, runID string, html []byte) (string, error) {
+	var lastErr error
+	for attempt := 0; attempt < publishAttempts; attempt++ {
+		url, err := p.publishOnce(ctx, runID, html)
+		if err == nil {
+			return url, nil
+		}
+		lastErr = err
+		if !isRefConflict(err) {
+			break
+		}
+	}
+	return "", lastErr
+}
+
+// isRefConflict reports whether the branch moved under us (non-fast-forward).
+func isRefConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Update is not a fast forward") ||
+		strings.Contains(msg, "does not match") ||
+		strings.Contains(msg, "Unprocessable") ||
+		strings.Contains(msg, "422")
+}
+
+func (p *Publisher) publishOnce(ctx context.Context, runID string, html []byte) (string, error) {
 	baseRef, _, err := p.gh.Git.GetRef(ctx, p.owner, p.repo, "heads/"+p.branch)
 	if err != nil {
 		return "", fmt.Errorf("pages: get branch ref: %w", err)
@@ -81,10 +114,6 @@ func (p *Publisher) Publish(ctx context.Context, runID string, html []byte) (str
 
 	tree, _, err := p.gh.Git.CreateTree(ctx, p.owner, p.repo, baseCommit.Commit.GetTree().GetSHA(), treeEntries)
 	if err != nil {
-		// The tree already matches (idempotent re-publish).
-		if strings.Contains(err.Error(), "Unprocessable") && p.alreadyPublished(ctx, runID) {
-			return p.publicURL(runID), nil
-		}
 		return "", fmt.Errorf("pages: create tree: %w", err)
 	}
 	parent := baseCommit.GetSHA()
@@ -96,9 +125,10 @@ func (p *Publisher) Publish(ctx context.Context, runID string, html []byte) (str
 	if err != nil {
 		return "", fmt.Errorf("pages: create commit: %w", err)
 	}
+	// No force: a concurrent publish must surface as a conflict and be
+	// retried from the new head.
 	if _, _, err := p.gh.Git.UpdateRef(ctx, p.owner, p.repo, "heads/"+p.branch, github.UpdateRef{
-		SHA:   commit.GetSHA(),
-		Force: github.Ptr(true),
+		SHA: commit.GetSHA(),
 	}); err != nil {
 		return "", fmt.Errorf("pages: update branch: %w", err)
 	}
@@ -107,10 +137,4 @@ func (p *Publisher) Publish(ctx context.Context, runID string, html []byte) (str
 
 func (p *Publisher) publicURL(runID string) string {
 	return p.baseURL + "/runs/" + runID + "/"
-}
-
-func (p *Publisher) alreadyPublished(ctx context.Context, runID string) bool {
-	_, _, _, err := p.gh.Repositories.GetContents(ctx, p.owner, p.repo, "runs/"+runID+"/index.html",
-		&github.RepositoryContentGetOptions{Ref: p.branch})
-	return err == nil
 }

@@ -300,12 +300,29 @@ func (p *gitopsGateways) gateways(plan operator.GitOpsPlan) (gitops.GitHubAPI, g
 	return gh, p.checker, nil
 }
 
-// buildEngine wires the engine for the current configuration. It returns an
-// error when the operator's site configuration cannot be used (for example a
-// missing GitHub token): failing fast beats publishing runs silently.
-func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration, sandboxes *sandboxClients, gitopsGateways *gitopsGateways) (*run.Engine, error) {
-	store := mustFileStore(g)
+// engineStores lets serve swap run records and leases for the Kubernetes
+// implementations while recipe snapshots and artifacts stay on the file store
+// (the harness persistent volume).
+type engineStores struct {
+	Runs      run.RunStore
+	Leases    run.LeaseStore
+	Snapshots run.InputSnapshotter
+}
 
+// buildEngine wires the engine with the default file-backed stores.
+func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration,
+	sandboxes *sandboxClients, gitopsGateways *gitopsGateways,
+) (*run.Engine, error) {
+	store := mustFileStore(g)
+	return buildEngineWithStores(g, cfg, interval, sandboxes, gitopsGateways, engineStores{
+		Runs: store, Leases: store, Snapshots: store,
+	})
+}
+
+// buildEngineWithStores wires the engine for the given stores.
+func buildEngineWithStores(g *globalFlags, cfg operator.Config, interval time.Duration,
+	sandboxes *sandboxClients, gitopsGateways *gitopsGateways, stores engineStores,
+) (*run.Engine, error) {
 	// Publication (site) wiring: only when the operator configured a site.
 	var finalizer run.Finalizer
 	if cfg.Site != nil {
@@ -316,10 +333,10 @@ func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration, sa
 		finalizer = &runner.PublishFinalizer{Publisher: publisher}
 	}
 
-	return &run.Engine{
-		Store:     store,
-		Leases:    store,
-		Snapshots: store,
+	engine := &run.Engine{
+		Store:     stores.Runs,
+		Leases:    stores.Leases,
+		Snapshots: stores.Snapshots,
 		Hooks:     &planHookSource{dir: g.root, sandboxClients: sandboxes, gitopsGateways: gitopsGateways},
 		Executor:  executorRouter{g: g, cfg: cfg, sandboxClients: sandboxes},
 		Finalizer: finalizer,
@@ -332,7 +349,8 @@ func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration, sa
 			}
 			return cfg.EffectiveLimits(t).MaxExecutionDuration
 		},
-	}, nil
+	}
+	return engine, nil
 }
 
 func currentTime() time.Time { return time.Now() }

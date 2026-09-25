@@ -125,8 +125,8 @@ func TestPrepareRunRejectsUnimplementedTargets(t *testing.T) {
 	}
 	g := &globalFlags{root: root, state: t.TempDir(), output: t.TempDir()}
 
-	// GitOps targets are implemented here: the frozen hook plan carries the
-	// gitops element that drives recovery.
+	// GitOps targets are implemented here, but their gateways must be
+	// constructible before a run may exist.
 	gitopsCfg := operator.Config{Targets: map[string]operator.Target{
 		"gpu": {GitOps: &operator.GitOps{
 			Owner: "o", Repository: "r", BaseBranch: "main",
@@ -140,18 +140,16 @@ func TestPrepareRunRejectsUnimplementedTargets(t *testing.T) {
 	if _, _, err := prepareRun(g, gitopsCfg, exPath, ""); err == nil {
 		t.Fatal("gitops target without a token must be refused")
 	}
+	// With a token but without a reachable cluster configuration the kube
+	// gateway cannot be built either; that must also be refused up front.
 	t.Setenv("LLMBENCH_GITHUB_TOKEN", "test-token")
-	rec, _, err := prepareRun(g, gitopsCfg, exPath, "")
-	if err != nil {
-		t.Fatalf("valid gitops target rejected: %v", err)
+	t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "absent"))
+	if _, _, err := prepareRun(g, gitopsCfg, exPath, ""); err == nil {
+		t.Fatal("gitops target without a kube configuration must be refused")
 	}
-	kinds := make([]string, 0, len(rec.HookPlan))
-	for _, p := range rec.HookPlan {
-		kinds = append(kinds, p.Kind)
-	}
-	if len(kinds) != 1 || kinds[0] != operator.KindGitOps {
-		t.Fatalf("hook plan = %v", kinds)
-	}
+
+	// The frozen gitops plan itself is covered by the operator tests
+	// (BuildHookPlan/PlanDigest).
 
 	// Sandbox targets require the full commit.
 	sandboxCfg := operator.Config{Targets: map[string]operator.Target{

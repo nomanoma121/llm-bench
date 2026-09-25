@@ -27,6 +27,10 @@ type apiService struct {
 	opCfg  operator.Config
 	engine *run.Engine
 	store  *filestore.Store
+	// authenticated reports whether the API is protected by a token. Local
+	// targets may only run over HTTP when the API is authenticated AND the
+	// operator opted the target in (design §4.11).
+	authenticated bool
 }
 
 // Submit implements httpapi.RunService.
@@ -36,8 +40,10 @@ func (s *apiService) Submit(ctx context.Context, experimentPath, inputCommit str
 		return run.Run{}, err
 	}
 	target := s.opCfg.Targets[r.Target]
-	if target.Sandbox == nil && !target.AllowHTTPLocal {
-		return run.Run{}, fmt.Errorf("%w: target %q", httpapi.ErrLocalForbidden, r.Target)
+	if target.Sandbox == nil { // the local executor runs on the harness host
+		if !s.authenticated || !target.AllowHTTPLocal {
+			return run.Run{}, fmt.Errorf("%w: target %q (requires an API token and allow_http_local)", httpapi.ErrLocalForbidden, r.Target)
+		}
 	}
 	return s.engine.Submit(ctx, r, inputs)
 }
@@ -72,10 +78,11 @@ func newServeCmd(g *globalFlags) *cobra.Command {
 
 			engine := buildEngine(g, opCfg, retryInterval)
 			svc := &apiService{
-				g:      g,
-				opCfg:  opCfg,
-				engine: engine,
-				store:  mustFileStore(g),
+				g:             g,
+				opCfg:         opCfg,
+				engine:        engine,
+				store:         mustFileStore(g),
+				authenticated: token != "",
 			}
 			handler := (&httpapi.Server{Service: svc, Token: token, Log: controllerLogger()}).Handler()
 			srv := &http.Server{
@@ -110,12 +117,17 @@ func newServeCmd(g *globalFlags) *cobra.Command {
 }
 
 // loopbackBind reports whether the address binds only to loopback.
+// loopbackBind reports whether the address binds only to loopback. An empty
+// host (":8080") binds every interface and is NOT loopback.
 func loopbackBind(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return false
 	}
-	if host == "" || host == "localhost" {
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
 		return true
 	}
 	ip := net.ParseIP(host)

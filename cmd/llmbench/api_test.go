@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/nomanoma121/llm-bench/internal/httpapi"
 	"github.com/nomanoma121/llm-bench/internal/operator"
 )
 
@@ -17,7 +20,7 @@ func TestDispatcherAdvancesSubmittedRun(t *testing.T) {
 	if err := os.MkdirAll(promptDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(promptDir, "prompt.md"), []byte("p"), 0o644) ; err != nil {
+	if err := os.WriteFile(filepath.Join(promptDir, "prompt.md"), []byte("p"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	state := t.TempDir()
@@ -60,5 +63,109 @@ func TestDispatcherAdvancesSubmittedRun(t *testing.T) {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestLoopbackBind(t *testing.T) {
+	cases := map[string]bool{
+		"127.0.0.1:8080": true,
+		"localhost:8080": true,
+		"[::1]:8080":     true,
+		":8080":          false,
+		"0.0.0.0:8080":   false,
+		"[::]:8080":      false,
+		"10.0.0.5:8080":  false,
+		"not-an-addr":    false,
+	}
+	for addr, want := range cases {
+		if got := loopbackBind(addr); got != want {
+			t.Errorf("loopbackBind(%q) = %v, want %v", addr, got, want)
+		}
+	}
+}
+
+func TestResolveExperimentPathRejectsEscapes(t *testing.T) {
+	root := "/repo"
+	if _, _, err := resolveExperimentPath(root, "../outside.yaml"); err == nil {
+		t.Error(".. escape accepted")
+	}
+	if _, _, err := resolveExperimentPath(root, "/etc/passwd"); err == nil {
+		t.Error("absolute path outside the repository accepted")
+	}
+	if _, _, err := resolveExperimentPath(root, ""); err == nil {
+		t.Error("empty path accepted")
+	}
+	full, rel, err := resolveExperimentPath(root, "experiments/m/e/config.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full != "/repo/experiments/m/e/config.yaml" || rel != "experiments/m/e/config.yaml" {
+		t.Fatalf("full=%q rel=%q", full, rel)
+	}
+	// Absolute paths inside the repository are accepted and normalized.
+	full, rel, err = resolveExperimentPath(root, "/repo/experiments/m/e/config.yaml")
+	if err != nil || rel != "experiments/m/e/config.yaml" || full != "/repo/experiments/m/e/config.yaml" {
+		t.Fatalf("absolute-in-root: full=%q rel=%q err=%v", full, rel, err)
+	}
+}
+
+func TestPrepareRunRejectsUnimplementedTargets(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "examples"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "examples", "prompt.md"), []byte("p"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exPath := filepath.Join(root, "exp.yaml")
+	body := "model: m\nbenchmark: examples/prompt.md\ntarget: gpu\nruntime:\n  engine: e\n  context_size: 8\ninvoke:\n  argv: [\"true\"]\n"
+	if err := os.WriteFile(exPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := &globalFlags{root: root, state: t.TempDir(), output: t.TempDir()}
+
+	for _, tc := range []struct {
+		name   string
+		target operator.Target
+	}{
+		{"gitops", operator.Target{GitOps: &operator.GitOps{}}},
+		{"sandbox", operator.Target{Sandbox: &operator.Sandbox{}}},
+	} {
+		opCfg := operator.Config{Targets: map[string]operator.Target{"gpu": tc.target}}
+		if _, _, err := prepareRun(g, opCfg, exPath, strings.Repeat("a", 40)); err == nil {
+			t.Errorf("%s: target accepted although the integration is not available", tc.name)
+		}
+	}
+}
+
+func TestAPIServiceDeniesLocalWithoutToken(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "examples"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "examples", "prompt.md"), []byte("p"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "exp.yaml"),
+		[]byte("model: m\nbenchmark: examples/prompt.md\ntarget: local\nruntime:\n  engine: e\n  context_size: 8\ninvoke:\n  argv: [\"true\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := &globalFlags{root: root, state: t.TempDir(), output: t.TempDir()}
+	opCfg := operator.Config{Targets: map[string]operator.Target{
+		"local": {Hooks: []operator.CommandHook{}, AllowHTTPLocal: true},
+	}}
+	engine := buildEngine(g, opCfg, time.Second)
+
+	// allow_http_local alone is not enough: the API must be authenticated.
+	svc := &apiService{g: g, opCfg: opCfg, engine: engine, store: mustFileStore(g), authenticated: false}
+	if _, err := svc.Submit(context.Background(), "exp.yaml", ""); !errors.Is(err, httpapi.ErrLocalForbidden) {
+		t.Fatalf("want ErrLocalForbidden, got %v", err)
+	}
+	unfinished, err := engine.Store.ListUnfinished(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unfinished) != 0 {
+		t.Fatalf("a denied submit must not persist a run: %+v", unfinished)
 	}
 }

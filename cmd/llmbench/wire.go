@@ -4,10 +4,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -38,45 +40,73 @@ func newFileStore(g *globalFlags) (*filestore.Store, error) {
 	return filestore.New(g.state, filepath.Join(g.output, "runs"))
 }
 
-// httpBadRequest marks caller mistakes so the HTTP layer can answer 400.
-type httpBadRequest struct{ err error }
-
-func (e *httpBadRequest) Error() string { return e.err.Error() }
-func (e *httpBadRequest) Unwrap() error { return e.err }
+// resolveExperimentPath turns a caller-supplied experiment path into an
+// absolute path confined to the repository root plus the repository-relative
+// path recorded on the run. Absolute paths outside the repository and paths
+// escaping it with ".." are rejected.
+func resolveExperimentPath(root, p string) (full, rel string, err error) {
+	if strings.TrimSpace(p) == "" {
+		return "", "", errors.New("experiment is required")
+	}
+	if filepath.IsAbs(p) {
+		abs := filepath.Clean(filepath.FromSlash(p))
+		r, err := filepath.Rel(root, abs)
+		if err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+			return "", "", fmt.Errorf("experiment path is outside the repository: %q", p)
+		}
+		return abs, filepath.ToSlash(r), nil
+	}
+	clean := filepath.Clean(filepath.FromSlash(p))
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", "", fmt.Errorf("experiment path escapes the repository: %q", p)
+	}
+	return filepath.Join(root, clean), filepath.ToSlash(clean), nil
+}
 
 // prepareRun validates an experiment request and freezes everything the run
 // needs: recipe snapshot, prompt hash, fingerprint, hook plan and inputs.
-// Both the submit CLI and the HTTP API go through this function.
+// Both the submit CLI and the HTTP API go through this function; the path is
+// resolved inside the repository root.
 func prepareRun(g *globalFlags, opCfg operator.Config, expPath, commit string) (run.Run, map[string][]byte, error) {
-	cfg, err := experiment.Load(expPath)
+	fullPath, relPath, err := resolveExperimentPath(g.root, expPath)
+	if err != nil {
+		return run.Run{}, nil, &httpapi.BadRequestError{Err: err}
+	}
+	cfg, err := experiment.Load(fullPath)
 	if err != nil {
 		return run.Run{}, nil, err
 	}
 	if err := experiment.Validate(cfg, g.root); err != nil {
-		return run.Run{}, nil, &httpBadRequest{fmt.Errorf("%s: %w", expPath, err)}
+		return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("%s: %w", relPath, err)}
 	}
 	ready := 0
 	if cfg.Runtime.Start != nil {
 		ready = cfg.Runtime.Start.ReadyTimeout()
 	}
 	if err := opCfg.ValidateRecipe(cfg.Target, ready); err != nil {
-		return run.Run{}, nil, &httpBadRequest{err}
+		return run.Run{}, nil, &httpapi.BadRequestError{Err: err}
 	}
 	target, ok := opCfg.Targets[cfg.Target]
 	if !ok {
-		return run.Run{}, nil, &httpBadRequest{fmt.Errorf("submit: target %q is not allowlisted", cfg.Target)}
+		return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("submit: target %q is not allowlisted", cfg.Target)}
+	}
+	if target.GitOps != nil || target.Sandbox != nil {
+		// The implementations of these hook kinds are not wired in this
+		// build; refusing before the run record exists keeps the target lease
+		// from being held by a run that can never progress.
+		return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("submit: target %q requires an integration that is not available in this build", cfg.Target)}
 	}
 	if target.Sandbox != nil && len(commit) != 40 {
-		return run.Run{}, nil, &httpBadRequest{fmt.Errorf("submit: sandbox target %q requires a full 40-hex input commit", cfg.Target)}
+		return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("submit: sandbox target %q requires a full 40-hex input commit", cfg.Target)}
 	}
 
 	promptBytes, err := os.ReadFile(experiment.BenchmarkPath(cfg, g.root))
 	if err != nil {
-		return run.Run{}, nil, &httpBadRequest{err}
+		return run.Run{}, nil, &httpapi.BadRequestError{Err: err}
 	}
-	rawBytes, err := os.ReadFile(expPath)
+	rawBytes, err := os.ReadFile(fullPath)
 	if err != nil {
-		return run.Run{}, nil, &httpBadRequest{err}
+		return run.Run{}, nil, &httpapi.BadRequestError{Err: err}
 	}
 	recipeJSON, err := experiment.CanonicalJSON(cfg)
 	if err != nil {
@@ -112,7 +142,7 @@ func prepareRun(g *globalFlags, opCfg operator.Config, expPath, commit string) (
 	r := run.Run{
 		ID:                  runID,
 		Target:              cfg.Target,
-		Experiment:          filepath.ToSlash(expPath),
+		Experiment:          relPath,
 		InputCommit:         commit,
 		Fingerprint:         fingerprint,
 		RecipeSchemaVersion: 1,

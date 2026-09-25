@@ -30,6 +30,7 @@ func newRootCmd() *cobra.Command {
 		newValidateCmd(&g),
 		newSubmitCmd(&g),
 		newStatusCmd(&g),
+		newServeCmd(&g),
 	)
 	return cmd
 }

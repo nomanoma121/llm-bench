@@ -1,23 +1,132 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/go-logr/logr"
 
+	"github.com/nomanoma121/llm-bench/internal/experiment"
 	"github.com/nomanoma121/llm-bench/internal/filestore"
 	"github.com/nomanoma121/llm-bench/internal/hook"
+	"github.com/nomanoma121/llm-bench/internal/httpapi"
 	"github.com/nomanoma121/llm-bench/internal/operator"
+	"github.com/nomanoma121/llm-bench/internal/provenance"
 	"github.com/nomanoma121/llm-bench/internal/run"
 	"github.com/nomanoma121/llm-bench/internal/runner"
+)
+
+const (
+	// benchSchemaVersion participates in the benchmark fingerprint. Bump it
+	// when the benchmark contract changes in a way that breaks A/B
+	// comparability.
+	benchSchemaVersion = "1"
+	// controllerVersion is stamped into fingerprints and run records.
+	controllerVersion = "0.1.0-dev"
 )
 
 // newFileStore constructs the file-backed persistence layer. Artifacts live
 // under <output>/runs/<run-id>/.
 func newFileStore(g *globalFlags) (*filestore.Store, error) {
 	return filestore.New(g.state, filepath.Join(g.output, "runs"))
+}
+
+// httpBadRequest marks caller mistakes so the HTTP layer can answer 400.
+type httpBadRequest struct{ err error }
+
+func (e *httpBadRequest) Error() string { return e.err.Error() }
+func (e *httpBadRequest) Unwrap() error { return e.err }
+
+// prepareRun validates an experiment request and freezes everything the run
+// needs: recipe snapshot, prompt hash, fingerprint, hook plan and inputs.
+// Both the submit CLI and the HTTP API go through this function.
+func prepareRun(g *globalFlags, opCfg operator.Config, expPath, commit string) (run.Run, map[string][]byte, error) {
+	cfg, err := experiment.Load(expPath)
+	if err != nil {
+		return run.Run{}, nil, err
+	}
+	if err := experiment.Validate(cfg, g.root); err != nil {
+		return run.Run{}, nil, &httpBadRequest{fmt.Errorf("%s: %w", expPath, err)}
+	}
+	ready := 0
+	if cfg.Runtime.Start != nil {
+		ready = cfg.Runtime.Start.ReadyTimeout()
+	}
+	if err := opCfg.ValidateRecipe(cfg.Target, ready); err != nil {
+		return run.Run{}, nil, &httpBadRequest{err}
+	}
+	target, ok := opCfg.Targets[cfg.Target]
+	if !ok {
+		return run.Run{}, nil, &httpBadRequest{fmt.Errorf("submit: target %q is not allowlisted", cfg.Target)}
+	}
+	if target.Sandbox != nil && len(commit) != 40 {
+		return run.Run{}, nil, &httpBadRequest{fmt.Errorf("submit: sandbox target %q requires a full 40-hex input commit", cfg.Target)}
+	}
+
+	promptBytes, err := os.ReadFile(experiment.BenchmarkPath(cfg, g.root))
+	if err != nil {
+		return run.Run{}, nil, &httpBadRequest{err}
+	}
+	rawBytes, err := os.ReadFile(expPath)
+	if err != nil {
+		return run.Run{}, nil, &httpBadRequest{err}
+	}
+	recipeJSON, err := experiment.CanonicalJSON(cfg)
+	if err != nil {
+		return run.Run{}, nil, err
+	}
+
+	runID, err := newRunID()
+	if err != nil {
+		return run.Run{}, nil, err
+	}
+	plan := operator.BuildHookPlan(target, runID)
+	digest, err := operator.PlanDigest(plan)
+	if err != nil {
+		return run.Run{}, nil, err
+	}
+	store, err := newFileStore(g)
+	if err != nil {
+		return run.Run{}, nil, err
+	}
+	now := currentTime()
+	fingerprint, err := provenance.Fingerprint(provenance.FingerprintInput{
+		Prompt:                 promptBytes,
+		BenchmarkSchemaVersion: benchSchemaVersion,
+		ContextSize:            cfg.Runtime.ContextSize,
+		RuntimeSignature:       cfg.Runtime.Engine + "/" + cfg.Runtime.Variant,
+		TargetKind:             targetKind(target),
+		ControllerVersion:      controllerVersion,
+	})
+	if err != nil {
+		return run.Run{}, nil, err
+	}
+
+	r := run.Run{
+		ID:                  runID,
+		Target:              cfg.Target,
+		Experiment:          filepath.ToSlash(expPath),
+		InputCommit:         commit,
+		Fingerprint:         fingerprint,
+		RecipeSchemaVersion: 1,
+		RecipeJSON:          string(recipeJSON),
+		PromptSHA256:        provenance.SHA256Hex(promptBytes),
+		HookPlan:            plan,
+		HookPlanDigest:      digest,
+		Artifacts:           run.Artifacts{Dir: store.ArtifactsDir(runID)},
+		CreatedAt:           now,
+		UpdatedAt:           now,
+	}
+	inputs := map[string][]byte{
+		"config.yaml": rawBytes,
+		"prompt.md":   promptBytes,
+	}
+	return r, inputs, nil
 }
 
 // planHookSource rebuilds hooks from a run's frozen hook plan. It verifies
@@ -56,10 +165,8 @@ func (s *planHookSource) HooksFor(r run.Run) ([]run.Hook, error) {
 	return hooks, nil
 }
 
-// buildEngine wires the engine for the current configuration. The interval is
-// short because the submit CLI drives runs synchronously; serve constructs a
-// second engine with the operator retry interval in milestone 2.
-func buildEngine(g *globalFlags, cfg operator.Config) *run.Engine {
+// buildEngine wires the engine for the current configuration.
+func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration) *run.Engine {
 	store := mustFileStore(g)
 	return &run.Engine{
 		Store:     store,
@@ -69,7 +176,7 @@ func buildEngine(g *globalFlags, cfg operator.Config) *run.Engine {
 		Executor:  runner.NewLocal(g.root),
 		Finalizer: nil, // publication arrives with milestone 5; nil short-circuits finalizing
 		Log:       logr.Discard(),
-		Interval:  time.Second,
+		Interval:  interval,
 		MaxExecutionDuration: func(target string) time.Duration {
 			t, ok := cfg.Targets[target]
 			if !ok {
@@ -80,10 +187,32 @@ func buildEngine(g *globalFlags, cfg operator.Config) *run.Engine {
 	}
 }
 
+func currentTime() time.Time { return time.Now() }
+
+func newRunID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("submit: generate run id: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+func targetKind(t operator.Target) string {
+	if t.Sandbox != nil {
+		return "sandbox"
+	}
+	return "local"
+}
+
 func mustFileStore(g *globalFlags) *filestore.Store {
 	s, err := newFileStore(g)
 	if err != nil {
 		panic(err) // construction only fails on unusable state/output dirs
 	}
 	return s
+}
+
+// statusJSON renders the API/CLI status projection.
+func statusJSON(r run.Run) ([]byte, error) {
+	return json.MarshalIndent(httpapi.NewStatusView(r), "", "  ")
 }

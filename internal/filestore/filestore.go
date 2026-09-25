@@ -359,36 +359,3 @@ func (s *Store) LoadJSON(_ context.Context, kind, id string, v any) error {
 	}
 	return nil
 }
-
-// SaveJSON persists v as a JSON blob under <state>/<kind>/<id>.json
-// (last-write-wins; used for the review index whose canonical history is the
-// GitHub Issue).
-func (s *Store) SaveJSON(_ context.Context, kind, id string, v any) error {
-	dir := filepath.Join(s.stateDir, kind)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("filestore: mkdir %s: %w", dir, err)
-	}
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return fmt.Errorf("filestore: encode %s/%s: %w", kind, id, err)
-	}
-	if err := writeAtomic(filepath.Join(dir, id+".json"), b); err != nil {
-		return fmt.Errorf("filestore: write %s/%s: %w", kind, id, err)
-	}
-	return nil
-}
-
-// LoadJSON loads a JSON blob. ErrNotFound when absent.
-func (s *Store) LoadJSON(_ context.Context, kind, id string, v any) error {
-	b, err := os.ReadFile(filepath.Join(s.stateDir, kind, id+".json"))
-	if errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("filestore: %w: %s/%s", run.ErrNotFound, kind, id)
-	}
-	if err != nil {
-		return fmt.Errorf("filestore: read %s/%s: %w", kind, id, err)
-	}
-	if err := json.Unmarshal(b, v); err != nil {
-		return fmt.Errorf("filestore: decode %s/%s: %w", kind, id, err)
-	}
-	return nil
-}

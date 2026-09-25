@@ -71,6 +71,35 @@ func (c *Command) run(ctx context.Context, argv []string, phase string) error {
 	return fmt.Errorf("hook %q %s failed: %v (output: %s)", c.plan.Name, phase, err, tail(&out))
 }
 
+// MapPending adapts a hook that reports "not converged" with its own
+// sentinel (gitops.ErrNotConverged) to the engine's run.ErrPending, keeping
+// adapter packages free of policy imports.
+func MapPending(inner run.Hook, notConverged error) run.Hook {
+	return &pendingMapper{inner: inner, sentinel: notConverged}
+}
+
+type pendingMapper struct {
+	inner    run.Hook
+	sentinel error
+}
+
+func (p *pendingMapper) Name() string { return p.inner.Name() }
+
+func (p *pendingMapper) Acquire(ctx context.Context) error {
+	return p.wrap(p.inner.Acquire(ctx))
+}
+
+func (p *pendingMapper) Release(ctx context.Context) error {
+	return p.wrap(p.inner.Release(ctx))
+}
+
+func (p *pendingMapper) wrap(err error) error {
+	if err != nil && errors.Is(err, p.sentinel) {
+		return fmt.Errorf("%s: %w", p.inner.Name(), run.ErrPending)
+	}
+	return err
+}
+
 func tail(b *bytes.Buffer) string {
 	const max = 512
 	s := b.String()

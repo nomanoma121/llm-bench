@@ -19,8 +19,10 @@ import (
 
 	"github.com/nomanoma121/llm-bench/internal/experiment"
 	"github.com/nomanoma121/llm-bench/internal/filestore"
+	"github.com/nomanoma121/llm-bench/internal/gitops"
 	"github.com/nomanoma121/llm-bench/internal/hook"
 	"github.com/nomanoma121/llm-bench/internal/httpapi"
+	"github.com/nomanoma121/llm-bench/internal/kube"
 	"github.com/nomanoma121/llm-bench/internal/operator"
 	"github.com/nomanoma121/llm-bench/internal/provenance"
 	"github.com/nomanoma121/llm-bench/internal/run"
@@ -105,12 +107,6 @@ func prepareRun(g *globalFlags, opCfg operator.Config, expPath, commit string) (
 	if !ok {
 		return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("submit: target %q is not allowlisted", cfg.Target)}
 	}
-	if target.GitOps != nil {
-		// GitOps hooks are not wired in this build; refusing before the run
-		// record exists keeps the target lease from being held by a run that
-		// can never progress.
-		return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("submit: target %q requires an integration that is not available in this build", cfg.Target)}
-	}
 	if target.Sandbox != nil {
 		if err := provenance.ValidateCommitSHA(commit); err != nil {
 			return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("submit: sandbox target %q: %w", cfg.Target, err)}
@@ -186,6 +182,8 @@ type planHookSource struct {
 	// sandboxClients resolves the client for the namespace recorded in the
 	// run's frozen hook plan.
 	sandboxClients *sandboxClients
+	// gitopsGateways resolves the GitHub/kube gateways for a run.
+	gitopsGateways *gitopsGateways
 }
 
 // HooksFor implements run.HookSource.
@@ -225,14 +223,54 @@ func (s *planHookSource) HooksFor(r run.Run) ([]run.Hook, error) {
 	return hooks, nil
 }
 
+// gitopsGateways lazily builds the GitHub and kube gateways for a frozen
+// plan. Access is guarded because different targets are dispatched
+// concurrently.
+type gitopsGateways struct {
+	mu      sync.Mutex
+	g       *globalFlags
+	github  gitops.GitHubAPI
+	checker gitops.Kube
+	initErr error
+}
+
+func newGitopsGateways(g *globalFlags) *gitopsGateways {
+	return &gitopsGateways{g: g}
+}
+
+func (p *gitopsGateways) gateways(plan operator.GitOpsPlan) (gitops.GitHubAPI, gitops.Kube, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.initErr != nil {
+		return nil, nil, p.initErr
+	}
+	if p.github == nil {
+		gh, err := gitops.NewGitHubAPIFromEnv(context.Background(), plan.Owner, plan.Repository, plan.BaseBranch)
+		if err != nil {
+			p.initErr = err
+			return nil, nil, err
+		}
+		p.github = gh
+	}
+	if p.checker == nil {
+		checker, err := kube.NewChecker(p.g.kubeconfig)
+		if err != nil {
+			p.initErr = err
+			return nil, nil, err
+		}
+		p.checker = checker
+	}
+	return p.github, p.checker, nil
+}
+
 // buildEngine wires the engine for the current configuration.
-func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration, sandboxes *sandboxClients) *run.Engine {
+func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration, sandboxes *sandboxClients, gitopsGateways *gitopsGateways) *run.Engine {
 	store := mustFileStore(g)
 	return &run.Engine{
 		Store:     store,
 		Leases:    store,
 		Snapshots: store,
-		Hooks:     &planHookSource{dir: g.root, sandboxClients: sandboxes},
+		Hooks:     &planHookSource{dir: g.root, sandboxClients: sandboxes, gitopsGateways: gitopsGateways},
 		Executor:  executorRouter{g: g, cfg: cfg, sandboxClients: sandboxes},
 		Finalizer: nil, // publication arrives with milestone 5; nil short-circuits finalizing
 		Log:       controllerLogger(),

@@ -42,7 +42,7 @@ func TestDispatcherAdvancesSubmittedRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := buildEngine(g, opCfg, 100*time.Millisecond, newSandboxClients(g))
+	engine := buildEngine(g, opCfg, 100*time.Millisecond, newSandboxClients(g), nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := engine.Submit(ctx, r, inputs); err != nil {
@@ -125,16 +125,28 @@ func TestPrepareRunRejectsUnimplementedTargets(t *testing.T) {
 	}
 	g := &globalFlags{root: root, state: t.TempDir(), output: t.TempDir()}
 
-	// GitOps hooks are not implemented in this build and must be refused
-	// before any run record exists.
-	opCfg := operator.Config{Targets: map[string]operator.Target{
-		"gpu": {GitOps: &operator.GitOps{}},
+	// GitOps targets are implemented here: the frozen hook plan carries the
+	// gitops element that drives recovery.
+	gitopsCfg := operator.Config{Targets: map[string]operator.Target{
+		"gpu": {GitOps: &operator.GitOps{
+			Owner: "o", Repository: "r", BaseBranch: "main",
+			FilePath: "apps/values.yaml", YAMLPath: []string{"replicas"},
+			ActiveValue: "1", PausedValue: "0",
+		}},
 	}}
-	if _, _, err := prepareRun(g, opCfg, exPath, strings.Repeat("a", 40)); err == nil {
-		t.Error("gitops target accepted although the integration is not available")
+	rec, _, err := prepareRun(g, gitopsCfg, exPath, "")
+	if err != nil {
+		t.Fatalf("valid gitops target rejected: %v", err)
+	}
+	kinds := make([]string, 0, len(rec.HookPlan))
+	for _, p := range rec.HookPlan {
+		kinds = append(kinds, p.Kind)
+	}
+	if len(kinds) != 1 || kinds[0] != operator.KindGitOps {
+		t.Fatalf("hook plan = %v", kinds)
 	}
 
-	// Sandbox hooks ARE implemented here; the requirement is the full commit.
+	// Sandbox targets require the full commit.
 	sandboxCfg := operator.Config{Targets: map[string]operator.Target{
 		"gpu": {Sandbox: &operator.Sandbox{Namespace: "bench", WarmPool: "pool"}},
 	}}
@@ -162,7 +174,7 @@ func TestAPIServiceDeniesLocalWithoutToken(t *testing.T) {
 	opCfg := operator.Config{Targets: map[string]operator.Target{
 		"local": {Hooks: []operator.CommandHook{}, AllowHTTPLocal: true},
 	}}
-	engine := buildEngine(g, opCfg, time.Second, newSandboxClients(g))
+	engine := buildEngine(g, opCfg, time.Second, newSandboxClients(g), nil)
 
 	// allow_http_local alone is not enough: the API must be authenticated.
 	svc := &apiService{g: g, opCfg: opCfg, engine: engine, store: mustFileStore(g), authenticated: false}

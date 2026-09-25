@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -137,6 +138,9 @@ type GitOpsPlan struct {
 	WorkloadNamespace, Deployment           string
 	ActiveReplicas                          int
 }
+
+// YAMLPathString renders the manifest path for error messages.
+func (p GitOpsPlan) YAMLPathString() string { return strings.Join(p.YAMLPath, ".") }
 
 // SandboxPlan is the sanitized, run-bound snapshot of a sandbox claim hook.
 type SandboxPlan struct {

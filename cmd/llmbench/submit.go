@@ -35,7 +35,7 @@ func runSubmit(cmd *cobra.Command, g *globalFlags, expPath, configPath, commit s
 	if err != nil {
 		return err
 	}
-	engine := buildEngine(g, opCfg, time.Second)
+	engine := buildEngine(g, opCfg, time.Second, nil)
 	submitted, err := engine.Submit(ctx, r, inputs)
 	if err != nil {
 		return err

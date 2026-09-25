@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -133,9 +134,11 @@ func prepareRun(g *globalFlags, opCfg operator.Config, expPath, commit string) (
 
 // planHookSource rebuilds hooks from a run's frozen hook plan. It verifies
 // the plan digest on every call and refuses kinds whose implementations are
-// not wired yet (sandbox claims arrive in milestone 3, GitOps in milestone 4).
+// not wired yet (GitOps arrives in a later change).
 type planHookSource struct {
 	dir string // working directory for command hooks (repository root)
+	// sandboxClients builds (and caches) the sandbox client for a target.
+	sandboxFor func(target string) SandboxHookDeps
 }
 
 // HooksFor implements run.HookSource.
@@ -159,7 +162,15 @@ func (s *planHookSource) HooksFor(r run.Run) ([]run.Hook, error) {
 		case operator.KindGitOps:
 			return nil, fmt.Errorf("hook %q: gitops hooks arrive with milestone 4; do not select this target yet", p.Name)
 		case operator.KindSandboxClaim:
-			return nil, fmt.Errorf("hook %q: sandbox claim hooks arrive with milestone 3; do not select this target yet", p.Name)
+			if s.sandboxFor == nil {
+				return nil, fmt.Errorf("hook %q: no sandbox client configured", p.Name)
+			}
+			deps := s.sandboxFor(r.Target)
+			hooks = append(hooks, &runner.ClaimHook{
+				RunID:    r.ID,
+				WarmPool: p.Sandbox.WarmPool,
+				Client:   deps.Client,
+			})
 		default:
 			return nil, fmt.Errorf("hook %q: unknown plan kind %q", p.Name, p.Kind)
 		}
@@ -168,14 +179,14 @@ func (s *planHookSource) HooksFor(r run.Run) ([]run.Hook, error) {
 }
 
 // buildEngine wires the engine for the current configuration.
-func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration) *run.Engine {
+func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration, sandboxFor func(target string) SandboxHookDeps) *run.Engine {
 	store := mustFileStore(g)
 	return &run.Engine{
 		Store:     store,
 		Leases:    store,
 		Snapshots: store,
-		Hooks:     &planHookSource{dir: g.root},
-		Executor:  runner.NewLocal(g.root),
+		Hooks:     &planHookSource{dir: g.root, sandboxFor: sandboxFor},
+		Executor:  executorRouter{g: g, cfg: cfg, sandboxFor: sandboxFor},
 		Finalizer: nil, // publication arrives with milestone 5; nil short-circuits finalizing
 		Log:       controllerLogger(),
 		Interval:  interval,
@@ -220,6 +231,34 @@ func targetKind(t operator.Target) string {
 		return "sandbox"
 	}
 	return "local"
+}
+
+// SandboxHookDeps carries what a sandbox claim hook needs at build time.
+type SandboxHookDeps struct {
+	Client runner.SandboxClient
+}
+
+// executorRouter picks the local or sandbox executor per target.
+type executorRouter struct {
+	g          *globalFlags
+	cfg        operator.Config
+	sandboxFor func(target string) SandboxHookDeps
+}
+
+// Execute implements run.Executor.
+func (r executorRouter) Execute(ctx context.Context, rec run.Run) (run.Artifacts, error) {
+	target, ok := r.cfg.Targets[rec.Target]
+	if ok && target.Sandbox != nil {
+		deps := r.sandboxFor(rec.Target)
+		exec := &runner.Sandbox{
+			Client:    deps.Client,
+			Git:       provenance.Git{Root: r.g.root},
+			Root:      r.g.root,
+			ModelPins: func(target string) map[string]string { return r.cfg.Targets[target].Sandbox.ModelSHA256 },
+		}
+		return exec.Execute(ctx, rec)
+	}
+	return runner.NewLocal(r.g.root).Execute(ctx, rec)
 }
 
 func mustFileStore(g *globalFlags) *filestore.Store {

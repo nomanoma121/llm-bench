@@ -17,7 +17,7 @@ func TestDispatcherAdvancesSubmittedRun(t *testing.T) {
 	if err := os.MkdirAll(promptDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(promptDir, "prompt.md"), []byte("p"), 0o644) ; err != nil {
+	if err := os.WriteFile(filepath.Join(promptDir, "prompt.md"), []byte("p"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	state := t.TempDir()
@@ -38,7 +38,7 @@ func TestDispatcherAdvancesSubmittedRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := buildEngine(g, opCfg, 100*time.Millisecond)
+	engine := buildEngine(g, opCfg, 100*time.Millisecond, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := engine.Submit(ctx, r, inputs); err != nil {

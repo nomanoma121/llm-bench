@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -23,6 +25,7 @@ import (
 	"github.com/nomanoma121/llm-bench/internal/provenance"
 	"github.com/nomanoma121/llm-bench/internal/run"
 	"github.com/nomanoma121/llm-bench/internal/runner"
+	"github.com/nomanoma121/llm-bench/internal/sandbox"
 )
 
 const (
@@ -102,14 +105,16 @@ func prepareRun(g *globalFlags, opCfg operator.Config, expPath, commit string) (
 	if !ok {
 		return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("submit: target %q is not allowlisted", cfg.Target)}
 	}
-	if target.GitOps != nil || target.Sandbox != nil {
-		// The implementations of these hook kinds are not wired in this
-		// build; refusing before the run record exists keeps the target lease
-		// from being held by a run that can never progress.
+	if target.GitOps != nil {
+		// GitOps hooks are not wired in this build; refusing before the run
+		// record exists keeps the target lease from being held by a run that
+		// can never progress.
 		return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("submit: target %q requires an integration that is not available in this build", cfg.Target)}
 	}
-	if target.Sandbox != nil && len(commit) != 40 {
-		return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("submit: sandbox target %q requires a full 40-hex input commit", cfg.Target)}
+	if target.Sandbox != nil {
+		if err := provenance.ValidateCommitSHA(commit); err != nil {
+			return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("submit: sandbox target %q: %w", cfg.Target, err)}
+		}
 	}
 
 	promptBytes, err := os.ReadFile(experiment.BenchmarkPath(cfg, g.root))
@@ -175,9 +180,12 @@ func prepareRun(g *globalFlags, opCfg operator.Config, expPath, commit string) (
 
 // planHookSource rebuilds hooks from a run's frozen hook plan. It verifies
 // the plan digest on every call and refuses kinds whose implementations are
-// not wired yet (sandbox claims arrive in milestone 3, GitOps in milestone 4).
+// not wired yet (GitOps arrives in a later change).
 type planHookSource struct {
 	dir string // working directory for command hooks (repository root)
+	// sandboxClients resolves the client for the namespace recorded in the
+	// run's frozen hook plan.
+	sandboxClients *sandboxClients
 }
 
 // HooksFor implements run.HookSource.
@@ -201,7 +209,15 @@ func (s *planHookSource) HooksFor(r run.Run) ([]run.Hook, error) {
 		case operator.KindGitOps:
 			return nil, fmt.Errorf("hook %q: gitops hooks arrive with milestone 4; do not select this target yet", p.Name)
 		case operator.KindSandboxClaim:
-			return nil, fmt.Errorf("hook %q: sandbox claim hooks arrive with milestone 3; do not select this target yet", p.Name)
+			if s.sandboxClients == nil || p.Sandbox == nil {
+				return nil, fmt.Errorf("hook %q: no sandbox client configured", p.Name)
+			}
+			hooks = append(hooks, &runner.ClaimHook{
+				RunID:    r.ID,
+				Claim:    p.Sandbox.SandboxClaimName,
+				WarmPool: p.Sandbox.WarmPool,
+				Client:   s.sandboxClients.client(p.Sandbox.Namespace),
+			})
 		default:
 			return nil, fmt.Errorf("hook %q: unknown plan kind %q", p.Name, p.Kind)
 		}
@@ -210,14 +226,14 @@ func (s *planHookSource) HooksFor(r run.Run) ([]run.Hook, error) {
 }
 
 // buildEngine wires the engine for the current configuration.
-func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration) *run.Engine {
+func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration, sandboxes *sandboxClients) *run.Engine {
 	store := mustFileStore(g)
 	return &run.Engine{
 		Store:     store,
 		Leases:    store,
 		Snapshots: store,
-		Hooks:     &planHookSource{dir: g.root},
-		Executor:  runner.NewLocal(g.root),
+		Hooks:     &planHookSource{dir: g.root, sandboxClients: sandboxes},
+		Executor:  executorRouter{g: g, cfg: cfg, sandboxClients: sandboxes},
 		Finalizer: nil, // publication arrives with milestone 5; nil short-circuits finalizing
 		Log:       controllerLogger(),
 		Interval:  interval,
@@ -262,6 +278,97 @@ func targetKind(t operator.Target) string {
 		return "sandbox"
 	}
 	return "local"
+}
+
+// executorRouter picks the local or sandbox executor. The choice is driven
+// by the run's frozen hook plan, never by the current operator config: a
+// sandbox run recovered after a configuration change must not silently fall
+// back to local execution.
+type executorRouter struct {
+	g              *globalFlags
+	cfg            operator.Config
+	sandboxClients *sandboxClients
+}
+
+// Execute implements run.Executor.
+func (r executorRouter) Execute(ctx context.Context, rec run.Run) (run.Artifacts, error) {
+	if plan := sandboxPlanOf(rec.HookPlan); plan != nil {
+		if r.sandboxClients == nil {
+			return run.Artifacts{}, fmt.Errorf("wire: run %s needs a sandbox executor but none is configured", rec.ID)
+		}
+		target, ok := r.cfg.Targets[rec.Target]
+		if !ok {
+			// Fail closed: without the operator target we would run with no
+			// execution ceiling, no readiness clamp and no model pin (F17).
+			return run.Artifacts{}, fmt.Errorf("wire: run %s targets %q which is no longer configured; refusing to execute without operator limits and model pin", rec.ID, rec.Target)
+		}
+		if target.Sandbox == nil {
+			return run.Artifacts{}, fmt.Errorf("wire: run %s was submitted for a sandbox target but %q is now a local target; refusing to execute", rec.ID, rec.Target)
+		}
+		exec := &runner.Sandbox{
+			Client: r.sandboxClients.client(plan.Namespace),
+			Claim:  plan.SandboxClaimName,
+			Git:    provenance.Git{Root: r.g.root},
+			Root:   r.g.root,
+			// Operator limits are injected here so recipe readiness timeouts
+			// can never exceed the operator ceiling (F17).
+			Limits: func(target string) (time.Duration, time.Duration, bool) {
+				t, ok := r.cfg.Targets[target]
+				if !ok {
+					return 0, 0, false
+				}
+				lim := r.cfg.EffectiveLimits(t)
+				return lim.MaxReadyDuration, lim.MaxExecutionDuration, true
+			},
+			ModelPins: func(target string) map[string]string {
+				t, ok := r.cfg.Targets[target]
+				if !ok || t.Sandbox == nil {
+					return nil
+				}
+				return t.Sandbox.ModelSHA256
+			},
+		}
+		return exec.Execute(ctx, rec)
+	}
+	if target, ok := r.cfg.Targets[rec.Target]; !ok || target.Sandbox != nil {
+		return run.Artifacts{}, fmt.Errorf("wire: run %s is not a local target; refusing to execute it locally", rec.ID)
+	}
+	return runner.NewLocal(r.g.root).Execute(ctx, rec)
+}
+
+// sandboxClients provides sandbox clients keyed by namespace. The key comes
+// from the run's frozen hook plan, so an operator configuration change can
+// never redirect a recovery to another namespace. Access is guarded because
+// different targets are dispatched concurrently.
+type sandboxClients struct {
+	mu    sync.Mutex
+	g     *globalFlags
+	cache map[string]runner.SandboxClient
+}
+
+func newSandboxClients(g *globalFlags) *sandboxClients {
+	return &sandboxClients{g: g, cache: map[string]runner.SandboxClient{}}
+}
+
+func (p *sandboxClients) client(namespace string) runner.SandboxClient {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if c, ok := p.cache[namespace]; ok {
+		return c
+	}
+	c := &sandbox.Client{Namespace: namespace, Kubeconfig: p.g.kubeconfig}
+	p.cache[namespace] = c
+	return c
+}
+
+// sandboxPlanOf returns the frozen sandbox plan of a run, if any.
+func sandboxPlanOf(plan []operator.PlannedHook) *operator.SandboxPlan {
+	for i := range plan {
+		if plan[i].Kind == operator.KindSandboxClaim && plan[i].Sandbox != nil {
+			return plan[i].Sandbox
+		}
+	}
+	return nil
 }
 
 func mustFileStore(g *globalFlags) *filestore.Store {

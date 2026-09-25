@@ -11,6 +11,7 @@ import (
 
 	"github.com/nomanoma121/llm-bench/internal/httpapi"
 	"github.com/nomanoma121/llm-bench/internal/operator"
+	"github.com/nomanoma121/llm-bench/internal/run"
 )
 
 // regression: the serve dispatcher must pick up submitted runs.
@@ -41,7 +42,7 @@ func TestDispatcherAdvancesSubmittedRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := buildEngine(g, opCfg, 100*time.Millisecond)
+	engine := buildEngine(g, opCfg, 100*time.Millisecond, newSandboxClients(g))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := engine.Submit(ctx, r, inputs); err != nil {
@@ -124,17 +125,24 @@ func TestPrepareRunRejectsUnimplementedTargets(t *testing.T) {
 	}
 	g := &globalFlags{root: root, state: t.TempDir(), output: t.TempDir()}
 
-	for _, tc := range []struct {
-		name   string
-		target operator.Target
-	}{
-		{"gitops", operator.Target{GitOps: &operator.GitOps{}}},
-		{"sandbox", operator.Target{Sandbox: &operator.Sandbox{}}},
-	} {
-		opCfg := operator.Config{Targets: map[string]operator.Target{"gpu": tc.target}}
-		if _, _, err := prepareRun(g, opCfg, exPath, strings.Repeat("a", 40)); err == nil {
-			t.Errorf("%s: target accepted although the integration is not available", tc.name)
-		}
+	// GitOps hooks are not implemented in this build and must be refused
+	// before any run record exists.
+	opCfg := operator.Config{Targets: map[string]operator.Target{
+		"gpu": {GitOps: &operator.GitOps{}},
+	}}
+	if _, _, err := prepareRun(g, opCfg, exPath, strings.Repeat("a", 40)); err == nil {
+		t.Error("gitops target accepted although the integration is not available")
+	}
+
+	// Sandbox hooks ARE implemented here; the requirement is the full commit.
+	sandboxCfg := operator.Config{Targets: map[string]operator.Target{
+		"gpu": {Sandbox: &operator.Sandbox{Namespace: "bench", WarmPool: "pool"}},
+	}}
+	if _, _, err := prepareRun(g, sandboxCfg, exPath, ""); err == nil {
+		t.Error("sandbox target accepted without an input commit")
+	}
+	if _, _, err := prepareRun(g, sandboxCfg, exPath, strings.Repeat("a", 40)); err != nil {
+		t.Errorf("sandbox target with a full commit rejected: %v", err)
 	}
 }
 
@@ -154,7 +162,7 @@ func TestAPIServiceDeniesLocalWithoutToken(t *testing.T) {
 	opCfg := operator.Config{Targets: map[string]operator.Target{
 		"local": {Hooks: []operator.CommandHook{}, AllowHTTPLocal: true},
 	}}
-	engine := buildEngine(g, opCfg, time.Second)
+	engine := buildEngine(g, opCfg, time.Second, newSandboxClients(g))
 
 	// allow_http_local alone is not enough: the API must be authenticated.
 	svc := &apiService{g: g, opCfg: opCfg, engine: engine, store: mustFileStore(g), authenticated: false}
@@ -267,4 +275,62 @@ func TestSubmitErrorClassification(t *testing.T) {
 func isBadRequest(err error) bool {
 	var bad *httpapi.BadRequestError
 	return errors.As(err, &bad)
+}
+
+func TestSandboxClientsAreCachedAndNamespaceKeyed(t *testing.T) {
+	g := &globalFlags{kubeconfig: "/tmp/kubeconfig"}
+	clients := newSandboxClients(g)
+	first := clients.client("bench")
+	if first == nil {
+		t.Fatal("sandbox client missing")
+	}
+	if clients.client("bench") != first {
+		t.Error("client must be cached per namespace")
+	}
+	if clients.client("other") == first {
+		t.Error("different namespaces must not share a client")
+	}
+}
+
+func TestExecutorRoutingUsesFrozenPlan(t *testing.T) {
+	g := &globalFlags{root: "/repo", state: t.TempDir(), output: t.TempDir()}
+	cfg := operator.Config{Targets: map[string]operator.Target{
+		// The target disappeared from the configuration, but the run's frozen
+		// plan still says sandbox: local fallback must be refused.
+	}}
+	router := executorRouter{g: g, cfg: cfg, sandboxClients: newSandboxClients(g)}
+	rec := run.Run{
+		ID: "r1", Target: "gpu",
+		HookPlan: []operator.PlannedHook{{
+			Kind:    operator.KindSandboxClaim,
+			Name:    "sandbox-claim",
+			Sandbox: &operator.SandboxPlan{Namespace: "bench", WarmPool: "pool", SandboxClaimName: "llmbench-r1"},
+		}},
+	}
+	// The sandbox path must be taken (and fail at the client, not silently
+	// execute locally).
+	_, err := router.Execute(context.Background(), rec)
+	if err == nil {
+		t.Fatal("expected an error from the sandbox path")
+	}
+	if !strings.Contains(err.Error(), "no longer configured") {
+		t.Fatalf("missing target must fail closed, got %v", err)
+	}
+	if strings.Contains(err.Error(), "locally") {
+		t.Fatalf("sandbox run fell back to the local executor: %v", err)
+	}
+
+	// A target that became local must not execute the sandbox run either.
+	localCfg := operator.Config{Targets: map[string]operator.Target{
+		"gpu": {Hooks: []operator.CommandHook{}, AllowHTTPLocal: true},
+	}}
+	router = executorRouter{g: g, cfg: localCfg, sandboxClients: newSandboxClients(g)}
+	if _, err := router.Execute(context.Background(), rec); err == nil || !strings.Contains(err.Error(), "local target") {
+		t.Fatalf("sandbox run on a now-local target must fail closed, got %v", err)
+	}
+
+	// A local run needs its target in the configuration.
+	if _, err := router.Execute(context.Background(), run.Run{ID: "r2", Target: "gone"}); err == nil {
+		t.Fatal("unknown local target must be refused")
+	}
 }

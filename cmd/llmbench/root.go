@@ -34,6 +34,7 @@ func newRootCmd() *cobra.Command {
 		newStatusCmd(&g),
 		newServeCmd(&g),
 		newSandboxCmd(&g),
+		newReviewCmd(&g),
 	)
 	return cmd
 }

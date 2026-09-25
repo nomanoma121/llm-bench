@@ -21,6 +21,7 @@ import (
 	"github.com/nomanoma121/llm-bench/internal/httpapi"
 	"github.com/nomanoma121/llm-bench/internal/kube"
 	"github.com/nomanoma121/llm-bench/internal/operator"
+	"github.com/nomanoma121/llm-bench/internal/pages"
 	"github.com/nomanoma121/llm-bench/internal/provenance"
 	"github.com/nomanoma121/llm-bench/internal/run"
 	"github.com/nomanoma121/llm-bench/internal/runner"
@@ -199,13 +200,24 @@ func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration,
 	gitopsFor func(target string) GitOpsHookDeps,
 ) *run.Engine {
 	store := mustFileStore(g)
+
+	// Publication (site) wiring: only when the operator configured a site.
+	var finalizer run.Finalizer
+	if cfg.Site != nil {
+		publisher, err := pages.New(cfg.Site.Owner, cfg.Site.Repository, cfg.Site.Branch, cfg.Site.BaseURL, cfg.Site.ExtraFiles)
+		if err != nil {
+			panic(fmt.Errorf("wire: pages publisher: %w", err)) // 設定不備は起動時にも分かる
+		}
+		finalizer = &runner.PublishFinalizer{Publisher: publisher}
+	}
+
 	return &run.Engine{
 		Store:     store,
 		Leases:    store,
 		Snapshots: store,
 		Hooks:     &planHookSource{dir: g.root, sandboxFor: sandboxFor, gitopsFor: gitopsFor},
 		Executor:  executorRouter{g: g, cfg: cfg, sandboxFor: sandboxFor},
-		Finalizer: nil, // publication arrives with the review change; nil short-circuits finalizing
+		Finalizer: finalizer,
 		Log:       controllerLogger(),
 		Interval:  interval,
 		MaxExecutionDuration: func(target string) time.Duration {

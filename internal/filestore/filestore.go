@@ -222,6 +222,9 @@ func (s *Store) WriteInputs(_ context.Context, runID string, files map[string][]
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return err
 	}
+	// The <runID> directory entry itself must be durable before the run
+	// record references it, so sync the parent that holds it.
+	syncDir(filepath.Dir(base))
 	tmp, err := os.MkdirTemp(filepath.Dir(base), "."+runID+".tmp")
 	if err != nil {
 		return err

@@ -8,11 +8,12 @@ import (
 
 func osExit(code int) { os.Exit(code) }
 
-// globalFlags are the persistent paths shared by all commands.
+// globalFlags are the persistent settings shared by all commands.
 type globalFlags struct {
-	root   string // repository root (experiments/, models/, benchmarks/)
-	state  string // controller state directory (run records, leases)
-	output string // artifact root; artifacts live under <output>/runs/<run-id>
+	root       string // repository root (experiments/, models/, benchmarks/)
+	state      string // controller state directory (run records, leases)
+	output     string // artifact root; artifacts live under <output>/runs/<run-id>
+	kubeconfig string // optional kubeconfig for cluster integrations
 }
 
 func newRootCmd() *cobra.Command {
@@ -26,11 +27,13 @@ func newRootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&g.root, "root", ".", "repository root")
 	cmd.PersistentFlags().StringVar(&g.state, "state", ".state", "controller state directory")
 	cmd.PersistentFlags().StringVar(&g.output, "output", "runs", "artifact output root")
+	cmd.PersistentFlags().StringVar(&g.kubeconfig, "kubeconfig", "", "kubeconfig path for cluster integrations (defaults to in-cluster, then ~/.kube/config)")
 	cmd.AddCommand(
 		newValidateCmd(&g),
 		newSubmitCmd(&g),
 		newStatusCmd(&g),
 		newServeCmd(&g),
+		newSandboxCmd(&g),
 	)
 	return cmd
 }

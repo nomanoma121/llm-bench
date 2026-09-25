@@ -132,11 +132,20 @@ func (h *PauseRestore) Release(ctx context.Context) error {
 	}
 	// Rollback: the pause PR never merged, nothing to restore — close it and
 	// drop the branch so the next run starts from a clean slate.
-	if pauseState == "open" && value == p.ActiveValue {
-		if err := h.GH.ClosePR(ctx, p.PauseBranch); err != nil {
-			return err
+	if value == p.ActiveValue {
+		switch pauseState {
+		case "open":
+			if err := h.GH.ClosePR(ctx, p.PauseBranch); err != nil {
+				return err
+			}
+			return h.GH.DeleteBranch(ctx, p.PauseBranch)
+		case "closed":
+			// A previous rollback closed the PR but may have failed to delete
+			// the branch; deleting is idempotent, so retry it.
+			if err := h.GH.DeleteBranch(ctx, p.PauseBranch); err != nil {
+				return err
+			}
 		}
-		return h.GH.DeleteBranch(ctx, p.PauseBranch)
 	}
 
 	restoreState, err := h.GH.PRState(ctx, p.RestoreBranch)
@@ -160,8 +169,21 @@ func (h *PauseRestore) Release(ctx context.Context) error {
 		case "closed":
 			return fmt.Errorf("gitops: restore PR %s was closed without merge; manual intervention required", p.RestoreBranch)
 		case "merged":
-			// Drift: our restore merged but the manifest still shows paused.
-			return fmt.Errorf("gitops: drift: restore PR %s is merged but %s is still %q", p.RestoreBranch, p.YAMLPathString(), value)
+			// The merge may be reflected in a newer base revision than the
+			// one we read; re-read before declaring drift (symmetric with
+			// Acquire).
+			again, _, _, err := h.snapshot(ctx)
+			if err != nil {
+				return err
+			}
+			switch again {
+			case p.ActiveValue:
+				return ErrNotConverged // the merge landed; the next tick converges
+			case p.PausedValue:
+				return fmt.Errorf("gitops: drift: restore PR %s is merged but %s is still %q", p.RestoreBranch, p.YAMLPathString(), value)
+			default:
+				return fmt.Errorf("gitops: unexpected value %q at %s; refusing to continue", again, p.YAMLPathString())
+			}
 		default:
 			return ErrNotConverged
 		}

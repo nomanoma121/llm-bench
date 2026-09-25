@@ -337,3 +337,46 @@ func TestOpenPausePRRefusesUnexpectedValue(t *testing.T) {
 		t.Fatal("no PR may be opened for an unexpected value")
 	}
 }
+
+func TestReleaseReReadsBeforeDeclaringRestoreDrift(t *testing.T) {
+	// The restore merge is observed while the pinned revision still shows
+	// paused; the re-read sees the active value and stays pending.
+	gh := newFakeGH(`replicaCount: "0"`)
+	gh.prs["llmbench/pause-abc"] = "merged"
+	gh.prs["llmbench/restore-abc"] = "merged"
+	count := 0
+	gh.onFileAt = func() {
+		count++
+		if count == 2 { // the re-read
+			gh.files["main"]["apps/inference/values.yaml"] = `replicaCount: "1"`
+		}
+	}
+	h := hookOn(gh, &fakeKube{synced: true, stopped: true, ready: false})
+	if err := h.Release(context.Background()); !errors.Is(err, ErrNotConverged) {
+		t.Fatalf("want pending after the restore merge lands, got %v", err)
+	}
+}
+
+func TestScalarRejectsNonStringTypes(t *testing.T) {
+	// A numeric scalar must be refused, not silently rewritten as a string.
+	doc := []byte("replicaCount: 1\n")
+	if _, err := GetYAMLScalar(doc, []string{"replicaCount"}); err == nil || !strings.Contains(err.Error(), "string scalar") {
+		t.Fatalf("numeric scalar accepted: %v", err)
+	}
+	// Quoted values are the supported form and keep their type on write.
+	quoted := []byte("replicaCount: \"1\"\n")
+	v, err := GetYAMLScalar(quoted, []string{"replicaCount"})
+	if err != nil || v != "1" {
+		t.Fatalf("quoted scalar: %q err=%v", v, err)
+	}
+	updated, err := SetYAMLScalar(quoted, []string{"replicaCount"}, "0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(updated), `replicaCount: "0"`) {
+		t.Fatalf("string type lost on write:\n%s", updated)
+	}
+	if _, err := GetYAMLScalar([]byte("replicas: true\n"), []string{"replicas"}); err == nil {
+		t.Fatal("boolean scalar accepted")
+	}
+}

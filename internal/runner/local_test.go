@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -86,7 +87,7 @@ func TestLocalExecuteWritesIndexAndHashes(t *testing.T) {
 		"LLMBENCH_RUN_ID=r1",
 		"LLMBENCH_CONTEXT_SIZE=4096",
 		"LLMBENCH_MODEL_ID=example-model",
-		"LLMBENCH_PROMPT_PATH=" + filepath.Join(inputDir, "benchmarks/visual/prompt.md"),
+		"LLMBENCH_PROMPT_PATH=" + filepath.Join(dir, "input", "prompt.md"),
 	} {
 		if !strings.Contains(e, want) {
 			t.Errorf("env missing %q:\n%s", want, e)
@@ -126,5 +127,38 @@ func TestLocalExecuteRequiresRecipeSnapshot(t *testing.T) {
 	r := artifactRun(dir, "not-json")
 	if _, err := l.Execute(context.Background(), r); err == nil {
 		t.Fatal("expected recipe decode failure")
+	}
+}
+
+func TestLocalExecuteAbsolutizesRelativeDirs(t *testing.T) {
+	tmp := t.TempDir()
+	t.Chdir(tmp)
+	input := filepath.Join("reldir", "input")
+	if err := os.MkdirAll(input, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(input, "prompt.md"), []byte("p"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l := NewLocal(".") // relative models root
+	r := artifactRun("reldir", recipe(t, []string{"/bin/sh", "-c",
+		`printf 'x' > "$LLMBENCH_OUTPUT_DIR/index.html"; pwd > "$LLMBENCH_OUTPUT_DIR/pwd.txt"; echo "$LLMBENCH_PROMPT_PATH" > "$LLMBENCH_OUTPUT_DIR/pp.txt"`}))
+	artifacts, err := l.Execute(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(artifacts.Dir) {
+		t.Fatalf("artifact dir not absolute: %q", artifacts.Dir)
+	}
+	pwd, _ := os.ReadFile(filepath.Join(tmp, "reldir", "output", "pwd.txt"))
+	if got := strings.TrimSpace(string(pwd)); !filepath.IsAbs(got) {
+		t.Fatalf("child did not run under the absolute artifact dir: %q", got)
+	}
+	pp, _ := os.ReadFile(filepath.Join(tmp, "reldir", "output", "pp.txt"))
+	if got := strings.TrimSpace(string(pp)); !filepath.IsAbs(got) {
+		t.Fatalf("prompt path not absolute: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "reldir", "reldir")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("artifact dir was doubled inside the child")
 	}
 }

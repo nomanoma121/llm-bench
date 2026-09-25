@@ -15,12 +15,30 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/nomanoma121/llm-bench/internal/run"
 )
 
+// writeTemp writes b to a temp file next to target and returns its path.
+func writeTemp(target string, b []byte) (string, error) {
+	dir := filepath.Dir(target)
+	var rnd [8]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return "", err
+	}
+	tmp := filepath.Join(dir, fmt.Sprintf(".%s.tmp-%s", filepath.Base(target), hex.EncodeToString(rnd[:])))
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return "", err
+	}
+	return tmp, nil
+}
+
 // Store persists run records, target leases and recipe input snapshots.
+// It serves a single controller process; a mutex makes the read-compare-write
+// sequences (the save CAS and lease transitions) atomic within the process.
 type Store struct {
+	mu         sync.Mutex
 	stateDir   string // run records and leases
 	outputRoot string // <output>/runs: per-run artifact and input directories
 }
@@ -51,6 +69,8 @@ func (s *Store) leasePath(target string) string {
 // Versions are opaque strings containing a per-run monotonically increasing
 // counter.
 func (s *Store) SaveRun(_ context.Context, r *run.Run) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	path := s.runPath(r.ID)
 	next := 1
 	if b, err := os.ReadFile(path); err == nil {
@@ -71,14 +91,18 @@ func (s *Store) SaveRun(_ context.Context, r *run.Run) error {
 	} else if r.StoreVersion != "" {
 		return fmt.Errorf("filestore: %w: run %s does not exist", run.ErrVersionConflict, r.ID)
 	}
-	r.StoreVersion = strconv.Itoa(next)
-	b, err := json.MarshalIndent(r, "", "  ")
+	// The caller's version is only advanced after the write succeeded:
+	// a failed write must not make the caller conflict with itself.
+	nextRun := *r
+	nextRun.StoreVersion = strconv.Itoa(next)
+	b, err := json.MarshalIndent(&nextRun, "", "  ")
 	if err != nil {
 		return fmt.Errorf("filestore: encode: %w", err)
 	}
 	if err := writeAtomic(path, b); err != nil {
 		return fmt.Errorf("filestore: write %s: %w", path, err)
 	}
+	r.StoreVersion = nextRun.StoreVersion
 	return nil
 }
 
@@ -124,32 +148,59 @@ func (s *Store) ListUnfinished(_ context.Context) ([]run.Run, error) {
 	return out, nil
 }
 
-// AcquireTargetLease implements run.LeaseStore with O_EXCL semantics.
+// AcquireTargetLease implements run.LeaseStore. The owner is written to a
+// temp file first and then hard-linked into place: link(2) creates the name
+// only if it does not exist, so the lease either appears complete (with its
+// owner recorded) or not at all. A crash can therefore never leave an empty
+// lease behind.
 func (s *Store) AcquireTargetLease(_ context.Context, target, runID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	path := s.leasePath(target)
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err == nil {
-		defer f.Close()
-		if _, err := f.WriteString(runID); err != nil {
-			return fmt.Errorf("filestore: lease write: %w", err)
+	if b, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(b))) == 0 {
+		// Legacy artifact of the previous O_EXCL implementation: an empty
+		// lease can never be produced by this version, so reclaim it.
+		_ = os.Remove(path)
+	}
+	tmp, err := writeTemp(path, []byte(runID))
+	if err != nil {
+		return fmt.Errorf("filestore: lease temp: %w", err)
+	}
+	err = os.Link(tmp, path)
+	removed := false
+	defer func() {
+		if !removed {
+			_ = os.Remove(tmp)
 		}
+	}()
+	if err == nil {
+		removed = true
 		return nil
 	}
 	if !errors.Is(err, os.ErrExist) {
-		return fmt.Errorf("filestore: lease create: %w", err)
+		return fmt.Errorf("filestore: lease link: %w", err)
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("filestore: lease read: %w", err)
 	}
+	if len(strings.TrimSpace(string(b))) == 0 {
+		// Stale empty lease from the legacy implementation: reclaim it.
+		_ = os.Remove(path)
+		return s.AcquireTargetLease(context.Background(), target, runID)
+	}
 	if string(b) != runID {
 		return fmt.Errorf("filestore: %w: target %s is held by another run", run.ErrLeaseBusy, target)
 	}
+	removed = true
+	_ = os.Remove(tmp)
 	return nil // already ours: idempotent
 }
 
 // ReleaseTargetLease implements run.LeaseStore. NotFound is success.
 func (s *Store) ReleaseTargetLease(_ context.Context, target, runID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	path := s.leasePath(target)
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {

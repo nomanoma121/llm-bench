@@ -15,6 +15,11 @@ import (
 // external effects: stores, leases, hooks, execution and publication are
 // injected.
 type Engine struct {
+	// inFlight is an engine-wide registry of running workers. It prevents
+	// duplicate workers for one run across Run, Drain and Drive.
+	mu       sync.Mutex
+	inFlight map[string]bool
+
 	Store     RunStore
 	Leases    LeaseStore
 	Hooks     HookSource
@@ -49,8 +54,11 @@ func (e *Engine) Submit(ctx context.Context, r Run, inputs map[string][]byte) (R
 	r.LeaseState = LeaseAcquiring // write-ahead: the worker performs the acquire
 	r.CreatedAt = now
 	r.UpdatedAt = now
-	if r.Hooks == nil {
-		r.Hooks = []HookState{}
+	// The hook states are derived from the frozen plan; caller-supplied
+	// values are ignored so a buggy submit can never skip hooks.
+	r.Hooks = make([]HookState, len(r.HookPlan))
+	for i, p := range r.HookPlan {
+		r.Hooks[i] = HookState{Name: p.Name, Phase: HookNotStarted}
 	}
 	if r.HookPlan == nil {
 		r.HookPlan = []operator.PlannedHook{}
@@ -59,6 +67,8 @@ func (e *Engine) Submit(ctx context.Context, r Run, inputs map[string][]byte) (R
 		if err := e.Snapshots.WriteInputs(ctx, r.ID, inputs); err != nil {
 			return Run{}, fmt.Errorf("run: write inputs: %w", err)
 		}
+	} else if len(inputs) > 0 {
+		return Run{}, errors.New("run: engine has no snapshot store but inputs were provided")
 	}
 	if err := e.Store.SaveRun(ctx, &r); err != nil {
 		return Run{}, fmt.Errorf("run: save: %w", err)
@@ -71,9 +81,6 @@ func (e *Engine) Submit(ctx context.Context, r Run, inputs map[string][]byte) (R
 // therefore proceed concurrently; runs on the same target serialize on the
 // TargetLease.
 func (e *Engine) Run(ctx context.Context) error {
-	var mu sync.Mutex
-	inFlight := map[string]bool{}
-
 	scan := func() {
 		runs, err := e.Store.ListUnfinished(ctx)
 		if err != nil {
@@ -81,19 +88,11 @@ func (e *Engine) Run(ctx context.Context) error {
 			return
 		}
 		for _, r := range runs {
-			mu.Lock()
-			if inFlight[r.ID] {
-				mu.Unlock()
+			if !e.register(r.ID) {
 				continue
 			}
-			inFlight[r.ID] = true
-			mu.Unlock()
 			go func(id string) {
-				defer func() {
-					mu.Lock()
-					delete(inFlight, id)
-					mu.Unlock()
-				}()
+				defer e.unregister(id)
 				e.Drive(ctx, id)
 			}(r.ID)
 		}
@@ -112,28 +111,56 @@ func (e *Engine) Run(ctx context.Context) error {
 	}
 }
 
+// register marks a run as being driven; it reports false when a worker for
+// the run already exists. The registry spans Run, Drain and Drive.
+func (e *Engine) register(runID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.inFlight == nil {
+		e.inFlight = map[string]bool{}
+	}
+	if e.inFlight[runID] {
+		return false
+	}
+	e.inFlight[runID] = true
+	return true
+}
+
+func (e *Engine) unregister(runID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.inFlight, runID)
+}
+
 // Drain drives a single run synchronously until it reaches a terminal phase.
 // It is the submit-CLI path.
 func (e *Engine) Drain(ctx context.Context, runID string) error {
-	for {
-		terminal, wait, err := e.step(ctx, runID)
-		if err != nil {
-			return err
-		}
-		if terminal {
-			return nil
-		}
-		if wait {
-			if err := sleep(ctx, e.interval()); err != nil {
-				return err
-			}
-		}
+	if !e.register(runID) {
+		return fmt.Errorf("run: %s is already being driven", runID)
 	}
+	defer e.unregister(runID)
+	e.drive(ctx, runID)
+	r, err := e.Store.LoadRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if !r.Phase.Terminal() {
+		return fmt.Errorf("run: %s ended in phase %s", runID, r.Phase)
+	}
+	return nil
 }
 
 // Drive is the worker loop for the dispatcher. It returns when the run is
 // terminal or ctx is cancelled.
 func (e *Engine) Drive(ctx context.Context, runID string) {
+	if !e.register(runID) {
+		return
+	}
+	defer e.unregister(runID)
+	e.drive(ctx, runID)
+}
+
+func (e *Engine) drive(ctx context.Context, runID string) {
 	for {
 		terminal, wait, err := e.step(ctx, runID)
 		if err != nil {

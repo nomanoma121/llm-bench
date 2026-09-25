@@ -730,3 +730,49 @@ func TestSameTargetSerializesOnLease(t *testing.T) {
 		t.Fatalf("r2 phase = %s", r2done.Phase)
 	}
 }
+
+type fakeSnapshots struct {
+	files map[string]map[string][]byte
+}
+
+func (s *fakeSnapshots) WriteInputs(_ context.Context, runID string, files map[string][]byte) error {
+	s.files[runID] = files
+	return nil
+}
+
+func (s *fakeSnapshots) RemoveInputs(_ context.Context, runID string) error {
+	delete(s.files, runID)
+	return nil
+}
+
+func TestSubmitDerivesHookStatesFromPlan(t *testing.T) {
+	f := newFixture(t, "a", "b")
+	snap := &fakeSnapshots{files: map[string]map[string][]byte{}}
+	f.engine.Snapshots = snap
+	r := f.newRun("r1")
+	// A buggy caller must not be able to inject hook states.
+	r.Hooks = []HookState{}
+	if _, err := f.engine.Submit(context.Background(), r, map[string][]byte{"prompt.md": []byte("p")}); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := f.store.LoadRun(context.Background(), "r1")
+	if len(stored.Hooks) != 2 {
+		t.Fatalf("hooks = %+v", stored.Hooks)
+	}
+	for _, h := range stored.Hooks {
+		if h.Phase != HookNotStarted {
+			t.Fatalf("hook %q phase = %s", h.Name, h.Phase)
+		}
+	}
+	if snap.files["r1"]["prompt.md"] == nil {
+		t.Fatal("inputs not written")
+	}
+}
+
+func TestSubmitRejectInputsWithoutSnapshotStore(t *testing.T) {
+	f := newFixture(t, "a")
+	f.engine.Snapshots = nil
+	if _, err := f.engine.Submit(context.Background(), f.newRun("r1"), map[string][]byte{"p": []byte("x")}); err == nil {
+		t.Fatal("expected error for inputs without a snapshot store")
+	}
+}

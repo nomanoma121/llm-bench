@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nomanoma121/llm-bench/internal/run"
@@ -148,5 +149,34 @@ func TestWriteInputsAtomic(t *testing.T) {
 	}
 	if err := s.RemoveInputs(context.Background(), "r1"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAcquireReclaimsLegacyEmptyLease(t *testing.T) {
+	s := newTestStore(t)
+	legacy := filepath.Join(s.stateDir, "leases", "gpu.json")
+	if err := os.WriteFile(legacy, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AcquireTargetLease(context.Background(), "gpu", "r1"); err != nil {
+		t.Fatalf("empty lease must be reclaimed: %v", err)
+	}
+	b, err := os.ReadFile(legacy)
+	if err != nil || string(b) != "r1" {
+		t.Fatalf("lease content = %q err=%v", b, err)
+	}
+}
+
+func TestLeaseFileIsNeverEmptyWhileHeld(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.AcquireTargetLease(context.Background(), "gpu", "r1"); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(s.stateDir, "leases", "gpu.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(strings.TrimSpace(string(b))) == 0 {
+		t.Fatal("held lease must record its owner")
 	}
 }

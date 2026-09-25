@@ -1,0 +1,732 @@
+package run
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/go-logr/logr"
+	"github.com/nomanoma121/llm-bench/internal/operator"
+)
+
+// ---------- fakes ----------
+
+type fakeStore struct {
+	mu        sync.Mutex
+	runs      map[string]Run
+	conflicts map[string]int // remaining forced conflicts per run id
+	counter   int
+}
+
+func newFakeStore() *fakeStore {
+	return &fakeStore{runs: map[string]Run{}, conflicts: map[string]int{}}
+}
+
+func (s *fakeStore) SaveRun(_ context.Context, r *Run) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if n := s.conflicts[r.ID]; n > 0 {
+		s.conflicts[r.ID] = n - 1
+		return ErrVersionConflict
+	}
+	if stored, ok := s.runs[r.ID]; ok && stored.StoreVersion != r.StoreVersion {
+		return ErrVersionConflict
+	}
+	s.counter++
+	r.StoreVersion = fmt.Sprintf("v%d", s.counter)
+	s.runs[r.ID] = *r
+	return nil
+}
+
+func (s *fakeStore) LoadRun(_ context.Context, id string) (Run, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.runs[id]
+	if !ok {
+		return Run{}, ErrNotFound
+	}
+	return r, nil
+}
+
+func (s *fakeStore) ListUnfinished(_ context.Context) ([]Run, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []Run
+	for _, r := range s.runs {
+		if !r.Phase.Terminal() {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+type fakeLeases struct {
+	mu          sync.Mutex
+	owners      map[string]string // target -> runID
+	acquireErrs map[string]error  // per-run injected error (one shot)
+	releaseErrs map[string]error  // per-run injected error (one shot)
+}
+
+func newFakeLeases() *fakeLeases {
+	return &fakeLeases{
+		owners:      map[string]string{},
+		acquireErrs: map[string]error{},
+		releaseErrs: map[string]error{},
+	}
+}
+
+func (l *fakeLeases) AcquireTargetLease(_ context.Context, target, runID string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err := l.acquireErrs[runID]; err != nil {
+		delete(l.acquireErrs, runID)
+		return err
+	}
+	owner, ok := l.owners[target]
+	if !ok {
+		l.owners[target] = runID
+		return nil
+	}
+	if owner == runID {
+		return nil
+	}
+	return ErrLeaseBusy
+}
+
+func (l *fakeLeases) ReleaseTargetLease(_ context.Context, target, runID string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err := l.releaseErrs[runID]; err != nil {
+		delete(l.releaseErrs, runID)
+		return err
+	}
+	owner, ok := l.owners[target]
+	if !ok {
+		return nil // NotFound = success
+	}
+	if owner != runID {
+		return ErrLeaseBusy
+	}
+	delete(l.owners, target)
+	return nil
+}
+
+// releaseAs forcibly frees a lease (test helper simulating the other run).
+func (l *fakeLeases) releaseAs(target, runID string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.owners[target] == runID {
+		delete(l.owners, target)
+	}
+}
+
+type fakeHook struct {
+	name        string
+	acquireErrs []error
+	releaseErrs []error
+	log         *eventLog
+}
+
+func (h *fakeHook) Name() string { return h.name }
+
+func (h *fakeHook) popErr(errs *[]error) error {
+	if len(*errs) == 0 {
+		return nil
+	}
+	err := (*errs)[0]
+	*errs = (*errs)[1:]
+	return err
+}
+
+func (h *fakeHook) Acquire(_ context.Context) error {
+	h.log.add("hook:" + h.name + ":acquire")
+	return h.popErr(&h.acquireErrs)
+}
+
+func (h *fakeHook) Release(_ context.Context) error {
+	h.log.add("hook:" + h.name + ":release")
+	return h.popErr(&h.releaseErrs)
+}
+
+type fakeHooks struct {
+	mu     sync.Mutex
+	hooks  map[string]Hook // by plan name
+	events *eventLog
+}
+
+func (f *fakeHooks) HooksFor(r Run) ([]Hook, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	digest, err := operator.PlanDigest(r.HookPlan)
+	if err != nil {
+		return nil, err
+	}
+	if digest != r.HookPlanDigest {
+		return nil, fmt.Errorf("hook plan digest mismatch")
+	}
+	out := make([]Hook, 0, len(r.HookPlan))
+	for _, p := range r.HookPlan {
+		h, ok := f.hooks[p.Name]
+		if !ok {
+			return nil, fmt.Errorf("no implementation for hook %q", p.Name)
+		}
+		out = append(out, h)
+	}
+	return out, nil
+}
+
+type eventLog struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (l *eventLog) add(e string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.events = append(l.events, e)
+}
+
+func (l *eventLog) all() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.events...)
+}
+
+type fakeExecutor struct {
+	mu        sync.Mutex
+	calls     int
+	artifacts Artifacts
+	err       error
+}
+
+func (f *fakeExecutor) Execute(_ context.Context, _ Run) (Artifacts, error) {
+	f.mu.Lock()
+	f.calls++
+	f.mu.Unlock()
+	return f.artifacts, f.err
+}
+
+func (f *fakeExecutor) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+type fakeFinalizer struct {
+	mu    sync.Mutex
+	calls int
+	err   error
+}
+
+func (f *fakeFinalizer) Finalize(_ context.Context, _ Run, _ Artifacts) (FinalizeResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.err != nil {
+		err := f.err
+		f.err = nil // succeed on retry
+		return FinalizeResult{}, err
+	}
+	return FinalizeResult{PublicURL: "https://example.invalid/runs/x"}, nil
+}
+
+func (f *fakeFinalizer) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+// ---------- helpers ----------
+
+const testTarget = "gpu"
+
+type fixture struct {
+	store  *fakeStore
+	leases *fakeLeases
+	hooks  *fakeHooks
+	events *eventLog
+	exec   *fakeExecutor
+	fin    *fakeFinalizer
+	engine *Engine
+	plan   []operator.PlannedHook
+	digest string
+}
+
+func newFixture(t *testing.T, hookNames ...string) *fixture {
+	t.Helper()
+	f := &fixture{
+		store:  newFakeStore(),
+		leases: newFakeLeases(),
+		events: &eventLog{},
+		exec:   &fakeExecutor{artifacts: Artifacts{Dir: "/tmp/artifacts", IndexSHA256: "abc"}},
+		fin:    &fakeFinalizer{},
+	}
+	f.hooks = &fakeHooks{hooks: map[string]Hook{}, events: f.events}
+	for _, name := range hookNames {
+		f.hooks.hooks[name] = &fakeHook{name: name, log: f.events}
+	}
+	f.plan = buildPlan(hookNames)
+	digest, err := PlanDigestOf(f.plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.digest = digest
+	f.engine = &Engine{
+		Store:     f.store,
+		Leases:    f.leases,
+		Hooks:     f.hooks,
+		Executor:  f.exec,
+		Finalizer: f.fin,
+		Log:       discardLogger(),
+		Clock:     time.Now,
+		Interval:  time.Millisecond,
+	}
+	return f
+}
+
+func buildPlan(names []string) []operator.PlannedHook {
+	plan := make([]operator.PlannedHook, 0, len(names))
+	for _, n := range names {
+		plan = append(plan, operator.PlannedHook{
+			PlanVersion: operator.PlanVersion,
+			Kind:        operator.KindCommand,
+			Name:        n,
+			Command:     []string{"acquire", n},
+			Release:     []string{"release", n},
+		})
+	}
+	return plan
+}
+
+// PlanDigestOf re-exports the operator digest computation for tests.
+func PlanDigestOf(plan []operator.PlannedHook) (string, error) { return operator.PlanDigest(plan) }
+
+func discardLogger() logr.Logger { return logr.Discard() }
+
+func (f *fixture) newRun(id string) Run {
+	now := time.Now()
+	r := Run{
+		ID:                  id,
+		Target:              testTarget,
+		Experiment:          "experiments/m/e/config.yaml",
+		RecipeJSON:          "{}",
+		RecipeSchemaVersion: 1,
+		PromptSHA256:        "deadbeef",
+		HookPlan:            f.plan,
+		HookPlanDigest:      f.digest,
+		Phase:               PhasePending,
+		ExecutionResult:     ResultNone,
+		ExecutionState:      ExecNotStarted,
+		LeaseState:          LeaseAcquiring,
+		CreatedAt:           now,
+		UpdatedAt:           now,
+	}
+	for _, p := range f.plan {
+		r.Hooks = append(r.Hooks, HookState{Name: p.Name, Phase: HookNotStarted})
+	}
+	return r
+}
+
+// ---------- tests ----------
+
+func TestHappyPathOrdering(t *testing.T) {
+	f := newFixture(t, "a", "b", "c")
+	if _, err := f.engine.Submit(context.Background(), f.newRun("r1"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.engine.Drain(context.Background(), "r1"); err != nil {
+		t.Fatal(err)
+	}
+	r, err := f.store.LoadRun(context.Background(), "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Phase != PhaseSucceeded {
+		t.Fatalf("phase = %s, want succeeded (wait=%q hooks=%+v)", r.Phase, r.WaitReason, r.Hooks)
+	}
+	want := []string{
+		"hook:a:acquire", "hook:b:acquire", "hook:c:acquire",
+		"hook:c:release", "hook:b:release", "hook:a:release",
+	}
+	got := f.events.all()
+	if len(got) != len(want) {
+		t.Fatalf("events = %v", got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Fatalf("event %d = %s, want %s (all=%v)", i, got[i], w, got)
+		}
+	}
+	if f.fin.callCount() != 1 {
+		t.Fatalf("finalizer calls = %d, want 1", f.fin.callCount())
+	}
+	if r.PublicURL == "" {
+		t.Fatal("public url not set")
+	}
+}
+
+func TestHookPendingThenProceeds(t *testing.T) {
+	f := newFixture(t, "a", "b")
+	b := f.hooks.hooks["b"].(*fakeHook)
+	b.acquireErrs = []error{ErrPending, nil}
+	if _, err := f.engine.Submit(context.Background(), f.newRun("r1"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.engine.Drain(context.Background(), "r1"); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := f.store.LoadRun(context.Background(), "r1")
+	if r.Phase != PhaseSucceeded {
+		t.Fatalf("phase = %s", r.Phase)
+	}
+	if b.acquireErrs != nil && len(b.acquireErrs) != 0 {
+		t.Fatal("pending error not consumed")
+	}
+	if r.WaitReason != "" {
+		t.Fatalf("wait reason not cleared: %q", r.WaitReason)
+	}
+}
+
+func TestAcquireFailureMergesIntoReleasing(t *testing.T) {
+	f := newFixture(t, "a", "b", "c")
+	b := f.hooks.hooks["b"].(*fakeHook)
+	b.acquireErrs = []error{errors.New("github api 500")}
+	if _, err := f.engine.Submit(context.Background(), f.newRun("r1"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.engine.Drain(context.Background(), "r1"); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := f.store.LoadRun(context.Background(), "r1")
+	if r.Phase != PhaseFailed {
+		t.Fatalf("phase = %s, want failed", r.Phase)
+	}
+	if r.ExecutionResult != ResultFailure {
+		t.Fatalf("result = %s", r.ExecutionResult)
+	}
+	if f.exec.callCount() != 0 {
+		t.Fatal("executor must not run after acquire failure")
+	}
+	// b was acquiring → released; a was acquired → released; c never started.
+	if got := f.events.all(); fmt.Sprint(got) != "[hook:a:acquire hook:b:acquire hook:b:release hook:a:release]" {
+		// c never started, so it must never be released.
+		t.Fatalf("events = %v", got)
+	}
+	// The target lease must be released even though the run failed.
+	if err := f.leases.AcquireTargetLease(context.Background(), testTarget, "next"); err != nil {
+		t.Fatalf("lease not released: %v", err)
+	}
+}
+
+func TestExecuteFailureSkipsFinalizing(t *testing.T) {
+	f := newFixture(t, "a")
+	f.exec.err = errors.New("invoke failed")
+	if _, err := f.engine.Submit(context.Background(), f.newRun("r1"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.engine.Drain(context.Background(), "r1"); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := f.store.LoadRun(context.Background(), "r1")
+	if r.Phase != PhaseFailed {
+		t.Fatalf("phase = %s, want failed", r.Phase)
+	}
+	if f.fin.callCount() != 0 {
+		t.Fatalf("finalizer must not run for failed executions, got %d calls", f.fin.callCount())
+	}
+	if r.ExecutionState != ExecCompleted {
+		t.Fatalf("execution state = %s", r.ExecutionState)
+	}
+}
+
+func TestInvokingRecoveryDoesNotRerun(t *testing.T) {
+	f := newFixture(t, "a")
+	r := f.newRun("r1")
+	r.Phase = PhaseRunning
+	r.ExecutionState = ExecInvoking
+	r.LeaseState = LeaseAcquired
+	for i := range r.Hooks {
+		r.Hooks[i].Phase = HookAcquired
+	}
+	if err := f.store.SaveRun(context.Background(), &r); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.engine.Drain(context.Background(), "r1"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := f.store.LoadRun(context.Background(), "r1")
+	if got.Phase != PhaseFailed {
+		t.Fatalf("phase = %s, want failed", got.Phase)
+	}
+	if got.ExecutionResult != ResultFailure || got.WaitReason != "execution interrupted" {
+		t.Fatalf("result = %s wait = %q", got.ExecutionResult, got.WaitReason)
+	}
+	if f.exec.callCount() != 0 {
+		t.Fatalf("executor re-ran %d times", f.exec.callCount())
+	}
+	// Restoration must still complete.
+	if err := f.leases.AcquireTargetLease(context.Background(), testTarget, "next"); err != nil {
+		t.Fatalf("lease not released: %v", err)
+	}
+}
+
+func TestCompletedInRunningIsIntegrityFailure(t *testing.T) {
+	f := newFixture(t, "a")
+	r := f.newRun("r1")
+	r.Phase = PhaseRunning
+	r.ExecutionState = ExecCompleted
+	r.LeaseState = LeaseAcquired
+	for i := range r.Hooks {
+		r.Hooks[i].Phase = HookAcquired
+	}
+	if err := f.store.SaveRun(context.Background(), &r); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.engine.Drain(context.Background(), "r1"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := f.store.LoadRun(context.Background(), "r1")
+	if got.Phase != PhaseFailed || got.ExecutionResult != ResultFailure {
+		t.Fatalf("phase = %s result = %s", got.Phase, got.ExecutionResult)
+	}
+	if f.exec.callCount() != 0 {
+		t.Fatal("executor must not re-run")
+	}
+}
+
+func TestPublishFailureStaysFinalizingUntilSuccess(t *testing.T) {
+	f := newFixture(t, "a")
+	f.engine.Finalizer = f.fin
+	f.fin.err = errors.New("pages commit failed")
+	if _, err := f.engine.Submit(context.Background(), f.newRun("r1"), nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := f.engine.Drain(ctx, "r1"); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := f.store.LoadRun(ctx, "r1")
+	if r.Phase != PhaseSucceeded {
+		t.Fatalf("phase = %s publish_error=%q", r.Phase, r.PublishError)
+	}
+	if r.PublicURL == "" {
+		t.Fatal("public url empty")
+	}
+	if f.fin.callCount() < 2 {
+		t.Fatalf("finalizer calls = %d, want >=2", f.fin.callCount())
+	}
+}
+
+func TestReleaseErrorNeverAdvances(t *testing.T) {
+	f := newFixture(t, "a", "b")
+	b := f.hooks.hooks["b"].(*fakeHook)
+	b.releaseErrs = []error{ErrPending, errors.New("k8s 500"), nil}
+	if _, err := f.engine.Submit(context.Background(), f.newRun("r1"), nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := f.engine.Drain(ctx, "r1"); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := f.store.LoadRun(ctx, "r1")
+	if r.Phase != PhaseSucceeded {
+		t.Fatalf("phase = %s", r.Phase)
+	}
+	if n := len(b.releaseErrs); n != 0 {
+		t.Fatalf("release errors not consumed: %d", n)
+	}
+	// Both error kinds must have been recorded while releasing.
+	if r.Hooks[1].Error != "" || r.Hooks[1].WaitReason == "" {
+		t.Fatalf("hook state = %+v", r.Hooks[1])
+	}
+}
+
+func TestLeaseReleaseErrorStaysReleasing(t *testing.T) {
+	f := newFixture(t, "a")
+	f.leases.releaseErrs["r1"] = errors.New("conflict")
+	if _, err := f.engine.Submit(context.Background(), f.newRun("r1"), nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := f.engine.Drain(ctx, "r1"); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := f.store.LoadRun(ctx, "r1")
+	if r.Phase != PhaseSucceeded {
+		t.Fatalf("phase = %s", r.Phase)
+	}
+	if r.LeaseState != LeaseReleased {
+		t.Fatalf("lease state = %s", r.LeaseState)
+	}
+}
+
+func TestLeaseBusyWaitsThenProceeds(t *testing.T) {
+	f := newFixture(t, "a")
+	f.leases.owners[testTarget] = "other-run"
+	if _, err := f.engine.Submit(context.Background(), f.newRun("r1"), nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- f.engine.Drain(ctx, "r1") }()
+	// Wait until the run observes the busy lease, then free it.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		r, _ := f.store.LoadRun(ctx, "r1")
+		if r.WaitReason == "target busy" {
+			f.leases.releaseAs(testTarget, "other-run")
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("never observed target busy")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	r, _ := f.store.LoadRun(ctx, "r1")
+	if r.Phase != PhaseSucceeded {
+		t.Fatalf("phase = %s", r.Phase)
+	}
+}
+
+func TestVersionConflictReloadsWithoutDoubleEffect(t *testing.T) {
+	f := newFixture(t, "a")
+	if _, err := f.engine.Submit(context.Background(), f.newRun("r1"), nil); err != nil {
+		t.Fatal(err)
+	}
+	// Force a conflict on the worker's first save: the write-ahead of hook a.
+	// The worker must reload and re-decide instead of running the effect.
+	f.store.conflicts["r1"] = 1
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := f.engine.Drain(ctx, "r1"); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := f.store.LoadRun(ctx, "r1")
+	if r.Phase != PhaseSucceeded {
+		t.Fatalf("phase = %s hooks=%+v", r.Phase, r.Hooks)
+	}
+	a := f.hooks.hooks["a"].(*fakeHook)
+	_ = a
+	got := f.events.all()
+	count := 0
+	for _, e := range got {
+		if e == "hook:a:acquire" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("hook a acquired %d times, want 1 (events=%v)", count, got)
+	}
+}
+
+func TestConcurrentTargetsProceedInParallel(t *testing.T) {
+	f := newFixture(t, "a")
+	slow := &gateExecutor{gate: make(chan struct{})}
+	f.engine.Executor = slow
+	r1 := f.newRun("r1")
+	if _, err := f.engine.Submit(context.Background(), r1, nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go f.engine.Drain(ctx, "r1")
+
+	// While r1 is executing, a second run on a different target must reach
+	// running as well.
+	slow2 := &gateExecutor{gate: slow.gate}
+	f2 := &Engine{
+		Store: f.store, Leases: f.leases, Hooks: f.hooks,
+		Executor: slow2, Finalizer: f.fin, Log: discardLogger(),
+		Clock: time.Now, Interval: time.Millisecond,
+	}
+	r2 := f.newRun("r2")
+	r2.Target = "other"
+	if _, err := f2.Submit(context.Background(), r2, nil); err != nil {
+		t.Fatal(err)
+	}
+	go f2.Drain(ctx, "r2")
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		a, _ := f.store.LoadRun(ctx, "r1")
+		b, _ := f.store.LoadRun(ctx, "r2")
+		if a.Phase == PhaseRunning && b.Phase == PhaseRunning {
+			close(slow.gate)
+			<-ctx.Done()
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	close(slow.gate)
+	t.Fatal("runs did not proceed in parallel")
+}
+
+type gateExecutor struct {
+	gate chan struct{}
+}
+
+func (g *gateExecutor) Execute(ctx context.Context, _ Run) (Artifacts, error) {
+	select {
+	case <-g.gate:
+		return Artifacts{Dir: "/tmp/x"}, nil
+	case <-ctx.Done():
+		return Artifacts{}, ctx.Err()
+	}
+}
+
+func TestSameTargetSerializesOnLease(t *testing.T) {
+	f := newFixture(t, "a")
+	gate := make(chan struct{})
+	f.engine.Executor = &gateExecutor{gate: gate}
+	r1 := f.newRun("r1")
+	if _, err := f.engine.Submit(context.Background(), r1, nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go f.engine.Drain(ctx, "r1")
+
+	// Wait until r1 holds the lease.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		cur, _ := f.store.LoadRun(ctx, "r1")
+		if cur.LeaseState == LeaseAcquired {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("r1 never acquired the lease")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	r2 := f.newRun("r2") // same target
+	if _, err := f.engine.Submit(context.Background(), r2, nil); err != nil {
+		t.Fatal(err)
+	}
+	drain2 := make(chan error, 1)
+	go func() { drain2 <- f.engine.Drain(ctx, "r2") }()
+
+	time.Sleep(10 * time.Millisecond)
+	mid, _ := f.store.LoadRun(ctx, "r2")
+	if mid.Phase == PhaseSucceeded || mid.Phase == PhaseRunning {
+		t.Fatalf("r2 must wait for the lease, got %s", mid.Phase)
+	}
+	close(gate)
+	if err := <-drain2; err != nil {
+		t.Fatal(err)
+	}
+	r2done, _ := f.store.LoadRun(ctx, "r2")
+	if r2done.Phase != PhaseSucceeded {
+		t.Fatalf("r2 phase = %s", r2done.Phase)
+	}
+}

@@ -128,6 +128,7 @@ internal/
   review/              # A/B レビューのポリシー(marker 検証・投票・記録)
   pages/               # 静的サイト公開(runner.Publisher を実装、_headers 生成を含む)
   discord/             # webhook 通知(review.Notifier を実装)
+  hook/                # コマンドフック(operator計画→run.Hook、exit 75→ErrPending)
   filestore/           # ローカル file 実装(RunStore/ReviewStore/LeaseStore)
   httpapi/             # chi HTTP サーバ(薄い)。認証・デコード → run の Service へ委譲
 ```

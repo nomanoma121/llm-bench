@@ -214,8 +214,8 @@ func (s *Sandbox) waitReady(ctx context.Context, r run.Run, cfg experiment.Confi
 	start := cfg.Runtime.Start
 	readyLimit := time.Duration(start.ReadyTimeout()) * time.Second
 	if s.Limits != nil {
-		if _, max, ok := s.Limits(r.Target); ok && max > 0 && readyLimit > max {
-			readyLimit = max
+		if readyMax, _, ok := s.Limits(r.Target); ok && readyMax > 0 && readyLimit > readyMax {
+			readyLimit = readyMax
 		}
 	}
 	deadline := time.Now().Add(readyLimit)

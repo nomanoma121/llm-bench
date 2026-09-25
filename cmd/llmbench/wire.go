@@ -293,9 +293,19 @@ func (r executorRouter) Execute(ctx context.Context, rec run.Run) (run.Artifacts
 	if ok && target.Sandbox != nil {
 		deps := r.sandboxFor(rec.Target)
 		exec := &runner.Sandbox{
-			Client:    deps.Client,
-			Git:       provenance.Git{Root: r.g.root},
-			Root:      r.g.root,
+			Client: deps.Client,
+			Git:    provenance.Git{Root: r.g.root},
+			Root:   r.g.root,
+			// Operator limits are injected here so recipe readiness timeouts
+			// can never exceed the operator ceiling (F17).
+			Limits: func(target string) (time.Duration, time.Duration, bool) {
+				t, ok := r.cfg.Targets[target]
+				if !ok {
+					return 0, 0, false
+				}
+				lim := r.cfg.EffectiveLimits(t)
+				return lim.MaxReadyDuration, lim.MaxExecutionDuration, true
+			},
 			ModelPins: func(target string) map[string]string { return r.cfg.Targets[target].Sandbox.ModelSHA256 },
 		}
 		return exec.Execute(ctx, rec)

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nomanoma121/llm-bench/internal/experiment"
 	"github.com/nomanoma121/llm-bench/internal/provenance"
@@ -293,3 +294,62 @@ func TestClaimHookAcquireRelease(t *testing.T) {
 }
 
 var _ = errors.New
+
+func TestSandboxReadyTimeoutIsClampedByOperatorLimit(t *testing.T) {
+	dir := t.TempDir()
+	inner := newFakeSandboxClient(t, dir)
+	var execs []string
+	client := &recordingClient{inner: inner, execs: &execs}
+	// The recipe asks for an hour, the operator allows a millisecond.
+	s := &Sandbox{
+		Client: client, Git: &fakeGit{}, Root: dir,
+		Limits: func(string) (time.Duration, time.Duration, bool) {
+			return time.Millisecond, time.Hour, true
+		},
+	}
+	cfg := experiment.Config{
+		Model: "m", Benchmark: "b", Target: "gpu",
+		Runtime: experiment.Runtime{
+			Engine: "e", ContextSize: 8,
+			Start: &experiment.Start{
+				Argv:                []string{"./server"},
+				ReadyArgv:           []string{"./probe"},
+				ReadyTimeoutSeconds: 3600,
+			},
+		},
+		Invoke: experiment.Invoke{Argv: []string{"./invoke"}},
+	}
+	body, err := experiment.CanonicalJSON(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := filepath.Join(dir, "input")
+	if err := os.MkdirAll(input, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(input, "config.yaml"), []byte("raw"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(input, "prompt.md"), []byte("prompt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := run.Run{
+		ID: "r1", Target: "gpu", Experiment: "experiments/m/e/config.yaml",
+		InputCommit: strings.Repeat("a", 40), RecipeJSON: string(body),
+		Artifacts: run.Artifacts{Dir: dir},
+	}
+	// The probe never succeeds; the clamp must fail fast (not wait an hour).
+	inner.failExec = func(script string) (int, error) {
+		if strings.Contains(script, "probe") {
+			return 1, nil
+		}
+		return 0, nil
+	}
+	start := time.Now()
+	if _, err := s.Execute(context.Background(), r); err == nil || !strings.Contains(err.Error(), "not ready") {
+		t.Fatalf("want readiness failure, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 30*time.Second {
+		t.Fatalf("readiness was not clamped: waited %s", elapsed)
+	}
+}

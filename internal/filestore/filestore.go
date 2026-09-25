@@ -157,44 +157,40 @@ func (s *Store) AcquireTargetLease(_ context.Context, target, runID string) erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path := s.leasePath(target)
-	if b, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(b))) == 0 {
-		// Legacy artifact of the previous O_EXCL implementation: an empty
-		// lease can never be produced by this version, so reclaim it.
-		_ = os.Remove(path)
-	}
-	tmp, err := writeTemp(path, []byte(runID))
-	if err != nil {
-		return fmt.Errorf("filestore: lease temp: %w", err)
-	}
-	err = os.Link(tmp, path)
-	removed := false
-	defer func() {
-		if !removed {
-			_ = os.Remove(tmp)
+	// Bounded reclaim loop: a legacy empty lease (an artifact the O_EXCL
+	// implementation could leave behind; this version never writes one) is
+	// removed and the acquisition retried.
+	for attempt := 0; attempt < 2; attempt++ {
+		if b, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(b))) == 0 {
+			_ = os.Remove(path)
 		}
-	}()
-	if err == nil {
-		removed = true
-		return nil
-	}
-	if !errors.Is(err, os.ErrExist) {
-		return fmt.Errorf("filestore: lease link: %w", err)
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("filestore: lease read: %w", err)
-	}
-	if len(strings.TrimSpace(string(b))) == 0 {
-		// Stale empty lease from the legacy implementation: reclaim it.
-		_ = os.Remove(path)
-		return s.AcquireTargetLease(context.Background(), target, runID)
-	}
-	if string(b) != runID {
+		tmp, err := writeTemp(path, []byte(runID))
+		if err != nil {
+			return fmt.Errorf("filestore: lease temp: %w", err)
+		}
+		err = os.Link(tmp, path)
+		if err == nil {
+			// The lease at path now holds the owner; drop our temp link.
+			_ = os.Remove(tmp)
+			return nil
+		}
+		_ = os.Remove(tmp)
+		if !errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("filestore: lease link: %w", err)
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("filestore: lease read: %w", err)
+		}
+		if len(strings.TrimSpace(string(b))) == 0 {
+			continue // raced reclaim: try again
+		}
+		if string(b) == runID {
+			return nil // already ours: idempotent
+		}
 		return fmt.Errorf("filestore: %w: target %s is held by another run", run.ErrLeaseBusy, target)
 	}
-	removed = true
-	_ = os.Remove(tmp)
-	return nil // already ours: idempotent
+	return fmt.Errorf("filestore: %w: target %s could not be reclaimed", run.ErrLeaseBusy, target)
 }
 
 // ReleaseTargetLease implements run.LeaseStore. NotFound is success.

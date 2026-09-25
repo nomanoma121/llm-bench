@@ -88,13 +88,9 @@ func (e *Engine) Run(ctx context.Context) error {
 			return
 		}
 		for _, r := range runs {
-			if !e.register(r.ID) {
-				continue
-			}
-			go func(id string) {
-				defer e.unregister(id)
-				e.Drive(ctx, id)
-			}(r.ID)
+			// Drive registers itself engine-wide; a no-op when a worker for
+			// this run already exists.
+			go e.Drive(ctx, r.ID)
 		}
 	}
 

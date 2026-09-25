@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -774,5 +775,55 @@ func TestSubmitRejectInputsWithoutSnapshotStore(t *testing.T) {
 	f.engine.Snapshots = nil
 	if _, err := f.engine.Submit(context.Background(), f.newRun("r1"), map[string][]byte{"p": []byte("x")}); err == nil {
 		t.Fatal("expected error for inputs without a snapshot store")
+	}
+}
+
+func TestDispatcherDrivesRunsToTerminal(t *testing.T) {
+	f := newFixture(t, "a", "b")
+	f.engine.Interval = time.Millisecond
+	if _, err := f.engine.Submit(context.Background(), f.newRun("r1"), nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := f.engine.Run(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run returned %v", err)
+	}
+	r, err := f.store.LoadRun(context.Background(), "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Phase.Terminal() {
+		t.Fatalf("dispatcher left run in %s", r.Phase)
+	}
+	// During the whole dispatch, the executor must have run exactly once.
+	if f.exec.callCount() != 1 {
+		t.Fatalf("executor calls = %d", f.exec.callCount())
+	}
+}
+
+func TestDrainDuringDispatchDoesNotDoubleExecute(t *testing.T) {
+	f := newFixture(t, "a")
+	f.engine.Interval = time.Millisecond
+	if _, err := f.engine.Submit(context.Background(), f.newRun("r1"), nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go f.engine.Run(ctx)
+	// Concurrent Drain of the same run must not start a second worker.
+	if err := f.engine.Drain(ctx, "r1"); err != nil && !strings.Contains(err.Error(), "already being driven") {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		r, _ := f.store.LoadRun(ctx, "r1")
+		if r.Phase.Terminal() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if f.exec.callCount() != 1 {
+		t.Fatalf("executor calls = %d, want 1", f.exec.callCount())
 	}
 }

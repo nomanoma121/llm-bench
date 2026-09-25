@@ -60,9 +60,11 @@ func (s *planHookSource) HooksFor(r run.Run) ([]run.Hook, error) {
 // short because the submit CLI drives runs synchronously; serve constructs a
 // second engine with the operator retry interval in milestone 2.
 func buildEngine(g *globalFlags, cfg operator.Config) *run.Engine {
+	store := mustFileStore(g)
 	return &run.Engine{
-		Store:     mustFileStore(g),
-		Leases:    mustFileStore(g),
+		Store:     store,
+		Leases:    store,
+		Snapshots: store,
 		Hooks:     &planHookSource{dir: g.root},
 		Executor:  runner.NewLocal(g.root),
 		Finalizer: nil, // publication arrives with milestone 5; nil short-circuits finalizing

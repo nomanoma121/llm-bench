@@ -3,9 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +13,7 @@ import (
 
 	"github.com/nomanoma121/llm-bench/internal/experiment"
 	"github.com/nomanoma121/llm-bench/internal/operator"
+	"github.com/nomanoma121/llm-bench/internal/provenance"
 	"github.com/nomanoma121/llm-bench/internal/run"
 )
 
@@ -97,15 +96,26 @@ func runSubmit(cmd *cobra.Command, g *globalFlags, expPath, configPath, commit s
 		return err
 	}
 	now := time.Now()
+	fingerprint, err := provenance.Fingerprint(provenance.FingerprintInput{
+		Prompt:                 promptBytes,
+		BenchmarkSchemaVersion: benchSchemaVersion,
+		ContextSize:            cfg.Runtime.ContextSize,
+		RuntimeSignature:       cfg.Runtime.Engine + "/" + cfg.Runtime.Variant,
+		TargetKind:             targetKind(target),
+		ControllerVersion:      controllerVersion,
+	})
+	if err != nil {
+		return err
+	}
 	r := run.Run{
 		ID:                  runID,
 		Target:              cfg.Target,
 		Experiment:          filepath.ToSlash(expPath),
 		InputCommit:         commit,
-		Fingerprint:         computeFingerprint(promptBytes, cfg.Runtime.ContextSize, targetKind(target)),
+		Fingerprint:         fingerprint,
 		RecipeSchemaVersion: 1,
 		RecipeJSON:          string(recipeJSON),
-		PromptSHA256:        sha256Hex(promptBytes),
+		PromptSHA256:        provenance.SHA256Hex(promptBytes),
 		HookPlan:            plan,
 		HookPlanDigest:      digest,
 		Artifacts:           run.Artifacts{Dir: store.ArtifactsDir(runID)},
@@ -145,28 +155,6 @@ func targetKind(t operator.Target) string {
 		return "sandbox"
 	}
 	return "local"
-}
-
-// computeFingerprint derives the A/B comparability fingerprint. Model-specific
-// data is deliberately excluded; see docs/architecture.md §4.8.
-func computeFingerprint(prompt []byte, contextSize int, kind string) string {
-	in := struct {
-		Prompt             []byte `json:"prompt"`
-		BenchmarkSchemaVer string `json:"benchmark_schema_version"`
-		ContextSize        int    `json:"context_size"`
-		TargetKind         string `json:"target_kind"`
-		ControllerVersion  string `json:"controller_version"`
-	}{prompt, benchSchemaVersion, contextSize, kind, controllerVersion}
-	b, err := json.Marshal(in)
-	if err != nil {
-		panic(err) // marshaling a plain struct cannot fail
-	}
-	return sha256Hex(b)
-}
-
-func sha256Hex(b []byte) string {
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
 }
 
 func newRunID() (string, error) {

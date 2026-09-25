@@ -207,7 +207,7 @@ type engineStores struct {
 func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration,
 	sandboxFor func(target string) SandboxHookDeps,
 	gitopsFor func(target string) GitOpsHookDeps,
-) *run.Engine {
+) (*run.Engine, error) {
 	store := mustFileStore(g)
 	return buildEngineWithStores(g, cfg, interval, sandboxFor, gitopsFor, engineStores{
 		Runs: store, Leases: store, Snapshots: store,
@@ -219,19 +219,19 @@ func buildEngineWithStores(g *globalFlags, cfg operator.Config, interval time.Du
 	sandboxFor func(target string) SandboxHookDeps,
 	gitopsFor func(target string) GitOpsHookDeps,
 	stores engineStores,
-) *run.Engine {
+) (*run.Engine, error) {
 
 	// Publication (site) wiring: only when the operator configured a site.
 	var finalizer run.Finalizer
 	if cfg.Site != nil {
 		publisher, err := pages.New(cfg.Site.Owner, cfg.Site.Repository, cfg.Site.Branch, cfg.Site.BaseURL, cfg.Site.ExtraFiles)
 		if err != nil {
-			panic(fmt.Errorf("wire: pages publisher: %w", err)) // 設定不備は起動時にも分かる
+			return nil, fmt.Errorf("wire: pages publisher: %w", err)
 		}
 		finalizer = &runner.PublishFinalizer{Publisher: publisher}
 	}
 
-	return &run.Engine{
+	engine := &run.Engine{
 		Store:     stores.Runs,
 		Leases:    stores.Leases,
 		Snapshots: stores.Snapshots,
@@ -248,6 +248,7 @@ func buildEngineWithStores(g *globalFlags, cfg operator.Config, interval time.Du
 			return cfg.EffectiveLimits(t).MaxExecutionDuration
 		},
 	}
+	return engine, nil
 }
 
 func currentTime() time.Time { return time.Now() }

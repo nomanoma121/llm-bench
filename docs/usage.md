@@ -2,7 +2,7 @@
 
 The Go module lives at the repository root. See [design.md](design.md) for the full workflow.
 
-The control plane validates an experiment, runs a command-backed benchmark locally or in an Agent Sandbox, exposes a chi HTTP API and a Cobra CLI, persists run state, and applies ordered acquire/release hooks. An optional visual output produces a fixed-viewport PNG preview and artifact hashes. The hooks are configured by the controller operator, not by experiment authors. An optional GitOps hook creates pause/restore GitHub PRs and checks the configured Argo CD Application and inference Deployment/Pods.
+The control plane validates an experiment, runs a command-backed benchmark locally or in an Agent Sandbox, exposes a chi HTTP API and a Cobra CLI, persists run state, and applies ordered acquire/release hooks. Outputs are published as a static site (one directory per run) with artifact hashes; there is no screenshot step, so the human A/B comparison uses the published HTML itself. The hooks are configured by the controller operator, not by experiment authors. An optional GitOps hook creates pause/restore GitHub PRs and checks the configured Argo CD Application and inference Deployment/Pods.
 
 From the repository root:
 
@@ -13,9 +13,9 @@ go run ./cmd/llmbench submit examples/experiment.yaml
 go run ./cmd/llmbench status <run-id>
 ```
 
-For Kubernetes-backed state and leader election, add `--coordination-namespace <namespace> --lease-name <name>` to `serve`. The ServiceAccount needs namespaced `get/create/update` on Leases and `get/list/create/update` on ConfigMaps. The Chart supplies these flags and RBAC. Do not start more than one replica yet: a Lease and versioned records do not alone fence an external GitHub operation or a command already running in a Sandbox after leadership loss.
+For Kubernetes-backed state and leader election, add `--coordination-namespace <namespace> --lease-name <name>` to `serve` (both or neither). Run records and target leases then live in ConfigMaps, while recipe snapshots and artifacts stay on the harness persistent volume. Losing the lease cancels the leader context, which stops the dispatcher and its workers. The ServiceAccount needs namespaced `get/create/update` on Leases and `get/list/create/update/delete` on ConfigMaps. The Chart supplies these flags and RBAC. Do not start more than one replica yet: the lease and versioned records do not alone fence an external GitHub operation or a command already running in a Sandbox after leadership loss.
 
-The HTTP API is bound to `127.0.0.1:8080` by default. Set `LLMBENCH_API_TOKEN` for a shared deployment and put TLS in front of it. `POST /v1/runs` accepts a repository-relative experiment path; `GET /v1/runs/{id}` returns its status; `GET /v1/runs/{id}/preview` returns an authenticated PNG after successful restoration. `serve` requires an operator config with explicit target names; see `../examples/server.yaml`. An experiment can only select one of those targets. For Sandbox execution, a full `input_commit` is required and checked against the recipe and prompt. The local runner does not check out the optional commit.
+The HTTP API is bound to `127.0.0.1:8080` by default and refuses a non-loopback address without `LLMBENCH_API_TOKEN`; put TLS in front of it for shared deployments. `POST /v1/runs` accepts a repository-relative experiment path; `GET /v1/runs/{id}` returns its status including `public_url` once the run has been published. There is no preview endpoint: publication writes the run's HTML to the operator-configured site repository and the status returns its URL. Local targets are rejected over HTTP unless the operator sets `allow_http_local` on the target. `serve` requires an operator config with explicit target names; see `../examples/server.yaml`. An experiment can only select one of those targets. For Sandbox execution, a full `input_commit` is required and checked against the recipe and prompt. The local runner does not check out the optional commit.
 
 Experiment commands receive `LLMBENCH_RUN_ID`, `LLMBENCH_PROMPT_PATH`, `LLMBENCH_OUTPUT_DIR`, `LLMBENCH_MODEL_ID`, `LLMBENCH_MODEL_PATH`, and `LLMBENCH_CONTEXT_SIZE`. The local runner invokes argument arrays without a shell; the Sandbox runner quotes each argument before constructing a sandboxd shell script. The operator configuration can inject ordered hooks per target, such as GPU lease acquisition and inference pause. Release runs in reverse order, including after a benchmark failure or controller restart; each release command must be safe to retry. The service admits at most one active run per target; different targets may run concurrently only when their operator-owned resources are independent. The local file store is for one controller process. The Chart uses a Kubernetes Lease and ConfigMap run records but still fixes one replica until external-effect fencing and failover validation are complete.
 
@@ -43,7 +43,7 @@ For an automatic Sandbox run, configure an operator target with `sandbox.namespa
 
 ## Issue A/B review
 
-An optional operator-owned `review` block enables the Issue record. It needs `LLMBENCH_GITHUB_TOKEN` with Issue-comment permission and a public HTTPS base URL routed to this controller. `public_base_url` makes only hash-addressed PNGs and minimal run metadata public; it does not expose the raw HTML, commands, or full run record. Do not enable it for private benchmark artifacts. The base URL must actually be reachable by GitHub reviewers; a private cluster DNS name will not work. Configure TLS and ingress separately.
+An optional operator-owned `review` block enables the Issue record. It needs `LLMBENCH_GITHUB_TOKEN` with Issue-comment permission. `public_base_url` is the public prefix used when linking runs; the actual outputs live in the site repository configured under `site:`. Both runs of a review must already be published (`public_url` set), and reviewers open the two published pages directly. Do not enable site publication or reviews for private benchmark artifacts. `public_base_url` must actually be reachable by GitHub reviewers; a private cluster DNS name will not work.
 
 ```yaml
 review:
@@ -57,9 +57,9 @@ review:
 `bot_login` is optional for a personal token and required when the GitHub credential cannot call `GET /user` (for example, an installation token). Only comments from that login are interpreted as controller review/vote records, preventing another Issue participant from forging the machine-readable markers. The Discord setting is optional. If set, provide that environment variable in the controller (the Chart can read it from `harness.discordWebhookSecret`, key `webhook`). Discord receives only the Issue link. Once both visual runs have succeeded and restoration is complete, request and record a review:
 
 ```sh
-go run ./cmd/llmbench review request <baseline-run-id> <candidate-run-id> --issue 42
-go run ./cmd/llmbench review vote <review-id> --choice B --notes 'The geometry is cleaner'
+go run ./cmd/llmbench review request <baseline-run-id> <candidate-run-id> --issue 42 --config examples/server-gitops.yaml
+go run ./cmd/llmbench review vote <review-id> --choice B --notes 'The geometry is cleaner' --config examples/server-gitops.yaml
 go run ./cmd/llmbench review status <review-id>
 ```
 
-Both runs must belong to the same Issue and use the same prompt and render settings. For the same model, recorded weight digests must match. The Issue is the vote history; a manual free-form reply is not parsed as a vote by the controller. The controller API token authorizes programmatic votes, so restrict it to trusted evaluators. Final experiment notes and PR summary are still written by an Agent, not generated by these commands.
+Both runs must be A/B comparable: the recorded BenchmarkFingerprint (prompt, context size, runtime engine/variant, target kind, controller version) must match. The recorded model tree digest is informational; it must match only when both runs use the same model ID (guarding against a silent model swap between runs). The Issue is the vote history; a manual free-form reply is not parsed as a vote by the controller. The controller API token authorizes programmatic votes, so restrict it to trusted evaluators. Final experiment notes and PR summary are still written by an Agent, not generated by these commands.

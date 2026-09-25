@@ -38,7 +38,10 @@ func TestDispatcherAdvancesSubmittedRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := buildEngine(g, opCfg, 100*time.Millisecond, sandboxDepsFunc(g, opCfg), gitopsDepsFunc(g, opCfg))
+	engine, err := buildEngine(g, opCfg, 100*time.Millisecond, sandboxDepsFunc(g, opCfg), gitopsDepsFunc(g, opCfg))
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := engine.Submit(ctx, r, inputs); err != nil {

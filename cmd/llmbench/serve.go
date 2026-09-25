@@ -96,10 +96,13 @@ func newServeCmd(g *globalFlags) *cobra.Command {
 			}
 
 			fs := mustFileStore(g)
-			engine := buildEngineWithStores(g, opCfg, retryInterval,
+			engine, err := buildEngineWithStores(g, opCfg, retryInterval,
 				sandboxDepsFunc(g, opCfg), gitopsDepsFunc(g, opCfg),
 				engineStores{Runs: fs, Leases: fs, Snapshots: fs},
 			)
+			if err != nil {
+				return err
+			}
 			dispatch := func(ctx context.Context) error { return engine.Run(ctx) }
 
 			if coordNamespace != "" {
@@ -107,7 +110,7 @@ func newServeCmd(g *globalFlags) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				engine = buildEngineWithStores(g, opCfg, retryInterval,
+				engine, err = buildEngineWithStores(g, opCfg, retryInterval,
 					sandboxDepsFunc(g, opCfg), gitopsDepsFunc(g, opCfg),
 					engineStores{
 						Runs:      kube.NewRunStore(client, coordNamespace),
@@ -115,6 +118,9 @@ func newServeCmd(g *globalFlags) *cobra.Command {
 						Snapshots: fs, // artifacts and snapshots live on the PVC
 					},
 				)
+				if err != nil {
+					return err
+				}
 				dispatch = func(ctx context.Context) error {
 					return kube.RunWithLeadership(ctx, kube.LeaderConfig{
 						Client:    client,

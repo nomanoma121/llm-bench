@@ -24,6 +24,7 @@ import (
 	"github.com/nomanoma121/llm-bench/internal/httpapi"
 	"github.com/nomanoma121/llm-bench/internal/kube"
 	"github.com/nomanoma121/llm-bench/internal/operator"
+	"github.com/nomanoma121/llm-bench/internal/pages"
 	"github.com/nomanoma121/llm-bench/internal/provenance"
 	"github.com/nomanoma121/llm-bench/internal/run"
 	"github.com/nomanoma121/llm-bench/internal/runner"
@@ -294,16 +295,29 @@ func (p *gitopsGateways) gateways(plan operator.GitOpsPlan) (gitops.GitHubAPI, g
 	return gh, p.checker, nil
 }
 
-// buildEngine wires the engine for the current configuration.
-func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration, sandboxes *sandboxClients, gitopsGateways *gitopsGateways) *run.Engine {
+// buildEngine wires the engine for the current configuration. It returns an
+// error when the operator's site configuration cannot be used (for example a
+// missing GitHub token): failing fast beats publishing runs silently.
+func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration, sandboxes *sandboxClients, gitopsGateways *gitopsGateways) (*run.Engine, error) {
 	store := mustFileStore(g)
+
+	// Publication (site) wiring: only when the operator configured a site.
+	var finalizer run.Finalizer
+	if cfg.Site != nil {
+		publisher, err := pages.New(cfg.Site.Owner, cfg.Site.Repository, cfg.Site.Branch, cfg.Site.BaseURL, cfg.Site.ExtraFiles)
+		if err != nil {
+			return nil, fmt.Errorf("wire: pages publisher: %w", err)
+		}
+		finalizer = &runner.PublishFinalizer{Publisher: publisher}
+	}
+
 	return &run.Engine{
 		Store:     store,
 		Leases:    store,
 		Snapshots: store,
 		Hooks:     &planHookSource{dir: g.root, sandboxClients: sandboxes, gitopsGateways: gitopsGateways},
 		Executor:  executorRouter{g: g, cfg: cfg, sandboxClients: sandboxes},
-		Finalizer: nil, // publication arrives with milestone 5; nil short-circuits finalizing
+		Finalizer: finalizer,
 		Log:       controllerLogger(),
 		Interval:  interval,
 		MaxExecutionDuration: func(target string) time.Duration {
@@ -313,7 +327,7 @@ func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration, sa
 			}
 			return cfg.EffectiveLimits(t).MaxExecutionDuration
 		},
-	}
+	}, nil
 }
 
 func currentTime() time.Time { return time.Now() }

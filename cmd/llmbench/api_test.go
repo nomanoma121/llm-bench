@@ -42,7 +42,10 @@ func TestDispatcherAdvancesSubmittedRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := buildEngine(g, opCfg, 100*time.Millisecond, newSandboxClients(g), nil)
+	engine, err := buildEngine(g, opCfg, 100*time.Millisecond, newSandboxClients(g), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := engine.Submit(ctx, r, inputs); err != nil {
@@ -179,7 +182,10 @@ func TestAPIServiceDeniesLocalWithoutToken(t *testing.T) {
 	opCfg := operator.Config{Targets: map[string]operator.Target{
 		"local": {Hooks: []operator.CommandHook{}, AllowHTTPLocal: true},
 	}}
-	engine := buildEngine(g, opCfg, time.Second, newSandboxClients(g), nil)
+	engine, err := buildEngine(g, opCfg, time.Second, newSandboxClients(g), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// allow_http_local alone is not enough: the API must be authenticated.
 	svc := &apiService{g: g, opCfg: opCfg, engine: engine, store: mustFileStore(g), authenticated: false}

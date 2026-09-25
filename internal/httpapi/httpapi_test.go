@@ -134,6 +134,18 @@ func TestSubmitMapsErrors(t *testing.T) {
 			t.Fatalf("status = %d", resp.StatusCode)
 		}
 	})
+	t.Run("internal failure -> 500", func(t *testing.T) {
+		f := &fakeService{submitErr: errors.New("store unavailable")}
+		ts := serve(t, f, "")
+		resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(`{"experiment":"e.yaml"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500", resp.StatusCode)
+		}
+	})
 	t.Run("missing experiment -> 400", func(t *testing.T) {
 		f := &fakeService{}
 		ts := serve(t, f, "")

@@ -169,3 +169,74 @@ func TestAPIServiceDeniesLocalWithoutToken(t *testing.T) {
 		t.Fatalf("a denied submit must not persist a run: %+v", unfinished)
 	}
 }
+
+func TestSubmitErrorClassification(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "examples"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "examples", "prompt.md"), []byte("p"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := &globalFlags{root: root, state: t.TempDir(), output: t.TempDir()}
+	opCfg := operator.Config{Targets: map[string]operator.Target{
+		"local": {Hooks: []operator.CommandHook{}, AllowHTTPLocal: true},
+	}}
+
+	t.Run("malformed yaml is a caller mistake", func(t *testing.T) {
+		path := filepath.Join(root, "bad.yaml")
+		if err := os.WriteFile(path, []byte("model: [unclosed\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, _, err := prepareRun(g, opCfg, path, "")
+		if !isBadRequest(err) {
+			t.Fatalf("want BadRequestError, got %v", err)
+		}
+	})
+	t.Run("missing experiment is a caller mistake", func(t *testing.T) {
+		_, _, err := prepareRun(g, opCfg, filepath.Join(root, "missing.yaml"), "")
+		if !isBadRequest(err) {
+			t.Fatalf("want BadRequestError, got %v", err)
+		}
+	})
+	t.Run("missing prompt is a caller mistake", func(t *testing.T) {
+		path := filepath.Join(root, "ok.yaml")
+		if err := os.WriteFile(path, []byte("model: m\nbenchmark: examples/absent.md\ntarget: local\nruntime:\n  engine: e\n  context_size: 8\ninvoke:\n  argv: [\"true\"]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, _, err := prepareRun(g, opCfg, path, "")
+		if !isBadRequest(err) {
+			t.Fatalf("want BadRequestError, got %v", err)
+		}
+	})
+	t.Run("permission failure is internal", func(t *testing.T) {
+		dir := filepath.Join(root, "locked")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, "exp.yaml")
+		if err := os.WriteFile(path, []byte("model: m\nbenchmark: examples/prompt.md\ntarget: local\nruntime:\n  engine: e\n  context_size: 8\ninvoke:\n  argv: [\"true\"]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+		if os.Getuid() == 0 {
+			t.Skip("running as root: permission bits are not enforced")
+		}
+		_, _, err := prepareRun(g, opCfg, path, "")
+		if err == nil {
+			t.Fatal("expected an error")
+		}
+		if isBadRequest(err) {
+			t.Fatalf("permission failure must not be a caller mistake: %v", err)
+		}
+	})
+}
+
+// isBadRequest mirrors the HTTP layer's classification.
+func isBadRequest(err error) bool {
+	var bad *httpapi.BadRequestError
+	return errors.As(err, &bad)
+}

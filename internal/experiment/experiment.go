@@ -60,6 +60,12 @@ type Config struct {
 // DefaultReadyTimeoutSeconds is used when Start.ReadyTimeoutSeconds is zero.
 const DefaultReadyTimeoutSeconds = 300
 
+// ErrInvalid marks recipe mistakes (malformed YAML, unknown fields, failed
+// validation). Callers map it to a 400 rather than an internal failure; I/O
+// errors (missing file, permissions) stay distinguishable via os.ErrNotExist
+// and friends.
+var ErrInvalid = errors.New("experiment: invalid recipe")
+
 // Parse reads an experiment recipe. Unknown fields are rejected so that
 // typos fail loudly instead of silently changing the run.
 func Parse(r io.Reader) (Config, error) {
@@ -67,7 +73,7 @@ func Parse(r io.Reader) (Config, error) {
 	dec := yaml.NewDecoder(r)
 	dec.KnownFields(true)
 	if err := dec.Decode(&c); err != nil {
-		return Config{}, fmt.Errorf("experiment: parse: %w", err)
+		return Config{}, fmt.Errorf("%w: parse: %w", ErrInvalid, err)
 	}
 	return c, nil
 }
@@ -117,7 +123,10 @@ func Validate(c Config, root string) error {
 			errs = append(errs, errors.New("runtime.start.ready_argv is required when ready_timeout_seconds is set"))
 		}
 	}
-	return errors.Join(errs...)
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	return nil
 }
 
 // BenchmarkPath resolves the benchmark prompt path against root.

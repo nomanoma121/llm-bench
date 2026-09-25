@@ -40,6 +40,18 @@ func newFileStore(g *globalFlags) (*filestore.Store, error) {
 	return filestore.New(g.state, filepath.Join(g.output, "runs"))
 }
 
+// mapCallerError classifies recipe/file mistakes as 400 (BadRequestError)
+// while leaving I/O and internal failures for the handler to answer 500.
+func mapCallerError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, experiment.ErrInvalid) {
+		return &httpapi.BadRequestError{Err: err}
+	}
+	return err
+}
+
 // resolveExperimentPath turns a caller-supplied experiment path into an
 // absolute path confined to the repository root plus the repository-relative
 // path recorded on the run. Absolute paths outside the repository and paths
@@ -74,10 +86,10 @@ func prepareRun(g *globalFlags, opCfg operator.Config, expPath, commit string) (
 	}
 	cfg, err := experiment.Load(fullPath)
 	if err != nil {
-		return run.Run{}, nil, err
+		return run.Run{}, nil, mapCallerError(err)
 	}
 	if err := experiment.Validate(cfg, g.root); err != nil {
-		return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("%s: %w", relPath, err)}
+		return run.Run{}, nil, mapCallerError(fmt.Errorf("%s: %w", relPath, err))
 	}
 	ready := 0
 	if cfg.Runtime.Start != nil {
@@ -102,11 +114,11 @@ func prepareRun(g *globalFlags, opCfg operator.Config, expPath, commit string) (
 
 	promptBytes, err := os.ReadFile(experiment.BenchmarkPath(cfg, g.root))
 	if err != nil {
-		return run.Run{}, nil, &httpapi.BadRequestError{Err: err}
+		return run.Run{}, nil, mapCallerError(err)
 	}
 	rawBytes, err := os.ReadFile(fullPath)
 	if err != nil {
-		return run.Run{}, nil, &httpapi.BadRequestError{Err: err}
+		return run.Run{}, nil, mapCallerError(err)
 	}
 	recipeJSON, err := experiment.CanonicalJSON(cfg)
 	if err != nil {

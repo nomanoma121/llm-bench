@@ -209,6 +209,34 @@ func TestSubmitErrorClassification(t *testing.T) {
 			t.Fatalf("want BadRequestError, got %v", err)
 		}
 	})
+	t.Run("unreadable prompt directory is internal", func(t *testing.T) {
+		benchDir := filepath.Join(root, "benchmarks")
+		if err := os.MkdirAll(benchDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(benchDir, "prompt.md"), []byte("p"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(root, "prompt-perm.yaml")
+		if err := os.WriteFile(path, []byte("model: m\nbenchmark: benchmarks/prompt.md\ntarget: local\nruntime:\n  engine: e\n  context_size: 8\ninvoke:\n  argv: [\"true\"]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(benchDir, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(benchDir, 0o755) })
+		if os.Getuid() == 0 {
+			t.Skip("running as root: permission bits are not enforced")
+		}
+		_, _, err := prepareRun(g, opCfg, path, "")
+		if err == nil {
+			t.Fatal("expected an error")
+		}
+		if isBadRequest(err) {
+			t.Fatalf("prompt I/O failure must not be a caller mistake: %v", err)
+		}
+	})
+
 	t.Run("permission failure is internal", func(t *testing.T) {
 		dir := filepath.Join(root, "locked")
 		if err := os.MkdirAll(dir, 0o755); err != nil {

@@ -97,8 +97,17 @@ func Validate(c Config, root string) error {
 	}
 	if c.Benchmark == "" {
 		errs = append(errs, errors.New("benchmark is required"))
-	} else if _, err := os.Stat(BenchmarkPath(c, root)); err != nil {
-		errs = append(errs, fmt.Errorf("benchmark prompt %q is missing: %w", c.Benchmark, err))
+	} else {
+		switch _, err := os.Stat(BenchmarkPath(c, root)); {
+		case err == nil:
+		case errors.Is(err, os.ErrNotExist):
+			// A missing prompt is a recipe mistake; other stat failures
+			// (permissions, I/O) are infrastructure problems and must not be
+			// reported as invalid recipes.
+			errs = append(errs, fmt.Errorf("benchmark prompt %q is missing", c.Benchmark))
+		default:
+			return fmt.Errorf("experiment: stat benchmark prompt %q: %w", c.Benchmark, err)
+		}
 	}
 	if c.Target == "" {
 		errs = append(errs, errors.New("target is required"))

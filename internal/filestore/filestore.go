@@ -258,6 +258,9 @@ func (s *Store) ArtifactsDir(runID string) string {
 	return filepath.Join(s.outputRoot, runID)
 }
 
+// writeAtomic persists b at path durably: the temp file is written and
+// fsynced, then renamed over path and the directory entry is synced too, so
+// "persisted" survives host crashes, not only clean process exits.
 func writeAtomic(path string, b []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -268,8 +271,31 @@ func writeAtomic(path string, b []byte) error {
 		return err
 	}
 	tmp := filepath.Join(dir, fmt.Sprintf(".%s.tmp-%s", filepath.Base(path), hex.EncodeToString(rnd[:])))
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync() // best effort: directory entry durability
+		d.Close()
+	}
+	return nil
 }

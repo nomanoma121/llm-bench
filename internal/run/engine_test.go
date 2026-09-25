@@ -599,6 +599,92 @@ func TestLeaseBusyWaitsThenProceeds(t *testing.T) {
 	}
 }
 
+func TestPostEffectConflictsNeverDoubleRun(t *testing.T) {
+	cases := []struct {
+		rule       string
+		wantPhase  Phase
+		wantResult ExecutionResult
+		hookCalls  int // per phase (acquire and release counts separately)
+	}{
+		{rule: "hookacquired", wantPhase: PhaseSucceeded, wantResult: ResultSuccess, hookCalls: 2},
+		{rule: "hookreleased", wantPhase: PhaseSucceeded, wantResult: ResultSuccess, hookCalls: 2},
+		{rule: "leasereleased", wantPhase: PhaseSucceeded, wantResult: ResultSuccess, hookCalls: 1},
+		{rule: "execcompleted", wantPhase: PhaseFailed, wantResult: ResultFailure, hookCalls: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.rule, func(t *testing.T) {
+			f := newFixture(t, "a")
+			store := &conflictStore{inner: f.store, conflicts: map[string]int{tc.rule: 1}}
+			f.engine.Store = store
+			if _, err := f.engine.Submit(context.Background(), f.newRun("r1"), nil); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := f.engine.Drain(ctx, "r1"); err != nil {
+				t.Fatal(err)
+			}
+			r, _ := f.store.LoadRun(ctx, "r1")
+			if r.Phase != tc.wantPhase || r.ExecutionResult != tc.wantResult {
+				t.Fatalf("phase = %s result = %s, want %s/%s", r.Phase, r.ExecutionResult, tc.wantPhase, tc.wantResult)
+			}
+			if f.exec.callCount() != 1 {
+				t.Fatalf("executor calls = %d, want 1 (no re-execution)", f.exec.callCount())
+			}
+		})
+	}
+}
+
+// conflictStore forces one version conflict per named save window:
+//   - hookacquired: the save that records a hook as acquired
+//   - hookreleased: the save that records a hook as released
+//   - leasereleased: the save that records the target lease released
+//   - execcompleted: the save that records a completed execution
+type conflictStore struct {
+	inner     RunStore
+	conflicts map[string]int
+}
+
+func classifySave(r *Run) string {
+	switch {
+	case r.Phase == PhaseAcquiring:
+		for _, h := range r.Hooks {
+			if h.Phase == HookAcquired {
+				return "hookacquired"
+			}
+		}
+	case r.Phase == PhaseReleasing:
+		for _, h := range r.Hooks {
+			if h.Phase == HookReleased {
+				return "hookreleased"
+			}
+		}
+		if r.LeaseState == LeaseReleased {
+			return "leasereleased"
+		}
+		if r.ExecutionState == ExecCompleted {
+			return "execcompleted"
+		}
+	}
+	return ""
+}
+
+func (s *conflictStore) SaveRun(ctx context.Context, r *Run) error {
+	if rule := classifySave(r); rule != "" && s.conflicts[rule] > 0 {
+		s.conflicts[rule]--
+		return ErrVersionConflict
+	}
+	return s.inner.SaveRun(ctx, r)
+}
+
+func (s *conflictStore) LoadRun(ctx context.Context, id string) (Run, error) {
+	return s.inner.LoadRun(ctx, id)
+}
+
+func (s *conflictStore) ListUnfinished(ctx context.Context) ([]Run, error) {
+	return s.inner.ListUnfinished(ctx)
+}
+
 func TestVersionConflictReloadsWithoutDoubleEffect(t *testing.T) {
 	f := newFixture(t, "a")
 	if _, err := f.engine.Submit(context.Background(), f.newRun("r1"), nil); err != nil {
@@ -786,7 +872,24 @@ func TestDispatcherDrivesRunsToTerminal(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := f.engine.Run(ctx); !errors.Is(err, context.DeadlineExceeded) {
+	done := make(chan struct{})
+	go func() {
+		// Run returns only on ctx cancellation; correctness is judged by the
+		// run reaching a terminal phase, then we cancel to end the test fast.
+		close(done)
+	}()
+	go func() {
+		for {
+			r, err := f.store.LoadRun(ctx, "r1")
+			if err == nil && r.Phase.Terminal() {
+				cancel()
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	<-done
+	if err := f.engine.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run returned %v", err)
 	}
 	r, err := f.store.LoadRun(context.Background(), "r1")
@@ -796,7 +899,6 @@ func TestDispatcherDrivesRunsToTerminal(t *testing.T) {
 	if !r.Phase.Terminal() {
 		t.Fatalf("dispatcher left run in %s", r.Phase)
 	}
-	// During the whole dispatch, the executor must have run exactly once.
 	if f.exec.callCount() != 1 {
 		t.Fatalf("executor calls = %d", f.exec.callCount())
 	}

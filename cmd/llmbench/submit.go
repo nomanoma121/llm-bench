@@ -64,6 +64,9 @@ func runSubmit(cmd *cobra.Command, g *globalFlags, expPath, configPath, commit s
 	if !ok {
 		return fmt.Errorf("submit: target %q is not allowlisted", cfg.Target)
 	}
+	if target.GitOps != nil || target.Sandbox != nil {
+		return fmt.Errorf("submit: target %q requires an integration that is not available in this build", cfg.Target)
+	}
 	if target.Sandbox != nil && len(commit) != 40 {
 		return fmt.Errorf("submit: sandbox target %q requires --commit with a full 40-hex SHA", cfg.Target)
 	}

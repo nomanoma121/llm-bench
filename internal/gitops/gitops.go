@@ -107,7 +107,7 @@ func (h *PauseRestore) Acquire(ctx context.Context) error {
 	case p.PausedValue:
 		switch prState {
 		case "merged":
-			return h.convergePaused(ctx)
+			return h.convergePaused(ctx, baseSHA)
 		case "open":
 			return ErrNotConverged
 		default:
@@ -190,7 +190,7 @@ func (h *PauseRestore) Release(ctx context.Context) error {
 	case p.ActiveValue:
 		switch restoreState {
 		case "merged":
-			return h.convergeActive(ctx)
+			return h.convergeActive(ctx, baseSHA)
 		case "open":
 			return ErrNotConverged
 		case "closed":
@@ -203,7 +203,7 @@ func (h *PauseRestore) Release(ctx context.Context) error {
 			}
 			// No pause of ours (never paused, or the pause PR was rolled
 			// back): the workload simply must be up.
-			return h.convergeActive(ctx)
+			return h.convergeActive(ctx, baseSHA)
 		}
 	default:
 		return fmt.Errorf("gitops: unexpected value %q at %s; refusing to continue", value, p.YAMLPathString())
@@ -281,12 +281,11 @@ func (h *PauseRestore) openRestorePR(ctx context.Context, content []byte, baseSH
 		fmt.Sprintf("Restores `%s` to `%s` after the benchmark run.", p.YAMLPathString(), p.ActiveValue))
 }
 
-// convergePaused gates on Argo CD sync and the workload being stopped.
-func (h *PauseRestore) convergePaused(ctx context.Context) error {
-	rev, err := h.GH.BaseBranchSHA(ctx)
-	if err != nil {
-		return err
-	}
+// convergePaused gates on Argo CD sync and the workload being stopped. rev
+// is the revision whose manifest value the decision was based on: asking
+// Argo CD about a newer revision would let a foreign commit that raced the
+// decision pass the gate while the workload starts again.
+func (h *PauseRestore) convergePaused(ctx context.Context, rev string) error {
 	synced, err := h.Kube.ArgoSynced(ctx, h.Plan.AppNamespace, h.Plan.AppName, rev)
 	if err != nil {
 		return err
@@ -304,12 +303,9 @@ func (h *PauseRestore) convergePaused(ctx context.Context) error {
 	return nil
 }
 
-// convergeActive gates on Argo CD sync and the workload being back.
-func (h *PauseRestore) convergeActive(ctx context.Context) error {
-	rev, err := h.GH.BaseBranchSHA(ctx)
-	if err != nil {
-		return err
-	}
+// convergeActive gates on Argo CD sync and the workload being back. rev is
+// the revision the restore decision was based on (see convergePaused).
+func (h *PauseRestore) convergeActive(ctx context.Context, rev string) error {
 	synced, err := h.Kube.ArgoSynced(ctx, h.Plan.AppNamespace, h.Plan.AppName, rev)
 	if err != nil {
 		return err

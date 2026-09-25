@@ -95,9 +95,14 @@ type fakeKube struct {
 	stopped  bool
 	ready    bool
 	replicas int32
+	// revisions records every revision ArgoSynced was asked about.
+	revisions []string
 }
 
-func (k *fakeKube) ArgoSynced(_ context.Context, _, _, _ string) (bool, error) { return k.synced, nil }
+func (k *fakeKube) ArgoSynced(_ context.Context, _, _, rev string) (bool, error) {
+	k.revisions = append(k.revisions, rev)
+	return k.synced, nil
+}
 
 func (k *fakeKube) WorkloadStopped(_ context.Context, _, _ string) (bool, error) {
 	return k.stopped, nil
@@ -153,6 +158,43 @@ func TestAcquireFirstTimeCreatesPausePR(t *testing.T) {
 	}
 	if len(gh.events) != 3 { // branch + commit + pr, no duplicates
 		t.Fatalf("events = %v", gh.events)
+	}
+}
+
+func TestConvergenceUsesTheDecisionRevision(t *testing.T) {
+	// The base branch moves between the snapshot and the Argo check: Argo
+	// must be asked about the revision the decision was based on.
+	gh := newFakeGH(`replicaCount: "0"`)
+	gh.prs["llmbench/pause-abc"] = "merged"
+	gh.baseSHA = "rev-A"
+	kube := &fakeKube{synced: true, stopped: true}
+	h := hookOn(gh, kube)
+	gh.onFileAt = func() { gh.baseSHA = "rev-B" } // the branch moves after the read
+	if err := h.Acquire(context.Background()); err != nil {
+		t.Fatalf("acquire should use the decision revision: %v", err)
+	}
+	for _, rev := range kube.revisions {
+		if rev != "rev-A" {
+			t.Fatalf("Argo was asked about %q, want the decision revision rev-A", rev)
+		}
+	}
+}
+
+func TestReleaseConvergenceUsesTheDecisionRevision(t *testing.T) {
+	gh := newFakeGH(manifest)
+	gh.prs["llmbench/pause-abc"] = "merged"
+	gh.prs["llmbench/restore-abc"] = "merged"
+	gh.baseSHA = "rev-A"
+	kube := &fakeKube{synced: true, ready: true}
+	h := hookOn(gh, kube)
+	gh.onFileAt = func() { gh.baseSHA = "rev-B" }
+	if err := h.Release(context.Background()); err != nil {
+		t.Fatalf("release should use the decision revision: %v", err)
+	}
+	for _, rev := range kube.revisions {
+		if rev != "rev-A" {
+			t.Fatalf("Argo was asked about %q, want the decision revision rev-A", rev)
+		}
 	}
 }
 

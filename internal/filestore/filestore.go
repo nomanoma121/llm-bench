@@ -224,7 +224,9 @@ func (s *Store) WriteInputs(_ context.Context, runID string, files map[string][]
 	}
 	// The <runID> directory entry itself must be durable before the run
 	// record references it, so sync the parent that holds it.
-	syncDir(filepath.Dir(base))
+	if err := syncDir(filepath.Dir(base)); err != nil {
+		return fmt.Errorf("filestore: sync run parent: %w", err)
+	}
 	tmp, err := os.MkdirTemp(filepath.Dir(base), "."+runID+".tmp")
 	if err != nil {
 		return err
@@ -248,7 +250,9 @@ func (s *Store) WriteInputs(_ context.Context, runID string, files map[string][]
 	if err := os.Rename(input, filepath.Join(base, "input")); err != nil {
 		return err
 	}
-	syncDir(base)
+	if err := syncDir(base); err != nil {
+		return fmt.Errorf("filestore: sync snapshot dir: %w", err)
+	}
 	return nil
 }
 
@@ -302,17 +306,23 @@ func writeAtomic(path string, b []byte) error {
 		os.Remove(tmp)
 		return err
 	}
-	syncDir(dir)
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("filestore: sync %s: %w", dir, err)
+	}
 	return nil
 }
 
-// syncDir fsyncs a directory so a rename into it survives a host crash. It is
-// best effort on filesystems that reject directory fsync.
-func syncDir(dir string) {
+// syncDir fsyncs a directory so an entry created in it survives a host crash.
+// The error is returned: silently skipping the sync would make the durability
+// promise depend on the filesystem rather than on us.
+func syncDir(dir string) error {
 	d, err := os.Open(dir)
 	if err != nil {
-		return
+		return err
 	}
-	_ = d.Sync()
-	_ = d.Close()
+	if err := d.Sync(); err != nil {
+		_ = d.Close()
+		return err
+	}
+	return d.Close()
 }

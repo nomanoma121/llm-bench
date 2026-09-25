@@ -12,12 +12,37 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/nomanoma121/llm-bench/internal/filestore"
 	"github.com/nomanoma121/llm-bench/internal/httpapi"
+	"github.com/nomanoma121/llm-bench/internal/kube"
 	"github.com/nomanoma121/llm-bench/internal/operator"
 	"github.com/nomanoma121/llm-bench/internal/run"
 )
+
+// kubeClient builds a clientset from the kubeconfig or the in-cluster config.
+func kubeClient(kubeconfig string) (kubernetes.Interface, error) {
+	var cfg *rest.Config
+	var err error
+	if kubeconfig != "" {
+		cfg, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+	} else {
+		cfg, err = rest.InClusterConfig()
+		if err != nil {
+			cfg, err = clientcmd.BuildConfigFromFlags("", "")
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("serve: kubernetes config: %w", err)
+	}
+	client, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("serve: kubernetes client: %w", err)
+	}
+	return client, nil
+}
 
 // apiService adapts the controller internals to the HTTP API surface. It is
 // intentionally thin: preparation logic lives in prepareRun, execution in the
@@ -26,7 +51,7 @@ type apiService struct {
 	g      *globalFlags
 	opCfg  operator.Config
 	engine *run.Engine
-	store  *filestore.Store
+	store  run.RunStore
 }
 
 // Submit implements httpapi.RunService.
@@ -58,8 +83,8 @@ func newServeCmd(g *globalFlags) *cobra.Command {
 			if configPath == "" {
 				return errors.New("serve: --config is required")
 			}
-			if coordNamespace != "" || leaseName != "" {
-				return errors.New("serve: kubernetes coordination is not available yet")
+			if (coordNamespace == "") != (leaseName == "") {
+				return errors.New("serve: --coordination-namespace and --lease-name must be set together")
 			}
 			opCfg, err := operator.Load(configPath)
 			if err != nil {
@@ -70,12 +95,41 @@ func newServeCmd(g *globalFlags) *cobra.Command {
 				return errors.New("serve: refusing to serve without LLMBENCH_API_TOKEN on a non-loopback address")
 			}
 
-			engine := buildEngine(g, opCfg, retryInterval, sandboxDepsFunc(g, opCfg), gitopsDepsFunc(g, opCfg))
+			fs := mustFileStore(g)
+			engine := buildEngineWithStores(g, opCfg, retryInterval,
+				sandboxDepsFunc(g, opCfg), gitopsDepsFunc(g, opCfg),
+				engineStores{Runs: fs, Leases: fs, Snapshots: fs},
+			)
+			dispatch := func(ctx context.Context) error { return engine.Run(ctx) }
+
+			if coordNamespace != "" {
+				client, err := kubeClient(g.kubeconfig)
+				if err != nil {
+					return err
+				}
+				engine = buildEngineWithStores(g, opCfg, retryInterval,
+					sandboxDepsFunc(g, opCfg), gitopsDepsFunc(g, opCfg),
+					engineStores{
+						Runs:      kube.NewRunStore(client, coordNamespace),
+						Leases:    kube.NewLeaseStore(client, coordNamespace),
+						Snapshots: fs, // artifacts and snapshots live on the PVC
+					},
+				)
+				dispatch = func(ctx context.Context) error {
+					return kube.RunWithLeadership(ctx, kube.LeaderConfig{
+						Client:    client,
+						Namespace: coordNamespace,
+						LeaseName: leaseName,
+						Log:       controllerLogger(),
+					}, engine.Run)
+				}
+			}
+
 			svc := &apiService{
 				g:      g,
 				opCfg:  opCfg,
 				engine: engine,
-				store:  mustFileStore(g),
+				store:  engine.Store,
 			}
 			handler := (&httpapi.Server{Service: svc, Token: token, Log: controllerLogger()}).Handler()
 			srv := &http.Server{
@@ -86,7 +140,11 @@ func newServeCmd(g *globalFlags) *cobra.Command {
 
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			go engine.Run(ctx)
+			go func() {
+				if err := dispatch(ctx); err != nil && ctx.Err() == nil {
+					controllerLogger().Error(err, "dispatcher stopped")
+				}
+			}()
 			go func() {
 				<-ctx.Done()
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -104,7 +162,7 @@ func newServeCmd(g *globalFlags) *cobra.Command {
 	cmd.Flags().StringVar(&configPath, "config", "", "operator configuration (required)")
 	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:8080", "HTTP listen address")
 	cmd.Flags().DurationVar(&retryInterval, "retry-interval", 30*time.Second, "interval for pending acquire/release retries and dispatch scans")
-	cmd.Flags().StringVar(&coordNamespace, "coordination-namespace", "", "kubernetes namespace for run coordination (reserved)")
+	cmd.Flags().StringVar(&coordNamespace, "coordination-namespace", "", "kubernetes namespace for run records, target leases and leader election")
 	cmd.Flags().StringVar(&leaseName, "lease-name", "", "leader election lease name (reserved)")
 	return cmd
 }

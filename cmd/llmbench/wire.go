@@ -194,12 +194,32 @@ func (s *planHookSource) HooksFor(r run.Run) ([]run.Hook, error) {
 	return hooks, nil
 }
 
-// buildEngine wires the engine for the current configuration.
+// engineStores lets serve swap run records and leases for the Kubernetes
+// implementations while recipe snapshots and artifacts stay on the file
+// store (the harness persistent volume).
+type engineStores struct {
+	Runs      run.RunStore
+	Leases    run.LeaseStore
+	Snapshots run.InputSnapshotter
+}
+
+// buildEngine wires the engine with the default file-backed stores.
 func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration,
 	sandboxFor func(target string) SandboxHookDeps,
 	gitopsFor func(target string) GitOpsHookDeps,
 ) *run.Engine {
 	store := mustFileStore(g)
+	return buildEngineWithStores(g, cfg, interval, sandboxFor, gitopsFor, engineStores{
+		Runs: store, Leases: store, Snapshots: store,
+	})
+}
+
+// buildEngineWithStores wires the engine for the given stores.
+func buildEngineWithStores(g *globalFlags, cfg operator.Config, interval time.Duration,
+	sandboxFor func(target string) SandboxHookDeps,
+	gitopsFor func(target string) GitOpsHookDeps,
+	stores engineStores,
+) *run.Engine {
 
 	// Publication (site) wiring: only when the operator configured a site.
 	var finalizer run.Finalizer
@@ -212,9 +232,9 @@ func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration,
 	}
 
 	return &run.Engine{
-		Store:     store,
-		Leases:    store,
-		Snapshots: store,
+		Store:     stores.Runs,
+		Leases:    stores.Leases,
+		Snapshots: stores.Snapshots,
 		Hooks:     &planHookSource{dir: g.root, sandboxFor: sandboxFor, gitopsFor: gitopsFor},
 		Executor:  executorRouter{g: g, cfg: cfg, sandboxFor: sandboxFor},
 		Finalizer: finalizer,

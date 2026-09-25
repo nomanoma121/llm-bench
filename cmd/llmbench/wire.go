@@ -24,6 +24,7 @@ import (
 	"github.com/nomanoma121/llm-bench/internal/provenance"
 	"github.com/nomanoma121/llm-bench/internal/run"
 	"github.com/nomanoma121/llm-bench/internal/runner"
+	"github.com/nomanoma121/llm-bench/internal/sandbox"
 )
 
 const (
@@ -103,10 +104,10 @@ func prepareRun(g *globalFlags, opCfg operator.Config, expPath, commit string) (
 	if !ok {
 		return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("submit: target %q is not allowlisted", cfg.Target)}
 	}
-	if target.GitOps != nil || target.Sandbox != nil {
-		// The implementations of these hook kinds are not wired in this
-		// build; refusing before the run record exists keeps the target lease
-		// from being held by a run that can never progress.
+	if target.GitOps != nil {
+		// GitOps hooks are not wired in this build; refusing before the run
+		// record exists keeps the target lease from being held by a run that
+		// can never progress.
 		return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("submit: target %q requires an integration that is not available in this build", cfg.Target)}
 	}
 	if target.Sandbox != nil && len(commit) != 40 {
@@ -311,6 +312,23 @@ func (r executorRouter) Execute(ctx context.Context, rec run.Run) (run.Artifacts
 		return exec.Execute(ctx, rec)
 	}
 	return runner.NewLocal(r.g.root).Execute(ctx, rec)
+}
+
+// sandboxDepsFunc lazily creates one sandbox client per target.
+func sandboxDepsFunc(g *globalFlags, cfg operator.Config) func(target string) SandboxHookDeps {
+	clients := map[string]runner.SandboxClient{}
+	return func(target string) SandboxHookDeps {
+		t, ok := cfg.Targets[target]
+		if !ok || t.Sandbox == nil {
+			return SandboxHookDeps{}
+		}
+		if c, ok := clients[target]; ok {
+			return SandboxHookDeps{Client: c}
+		}
+		c := &sandbox.Client{Namespace: t.Sandbox.Namespace, Kubeconfig: g.kubeconfig}
+		clients[target] = c
+		return SandboxHookDeps{Client: c}
+	}
 }
 
 func mustFileStore(g *globalFlags) *filestore.Store {

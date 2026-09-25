@@ -41,7 +41,7 @@ func TestDispatcherAdvancesSubmittedRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := buildEngine(g, opCfg, 100*time.Millisecond, nil)
+	engine := buildEngine(g, opCfg, 100*time.Millisecond, sandboxDepsFunc(g, opCfg))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := engine.Submit(ctx, r, inputs); err != nil {
@@ -124,17 +124,24 @@ func TestPrepareRunRejectsUnimplementedTargets(t *testing.T) {
 	}
 	g := &globalFlags{root: root, state: t.TempDir(), output: t.TempDir()}
 
-	for _, tc := range []struct {
-		name   string
-		target operator.Target
-	}{
-		{"gitops", operator.Target{GitOps: &operator.GitOps{}}},
-		{"sandbox", operator.Target{Sandbox: &operator.Sandbox{}}},
-	} {
-		opCfg := operator.Config{Targets: map[string]operator.Target{"gpu": tc.target}}
-		if _, _, err := prepareRun(g, opCfg, exPath, strings.Repeat("a", 40)); err == nil {
-			t.Errorf("%s: target accepted although the integration is not available", tc.name)
-		}
+	// GitOps hooks are not implemented in this build and must be refused
+	// before any run record exists.
+	opCfg := operator.Config{Targets: map[string]operator.Target{
+		"gpu": {GitOps: &operator.GitOps{}},
+	}}
+	if _, _, err := prepareRun(g, opCfg, exPath, strings.Repeat("a", 40)); err == nil {
+		t.Error("gitops target accepted although the integration is not available")
+	}
+
+	// Sandbox hooks ARE implemented here; the requirement is the full commit.
+	sandboxCfg := operator.Config{Targets: map[string]operator.Target{
+		"gpu": {Sandbox: &operator.Sandbox{Namespace: "bench", WarmPool: "pool"}},
+	}}
+	if _, _, err := prepareRun(g, sandboxCfg, exPath, ""); err == nil {
+		t.Error("sandbox target accepted without an input commit")
+	}
+	if _, _, err := prepareRun(g, sandboxCfg, exPath, strings.Repeat("a", 40)); err != nil {
+		t.Errorf("sandbox target with a full commit rejected: %v", err)
 	}
 }
 
@@ -154,7 +161,7 @@ func TestAPIServiceDeniesLocalWithoutToken(t *testing.T) {
 	opCfg := operator.Config{Targets: map[string]operator.Target{
 		"local": {Hooks: []operator.CommandHook{}, AllowHTTPLocal: true},
 	}}
-	engine := buildEngine(g, opCfg, time.Second)
+	engine := buildEngine(g, opCfg, time.Second, sandboxDepsFunc(g, opCfg))
 
 	// allow_http_local alone is not enough: the API must be authenticated.
 	svc := &apiService{g: g, opCfg: opCfg, engine: engine, store: mustFileStore(g), authenticated: false}
@@ -267,4 +274,22 @@ func TestSubmitErrorClassification(t *testing.T) {
 func isBadRequest(err error) bool {
 	var bad *httpapi.BadRequestError
 	return errors.As(err, &bad)
+}
+
+func TestSandboxDepsFuncBuildsClientPerTarget(t *testing.T) {
+	g := &globalFlags{kubeconfig: "/tmp/kubeconfig"}
+	cfg := operator.Config{Targets: map[string]operator.Target{
+		"local": {Hooks: []operator.CommandHook{}},
+		"gpu":   {Sandbox: &operator.Sandbox{Namespace: "bench", WarmPool: "pool"}},
+	}}
+	deps := sandboxDepsFunc(g, cfg)
+	if deps("local").Client != nil {
+		t.Error("local target must not get a sandbox client")
+	}
+	if deps("gpu").Client == nil {
+		t.Fatal("sandbox target must get a client (production wiring)")
+	}
+	if deps("gpu").Client != deps("gpu").Client {
+		t.Error("client must be cached per target")
+	}
 }

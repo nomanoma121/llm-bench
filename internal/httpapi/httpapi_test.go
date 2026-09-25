@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/nomanoma121/llm-bench/internal/run"
@@ -132,6 +134,18 @@ func TestSubmitMapsErrors(t *testing.T) {
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("status = %d", resp.StatusCode)
+		}
+	})
+	t.Run("state write failure -> 500", func(t *testing.T) {
+		f := &fakeService{submitErr: &os.PathError{Op: "write", Path: "/state/run.json", Err: syscall.EACCES}}
+		ts := serve(t, f, "")
+		resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(`{"experiment":"e.yaml"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500 (a controller-side PathError is not a caller mistake)", resp.StatusCode)
 		}
 	})
 	t.Run("internal failure -> 500", func(t *testing.T) {

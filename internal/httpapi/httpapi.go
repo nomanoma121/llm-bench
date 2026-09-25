@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -163,18 +162,13 @@ func (s *Server) getRun(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, NewStatusView(r))
 }
 
-// isBadRequest reports whether err is a caller mistake (missing file, bad
-// recipe, non-allowlisted target) rather than an infrastructure failure.
+// isBadRequest reports whether err is a caller mistake. Only errors the
+// service explicitly classifies as BadRequestError qualify: a bare
+// *os.PathError may just as well come from the controller's own state
+// directory (EACCES, EIO) and must stay a 500.
 func isBadRequest(err error) bool {
-	if err == nil {
-		return false
-	}
 	var bad *BadRequestError
-	if errors.As(err, &bad) {
-		return true
-	}
-	var pathErr *os.PathError
-	return errors.As(err, &pathErr)
+	return errors.As(err, &bad)
 }
 
 // BadRequestError marks caller mistakes so handlers can map them to 400.

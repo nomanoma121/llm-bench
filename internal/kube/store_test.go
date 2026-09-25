@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -145,5 +146,43 @@ func TestLeaseStoreSemantics(t *testing.T) {
 	// Lease is free.
 	if err := leases.AcquireTargetLease(ctx, "gpu", "r2"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRunWithLeadershipRunsAndStops(t *testing.T) {
+	client := k8sfake.NewSimpleClientset()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		err := RunWithLeadership(ctx, LeaderConfig{
+			Client:        client,
+			Namespace:     "bench",
+			LeaseName:     "llmbench-leader",
+			Identity:      "test-1",
+			LeaseDuration: 2 * time.Second,
+			RenewDeadline: 1 * time.Second,
+			RetryPeriod:   100 * time.Millisecond,
+		}, func(leaderCtx context.Context) error {
+			close(started)
+			<-leaderCtx.Done() // the leader context is cancelled on shutdown
+			close(stopped)
+			return nil
+		})
+		if err != nil {
+			t.Errorf("RunWithLeadership: %v", err)
+		}
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("leadership was never acquired")
+	}
+	cancel()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("losing the lease did not cancel the leader context")
 	}
 }

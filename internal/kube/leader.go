@@ -61,6 +61,9 @@ func RunWithLeadership(ctx context.Context, cfg LeaderConfig, fn func(context.Co
 		LeaseDuration: cfg.LeaseDuration,
 		RenewDeadline: cfg.RenewDeadline,
 		RetryPeriod:   cfg.RetryPeriod,
+		// A graceful shutdown releases the lease immediately instead of
+		// making the next controller wait for it to expire.
+		ReleaseOnCancel: true,
 		Callbacks: leaderelection.LeaderCallbacks{
 			OnStartedLeading: func(leaderCtx context.Context) {
 				if err := fn(leaderCtx); err != nil && cfg.Log.GetSink() != nil {

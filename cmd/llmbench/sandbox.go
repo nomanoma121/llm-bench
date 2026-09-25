@@ -39,8 +39,12 @@ func sandboxAcquireCmd(g *globalFlags, namespace *string) *cobra.Command {
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c := sandboxClient(g, *namespace)
-			if err := c.EnsureSandboxClaim(context.Background(), sandbox.ClaimName(args[0]), args[1]); err != nil {
+			ready, err := c.EnsureSandboxClaim(context.Background(), sandbox.ClaimName(args[0]), args[1])
+			if err != nil {
 				return err
+			}
+			if !ready {
+				return fmt.Errorf("claim %s exists but is not ready yet", sandbox.ClaimName(args[0]))
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "claim %s ready\n", sandbox.ClaimName(args[0]))
 			return nil
@@ -97,8 +101,12 @@ func sandboxReleaseCmd(g *globalFlags, namespace *string) *cobra.Command {
 				return errors.New("release: run id required")
 			}
 			c := sandboxClient(g, *namespace)
-			if err := c.ReleaseSandboxClaim(context.Background(), sandbox.ClaimName(args[0])); err != nil {
+			released, err := c.ReleaseSandboxClaim(context.Background(), sandbox.ClaimName(args[0]))
+			if err != nil {
 				return err
+			}
+			if !released {
+				return fmt.Errorf("claim %s is still terminating", sandbox.ClaimName(args[0]))
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "claim %s released\n", sandbox.ClaimName(args[0]))
 			return nil

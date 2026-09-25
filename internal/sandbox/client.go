@@ -20,8 +20,6 @@ import (
 	sandboxsdk "sigs.k8s.io/agent-sandbox/clients/go/sandbox"
 	extensionsclient "sigs.k8s.io/agent-sandbox/clients/k8s/extensions/clientset/versioned/typed/api/v1beta1"
 	extv1beta1 "sigs.k8s.io/agent-sandbox/extensions/api/v1beta1"
-
-	"github.com/nomanoma121/llm-bench/internal/run"
 )
 
 // ClaimName derives the deterministic SandboxClaim name for a run. A fresh
@@ -79,13 +77,15 @@ func (c *Client) claims() (extensionsclient.SandboxClaimInterface, error) {
 
 // EnsureSandboxClaim creates the deterministic SandboxClaim if absent and
 // waits until it reports Ready. AlreadyExists is success after verifying the
-// warm pool reference matches; a claim that has not become ready within the
-// convergence timeout yields run.ErrPending so the engine retries the hook
-// instead of entering the (non-repeatable) execution phase.
-func (c *Client) EnsureSandboxClaim(ctx context.Context, claimName, warmPool string) error {
+// warm pool reference matches. ready=false means "not yet": the caller
+// (runner) converts that into run.ErrPending so the engine retries the hook
+// instead of entering the non-repeatable execution phase. Keeping the
+// pending decision out of this package preserves the dependency direction
+// (adapter packages do not import run).
+func (c *Client) EnsureSandboxClaim(ctx context.Context, claimName, warmPool string) (bool, error) {
 	claims, err := c.claims()
 	if err != nil {
-		return err
+		return false, err
 	}
 	claim := &extv1beta1.SandboxClaim{
 		ObjectMeta: metav1.ObjectMeta{
@@ -99,53 +99,49 @@ func (c *Client) EnsureSandboxClaim(ctx context.Context, claimName, warmPool str
 	}
 	if _, err := claims.Create(ctx, claim, metav1.CreateOptions{}); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("sandbox: create claim %s: %w", claimName, err)
+			return false, fmt.Errorf("sandbox: create claim %s: %w", claimName, err)
 		}
 		stored, getErr := claims.Get(ctx, claimName, metav1.GetOptions{})
 		if getErr != nil {
-			return fmt.Errorf("sandbox: get claim %s: %w", claimName, getErr)
+			return false, fmt.Errorf("sandbox: get claim %s: %w", claimName, getErr)
 		}
 		if stored.Spec.WarmPoolRef.Name != warmPool {
-			return fmt.Errorf("sandbox: claim %s exists with warm pool %q, want %q", claimName, stored.Spec.WarmPoolRef.Name, warmPool)
+			return false, fmt.Errorf("sandbox: claim %s exists with warm pool %q, want %q", claimName, stored.Spec.WarmPoolRef.Name, warmPool)
 		}
 	}
-	ready, err := c.waitClaimReady(ctx, claimName)
-	if err != nil {
-		return err
-	}
-	if !ready {
-		return fmt.Errorf("sandbox: claim %s is not ready yet: %w", claimName, run.ErrPending)
-	}
-	return nil
+	return c.waitClaimReady(ctx, claimName)
 }
 
-// ReleaseSandboxClaim deletes the claim and waits until it is gone: a DELETE
-// that is merely accepted still holds the GPU while the pod terminates, and
-// the restore hook must not start before the claim (and its GPU) is released.
-// Still-terminating claims yield run.ErrPending.
-func (c *Client) ReleaseSandboxClaim(ctx context.Context, claimName string) error {
+// ReleaseSandboxClaim deletes the claim with foreground propagation and waits
+// until it is gone. Foreground deletion makes the claim's disappearance the
+// completion point of the Sandbox/Pod cascade: the controller ties the
+// Sandbox to the claim, so a plain (background) DELETE could remove the claim
+// first and let the GitOps restore start while the GPU is still held.
+// released=false means "still terminating": the caller retries.
+func (c *Client) ReleaseSandboxClaim(ctx context.Context, claimName string) (bool, error) {
 	claims, err := c.claims()
 	if err != nil {
-		return err
+		return false, err
 	}
-	if err := claims.Delete(ctx, claimName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("sandbox: release claim %s: %w", claimName, err)
+	policy := metav1.DeletePropagationForeground
+	if err := claims.Delete(ctx, claimName, metav1.DeleteOptions{PropagationPolicy: &policy}); err != nil && !apierrors.IsNotFound(err) {
+		return false, fmt.Errorf("sandbox: release claim %s: %w", claimName, err)
 	}
 	deadline := time.Now().Add(c.converge())
 	for {
 		_, err := claims.Get(ctx, claimName, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
-			return nil // released
+			return true, nil // claim, sandbox and pod are gone
 		}
 		if err != nil {
-			return fmt.Errorf("sandbox: get claim %s: %w", claimName, err)
+			return false, fmt.Errorf("sandbox: get claim %s: %w", claimName, err)
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("sandbox: claim %s is still terminating: %w", claimName, run.ErrPending)
+			return false, nil // still terminating: pending, not an error
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return false, ctx.Err()
 		case <-time.After(500 * time.Millisecond):
 		}
 	}

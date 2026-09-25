@@ -94,6 +94,10 @@ func HashTreeLocal(dir string) (ModelIdentity, error) {
 func HashTreeScript(modelRoot string) string {
 	return fmt.Sprintf(`import hashlib, json, os, stat, sys
 root = %q
+rst = os.lstat(root)
+if stat.S_ISLNK(rst.st_mode) or not stat.S_ISDIR(rst.st_mode):
+    sys.stderr.write("model root is not a directory: " + root + "\n")
+    sys.exit(3)
 files = []
 for dirpath, dirnames, filenames in os.walk(root):
     dirnames.sort()

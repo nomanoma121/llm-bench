@@ -24,9 +24,9 @@ import (
 // safe to retry at the engine's write-ahead boundaries except where noted
 // (Exec has side effects and is never replayed by the transport).
 type SandboxClient interface {
-	// EnsureSandboxClaim creates the claim if absent and only returns once it
-	// is usable; not-yet-ready claims surface as run.ErrPending.
-	EnsureSandboxClaim(ctx context.Context, claimName, warmPool string) error
+	// EnsureSandboxClaim creates the claim if absent. ready=false means the
+	// claim exists but is not usable yet.
+	EnsureSandboxClaim(ctx context.Context, claimName, warmPool string) (ready bool, err error)
 	// Start launches the runtime detached; the handle is an opaque string.
 	// Starting while a previous runtime is alive is a no-op.
 	Start(ctx context.Context, runID, claimName string, argv []string, env map[string]string, cwd string) (handle string, err error)
@@ -36,7 +36,8 @@ type SandboxClient interface {
 	Put(ctx context.Context, claimName string, r io.Reader, dest string) error
 	Pull(ctx context.Context, claimName, path string) ([]byte, error)
 	// ReleaseSandboxClaim waits until the claim and its GPU are gone.
-	ReleaseSandboxClaim(ctx context.Context, claimName string) error
+	// released=false means it is still terminating.
+	ReleaseSandboxClaim(ctx context.Context, claimName string) (released bool, err error)
 }
 
 // GitVerifier verifies commits and exports snapshots. Implemented by
@@ -307,7 +308,14 @@ func (h *ClaimHook) Name() string { return "sandbox-claim" }
 
 // Acquire implements run.Hook.
 func (h *ClaimHook) Acquire(ctx context.Context) error {
-	return h.Client.EnsureSandboxClaim(ctx, h.Claim, h.WarmPool)
+	ready, err := h.Client.EnsureSandboxClaim(ctx, h.Claim, h.WarmPool)
+	if err != nil {
+		return err
+	}
+	if !ready {
+		return fmt.Errorf("sandbox: claim %s is not ready yet: %w", h.Claim, run.ErrPending)
+	}
+	return nil
 }
 
 // Release implements run.Hook. The runtime is stopped best-effort; the claim
@@ -315,8 +323,12 @@ func (h *ClaimHook) Acquire(ctx context.Context) error {
 // the release phase.
 func (h *ClaimHook) Release(ctx context.Context) error {
 	stopErr := h.Client.Stop(ctx, h.Claim, runtimePIDFileOf(h.RunID))
-	if err := h.Client.ReleaseSandboxClaim(ctx, h.Claim); err != nil {
+	released, err := h.Client.ReleaseSandboxClaim(ctx, h.Claim)
+	if err != nil {
 		return err
+	}
+	if !released {
+		return fmt.Errorf("sandbox: claim %s is still terminating: %w", h.Claim, run.ErrPending)
 	}
 	_ = stopErr // the claim is gone; a leaked process dies with the sandbox pod
 	return nil

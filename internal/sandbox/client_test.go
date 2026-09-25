@@ -2,7 +2,6 @@ package sandbox
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -11,8 +10,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	extfake "sigs.k8s.io/agent-sandbox/clients/k8s/extensions/clientset/versioned/fake"
 	extv1beta1 "sigs.k8s.io/agent-sandbox/extensions/api/v1beta1"
-
-	"github.com/nomanoma121/llm-bench/internal/run"
 )
 
 func TestQuote(t *testing.T) {
@@ -107,11 +104,11 @@ func testClient(objs ...runtime.Object) *Client {
 func TestEnsureSandboxClaimWaitsForReady(t *testing.T) {
 	// A ready claim satisfies Acquire.
 	c := testClient(readyClaim("llmbench-r1"))
-	if err := c.EnsureSandboxClaim(context.Background(), "llmbench-r1", "pool"); err != nil {
-		t.Fatalf("ready claim rejected: %v", err)
+	if ready, err := c.EnsureSandboxClaim(context.Background(), "llmbench-r1", "pool"); err != nil || !ready {
+		t.Fatalf("ready claim rejected: ready=%v err=%v", ready, err)
 	}
 	// An existing claim for another warm pool is refused.
-	if err := c.EnsureSandboxClaim(context.Background(), "llmbench-r1", "other-pool"); err == nil {
+	if _, err := c.EnsureSandboxClaim(context.Background(), "llmbench-r1", "other-pool"); err == nil {
 		t.Fatal("warm pool mismatch accepted")
 	}
 }
@@ -119,9 +116,12 @@ func TestEnsureSandboxClaimWaitsForReady(t *testing.T) {
 func TestEnsureSandboxClaimPendingWhenNotReady(t *testing.T) {
 	c := testClient(pendingClaim("llmbench-r1"))
 	start := time.Now()
-	err := c.EnsureSandboxClaim(context.Background(), "llmbench-r1", "pool")
-	if !errors.Is(err, run.ErrPending) {
-		t.Fatalf("want run.ErrPending, got %v", err)
+	ready, err := c.EnsureSandboxClaim(context.Background(), "llmbench-r1", "pool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready {
+		t.Fatal("a claim without the Ready condition must report ready=false")
 	}
 	if time.Since(start) < 100*time.Millisecond {
 		t.Fatalf("returned before the convergence timeout: %s", time.Since(start))
@@ -130,12 +130,12 @@ func TestEnsureSandboxClaimPendingWhenNotReady(t *testing.T) {
 
 func TestReleaseSandboxClaimWaitsForDeletion(t *testing.T) {
 	c := testClient()
-	if err := c.EnsureSandboxClaim(context.Background(), "llmbench-gone", "pool"); err == nil {
-		t.Fatal("expected pending for a missing claim that gets created without readiness")
+	if ready, err := c.EnsureSandboxClaim(context.Background(), "llmbench-gone", "pool"); err != nil || ready {
+		t.Fatalf("claim created without readiness: ready=%v err=%v", ready, err)
 	}
 	// No claim: release is success (already gone).
-	if err := c.ReleaseSandboxClaim(context.Background(), "llmbench-gone"); err != nil {
-		t.Fatalf("missing claim must release cleanly: %v", err)
+	if released, err := c.ReleaseSandboxClaim(context.Background(), "llmbench-gone"); err != nil || !released {
+		t.Fatalf("missing claim must release cleanly: released=%v err=%v", released, err)
 	}
 	// A claim deleting in the background: release returns once it is gone.
 	c2 := testClient(readyClaim("llmbench-r2"))
@@ -143,8 +143,8 @@ func TestReleaseSandboxClaimWaitsForDeletion(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		_ = c2.Extensions.SandboxClaims("bench").Delete(context.Background(), "llmbench-r2", metav1.DeleteOptions{})
 	}()
-	if err := c2.ReleaseSandboxClaim(context.Background(), "llmbench-r2"); err != nil {
-		t.Fatalf("release did not converge: %v", err)
+	if released, err := c2.ReleaseSandboxClaim(context.Background(), "llmbench-r2"); err != nil || !released {
+		t.Fatalf("release did not converge: released=%v err=%v", released, err)
 	}
 }
 

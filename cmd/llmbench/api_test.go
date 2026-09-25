@@ -313,8 +313,20 @@ func TestExecutorRoutingUsesFrozenPlan(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error from the sandbox path")
 	}
+	if !strings.Contains(err.Error(), "no longer configured") {
+		t.Fatalf("missing target must fail closed, got %v", err)
+	}
 	if strings.Contains(err.Error(), "locally") {
 		t.Fatalf("sandbox run fell back to the local executor: %v", err)
+	}
+
+	// A target that became local must not execute the sandbox run either.
+	localCfg := operator.Config{Targets: map[string]operator.Target{
+		"gpu": {Hooks: []operator.CommandHook{}, AllowHTTPLocal: true},
+	}}
+	router = executorRouter{g: g, cfg: localCfg, sandboxClients: newSandboxClients(g)}
+	if _, err := router.Execute(context.Background(), rec); err == nil || !strings.Contains(err.Error(), "local target") {
+		t.Fatalf("sandbox run on a now-local target must fail closed, got %v", err)
 	}
 
 	// A local run needs its target in the configuration.

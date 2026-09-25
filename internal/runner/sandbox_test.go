@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -30,11 +31,14 @@ type fakeSandboxClient struct {
 	identity string     // model identity JSON served to the digest script
 	index    []byte
 	failCmd  func(argv []string) (int, error)
+	// ensureReady/releaseFinished let tests exercise the pending paths.
+	ensureReady     bool
+	releaseFinished bool
 }
 
 func newFakeSandboxClient(t *testing.T) *fakeSandboxClient {
 	t.Helper()
-	f := &fakeSandboxClient{index: []byte("<html></html>")}
+	f := &fakeSandboxClient{index: []byte("<html></html>"), ensureReady: true, releaseFinished: true}
 	id := provenance.ModelIdentity{
 		Root:  "/models/m",
 		Files: []provenance.ModelFile{{Path: "weights.bin", Size: 10, SHA256: strings.Repeat("a", 64)}},
@@ -48,9 +52,9 @@ func newFakeSandboxClient(t *testing.T) *fakeSandboxClient {
 	return f
 }
 
-func (f *fakeSandboxClient) EnsureSandboxClaim(_ context.Context, claimName, warmPool string) error {
+func (f *fakeSandboxClient) EnsureSandboxClaim(_ context.Context, claimName, warmPool string) (bool, error) {
 	f.ensured = append(f.ensured, claimName+":"+warmPool)
-	return nil
+	return f.ensureReady, nil
 }
 
 func (f *fakeSandboxClient) Start(_ context.Context, _, claimName string, argv []string, _ map[string]string, _ string) (string, error) {
@@ -92,9 +96,9 @@ func (f *fakeSandboxClient) Pull(_ context.Context, _, path string) ([]byte, err
 	return []byte("log"), nil
 }
 
-func (f *fakeSandboxClient) ReleaseSandboxClaim(_ context.Context, claimName string) error {
+func (f *fakeSandboxClient) ReleaseSandboxClaim(_ context.Context, claimName string) (bool, error) {
 	f.releases = append(f.releases, claimName)
-	return nil
+	return f.releaseFinished, nil
 }
 
 type fakeGit struct{ archive []byte }
@@ -353,6 +357,19 @@ func TestClaimHookUsesFrozenClaimName(t *testing.T) {
 	}
 	if len(f.releases) != 1 || f.releases[0] != "llmbench-r1" {
 		t.Fatalf("releases = %v", f.releases)
+	}
+}
+
+func TestClaimHookPendingWhileClaimConverges(t *testing.T) {
+	f := newFakeSandboxClient(t)
+	f.ensureReady = false
+	h := &ClaimHook{RunID: "r1", Claim: "llmbench-r1", WarmPool: "pool", Client: f}
+	if err := h.Acquire(context.Background()); !errors.Is(err, run.ErrPending) {
+		t.Fatalf("want ErrPending while the claim converges, got %v", err)
+	}
+	f.releaseFinished = false
+	if err := h.Release(context.Background()); !errors.Is(err, run.ErrPending) {
+		t.Fatalf("want ErrPending while the claim terminates, got %v", err)
 	}
 }
 

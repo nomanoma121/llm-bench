@@ -164,6 +164,11 @@ func TestHashTreeScriptRejectsDirectorySymlinks(t *testing.T) {
 	if !strings.Contains(script, "import hashlib, json, os, stat, sys") {
 		t.Fatal("manifest script lost its imports")
 	}
+	// The model root itself must be checked too: os.walk happily descends
+	// into a root that is a directory symlink.
+	if !strings.Contains(script, "os.lstat(root)") || !strings.Contains(script, "model root is not a directory") {
+		t.Fatalf("manifest script does not reject a symlinked model root:\n%s", script)
+	}
 }
 
 func TestValidateCommitSHA(t *testing.T) {

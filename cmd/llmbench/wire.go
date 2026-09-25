@@ -296,10 +296,14 @@ func (r executorRouter) Execute(ctx context.Context, rec run.Run) (run.Artifacts
 		if r.sandboxClients == nil {
 			return run.Artifacts{}, fmt.Errorf("wire: run %s needs a sandbox executor but none is configured", rec.ID)
 		}
-		if _, ok := r.cfg.Targets[rec.Target]; !ok {
-			// The target disappeared from the configuration: keep using the
-			// frozen plan instead of guessing a different execution kind.
-			_ = ok
+		target, ok := r.cfg.Targets[rec.Target]
+		if !ok {
+			// Fail closed: without the operator target we would run with no
+			// execution ceiling, no readiness clamp and no model pin (F17).
+			return run.Artifacts{}, fmt.Errorf("wire: run %s targets %q which is no longer configured; refusing to execute without operator limits and model pin", rec.ID, rec.Target)
+		}
+		if target.Sandbox == nil {
+			return run.Artifacts{}, fmt.Errorf("wire: run %s was submitted for a sandbox target but %q is now a local target; refusing to execute", rec.ID, rec.Target)
 		}
 		exec := &runner.Sandbox{
 			Client: r.sandboxClients.client(plan.Namespace),

@@ -1,23 +1,176 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/go-logr/stdr"
 
+	"github.com/nomanoma121/llm-bench/internal/experiment"
 	"github.com/nomanoma121/llm-bench/internal/filestore"
 	"github.com/nomanoma121/llm-bench/internal/hook"
+	"github.com/nomanoma121/llm-bench/internal/httpapi"
 	"github.com/nomanoma121/llm-bench/internal/operator"
+	"github.com/nomanoma121/llm-bench/internal/provenance"
 	"github.com/nomanoma121/llm-bench/internal/run"
 	"github.com/nomanoma121/llm-bench/internal/runner"
+)
+
+const (
+	// benchSchemaVersion participates in the benchmark fingerprint. Bump it
+	// when the benchmark contract changes in a way that breaks A/B
+	// comparability.
+	benchSchemaVersion = "1"
+	// controllerVersion is stamped into fingerprints and run records.
+	controllerVersion = "0.1.0-dev"
 )
 
 // newFileStore constructs the file-backed persistence layer. Artifacts live
 // under <output>/runs/<run-id>/.
 func newFileStore(g *globalFlags) (*filestore.Store, error) {
 	return filestore.New(g.state, filepath.Join(g.output, "runs"))
+}
+
+// mapCallerError classifies recipe/file mistakes as 400 (BadRequestError)
+// while leaving I/O and internal failures for the handler to answer 500.
+func mapCallerError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, experiment.ErrInvalid) {
+		return &httpapi.BadRequestError{Err: err}
+	}
+	return err
+}
+
+// resolveExperimentPath turns a caller-supplied experiment path into an
+// absolute path confined to the repository root plus the repository-relative
+// path recorded on the run. Absolute paths outside the repository and paths
+// escaping it with ".." are rejected.
+func resolveExperimentPath(root, p string) (full, rel string, err error) {
+	if strings.TrimSpace(p) == "" {
+		return "", "", errors.New("experiment is required")
+	}
+	if filepath.IsAbs(p) {
+		abs := filepath.Clean(filepath.FromSlash(p))
+		r, err := filepath.Rel(root, abs)
+		if err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+			return "", "", fmt.Errorf("experiment path is outside the repository: %q", p)
+		}
+		return abs, filepath.ToSlash(r), nil
+	}
+	clean := filepath.Clean(filepath.FromSlash(p))
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", "", fmt.Errorf("experiment path escapes the repository: %q", p)
+	}
+	return filepath.Join(root, clean), filepath.ToSlash(clean), nil
+}
+
+// prepareRun validates an experiment request and freezes everything the run
+// needs: recipe snapshot, prompt hash, fingerprint, hook plan and inputs.
+// Both the submit CLI and the HTTP API go through this function; the path is
+// resolved inside the repository root.
+func prepareRun(g *globalFlags, opCfg operator.Config, expPath, commit string) (run.Run, map[string][]byte, error) {
+	fullPath, relPath, err := resolveExperimentPath(g.root, expPath)
+	if err != nil {
+		return run.Run{}, nil, &httpapi.BadRequestError{Err: err}
+	}
+	cfg, err := experiment.Load(fullPath)
+	if err != nil {
+		return run.Run{}, nil, mapCallerError(err)
+	}
+	if err := experiment.Validate(cfg, g.root); err != nil {
+		return run.Run{}, nil, mapCallerError(fmt.Errorf("%s: %w", relPath, err))
+	}
+	ready := 0
+	if cfg.Runtime.Start != nil {
+		ready = cfg.Runtime.Start.ReadyTimeout()
+	}
+	if err := opCfg.ValidateRecipe(cfg.Target, ready); err != nil {
+		return run.Run{}, nil, &httpapi.BadRequestError{Err: err}
+	}
+	target, ok := opCfg.Targets[cfg.Target]
+	if !ok {
+		return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("submit: target %q is not allowlisted", cfg.Target)}
+	}
+	if target.GitOps != nil || target.Sandbox != nil {
+		// The implementations of these hook kinds are not wired in this
+		// build; refusing before the run record exists keeps the target lease
+		// from being held by a run that can never progress.
+		return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("submit: target %q requires an integration that is not available in this build", cfg.Target)}
+	}
+	if target.Sandbox != nil && len(commit) != 40 {
+		return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("submit: sandbox target %q requires a full 40-hex input commit", cfg.Target)}
+	}
+
+	promptBytes, err := os.ReadFile(experiment.BenchmarkPath(cfg, g.root))
+	if err != nil {
+		return run.Run{}, nil, mapCallerError(err)
+	}
+	rawBytes, err := os.ReadFile(fullPath)
+	if err != nil {
+		return run.Run{}, nil, mapCallerError(err)
+	}
+	recipeJSON, err := experiment.CanonicalJSON(cfg)
+	if err != nil {
+		return run.Run{}, nil, err
+	}
+
+	runID, err := newRunID()
+	if err != nil {
+		return run.Run{}, nil, err
+	}
+	plan := operator.BuildHookPlan(target, runID)
+	digest, err := operator.PlanDigest(plan)
+	if err != nil {
+		return run.Run{}, nil, err
+	}
+	store, err := newFileStore(g)
+	if err != nil {
+		return run.Run{}, nil, err
+	}
+	now := currentTime()
+	fingerprint, err := provenance.Fingerprint(provenance.FingerprintInput{
+		Prompt:                 promptBytes,
+		BenchmarkSchemaVersion: benchSchemaVersion,
+		ContextSize:            cfg.Runtime.ContextSize,
+		RuntimeSignature:       cfg.Runtime.Engine + "/" + cfg.Runtime.Variant,
+		TargetKind:             targetKind(target),
+		ControllerVersion:      controllerVersion,
+	})
+	if err != nil {
+		return run.Run{}, nil, err
+	}
+
+	r := run.Run{
+		ID:                  runID,
+		Target:              cfg.Target,
+		Experiment:          relPath,
+		InputCommit:         commit,
+		Fingerprint:         fingerprint,
+		RecipeSchemaVersion: 1,
+		RecipeJSON:          string(recipeJSON),
+		PromptSHA256:        provenance.SHA256Hex(promptBytes),
+		HookPlan:            plan,
+		HookPlanDigest:      digest,
+		Artifacts:           run.Artifacts{Dir: store.ArtifactsDir(runID)},
+		CreatedAt:           now,
+		UpdatedAt:           now,
+	}
+	inputs := map[string][]byte{
+		"config.yaml": rawBytes,
+		"prompt.md":   promptBytes,
+	}
+	return r, inputs, nil
 }
 
 // planHookSource rebuilds hooks from a run's frozen hook plan. It verifies
@@ -56,10 +209,8 @@ func (s *planHookSource) HooksFor(r run.Run) ([]run.Hook, error) {
 	return hooks, nil
 }
 
-// buildEngine wires the engine for the current configuration. The interval is
-// short because the submit CLI drives runs synchronously; serve constructs a
-// second engine with the operator retry interval in milestone 2.
-func buildEngine(g *globalFlags, cfg operator.Config) *run.Engine {
+// buildEngine wires the engine for the current configuration.
+func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration) *run.Engine {
 	store := mustFileStore(g)
 	return &run.Engine{
 		Store:     store,
@@ -68,8 +219,8 @@ func buildEngine(g *globalFlags, cfg operator.Config) *run.Engine {
 		Hooks:     &planHookSource{dir: g.root},
 		Executor:  runner.NewLocal(g.root),
 		Finalizer: nil, // publication arrives with milestone 5; nil short-circuits finalizing
-		Log:       logr.Discard(),
-		Interval:  time.Second,
+		Log:       controllerLogger(),
+		Interval:  interval,
 		MaxExecutionDuration: func(target string) time.Duration {
 			t, ok := cfg.Targets[target]
 			if !ok {
@@ -80,10 +231,48 @@ func buildEngine(g *globalFlags, cfg operator.Config) *run.Engine {
 	}
 }
 
+func currentTime() time.Time { return time.Now() }
+
+// controllerLogger returns a stderr logger. The verbosity is controlled with
+// LLMBENCH_LOG_LEVEL (0 = info-equivalent warnings, higher = more detail).
+func controllerLogger() logr.Logger {
+	return stdr.New(log.New(os.Stderr, "", log.LstdFlags)).V(logLevel())
+}
+
+func logLevel() int {
+	if v := os.Getenv("LLMBENCH_LOG_LEVEL"); v != "" {
+		var n int
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil {
+			return -n
+		}
+	}
+	return 0
+}
+
+func newRunID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("submit: generate run id: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+func targetKind(t operator.Target) string {
+	if t.Sandbox != nil {
+		return "sandbox"
+	}
+	return "local"
+}
+
 func mustFileStore(g *globalFlags) *filestore.Store {
 	s, err := newFileStore(g)
 	if err != nil {
 		panic(err) // construction only fails on unusable state/output dirs
 	}
 	return s
+}
+
+// statusJSON renders the API/CLI status projection.
+func statusJSON(r run.Run) ([]byte, error) {
+	return json.MarshalIndent(httpapi.NewStatusView(r), "", "  ")
 }

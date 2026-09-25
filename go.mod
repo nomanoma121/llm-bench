@@ -3,7 +3,9 @@ module github.com/nomanoma121/llm-bench
 go 1.26.0
 
 require (
+	github.com/go-chi/chi/v5 v5.3.2
 	github.com/go-logr/logr v1.4.4
+	github.com/go-logr/stdr v1.2.2
 	github.com/spf13/cobra v1.10.2
 	gopkg.in/yaml.v3 v3.0.1
 )

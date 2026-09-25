@@ -631,6 +631,9 @@ func TestPostEffectConflictsNeverDoubleRun(t *testing.T) {
 			if f.exec.callCount() != 1 {
 				t.Fatalf("executor calls = %d, want 1 (no re-execution)", f.exec.callCount())
 			}
+			if store.conflicts[tc.rule] != 0 {
+				t.Fatalf("conflict %q was never injected: the test window is not covered", tc.rule)
+			}
 		})
 	}
 }
@@ -645,34 +648,42 @@ type conflictStore struct {
 	conflicts map[string]int
 }
 
-func classifySave(r *Run) string {
-	switch {
-	case r.Phase == PhaseAcquiring:
+// classifySave lists every conflict window the save belongs to. A save can
+// match several windows (a released hook and a released lease are recorded
+// together); each rule fires on the first matching save.
+func classifySave(r *Run) []string {
+	var rules []string
+	if r.Phase == PhaseAcquiring {
 		for _, h := range r.Hooks {
 			if h.Phase == HookAcquired {
-				return "hookacquired"
+				rules = append(rules, "hookacquired")
+				break
 			}
 		}
-	case r.Phase == PhaseReleasing:
+	}
+	if r.Phase == PhaseReleasing {
 		for _, h := range r.Hooks {
 			if h.Phase == HookReleased {
-				return "hookreleased"
+				rules = append(rules, "hookreleased")
+				break
 			}
 		}
 		if r.LeaseState == LeaseReleased {
-			return "leasereleased"
+			rules = append(rules, "leasereleased")
 		}
 		if r.ExecutionState == ExecCompleted {
-			return "execcompleted"
+			rules = append(rules, "execcompleted")
 		}
 	}
-	return ""
+	return rules
 }
 
 func (s *conflictStore) SaveRun(ctx context.Context, r *Run) error {
-	if rule := classifySave(r); rule != "" && s.conflicts[rule] > 0 {
-		s.conflicts[rule]--
-		return ErrVersionConflict
+	for _, rule := range classifySave(r) {
+		if s.conflicts[rule] > 0 {
+			s.conflicts[rule]--
+			return ErrVersionConflict
+		}
 	}
 	return s.inner.SaveRun(ctx, r)
 }

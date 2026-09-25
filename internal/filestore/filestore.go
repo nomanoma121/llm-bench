@@ -240,7 +240,13 @@ func (s *Store) WriteInputs(_ context.Context, runID string, files map[string][]
 			return err
 		}
 	}
-	return os.Rename(input, filepath.Join(base, "input"))
+	// The rename makes the snapshot visible; fsyncing the parent directory
+	// makes that directory entry durable against a host crash too.
+	if err := os.Rename(input, filepath.Join(base, "input")); err != nil {
+		return err
+	}
+	syncDir(base)
+	return nil
 }
 
 // RemoveInputs implements run.InputSnapshotter (orphan GC).
@@ -293,9 +299,17 @@ func writeAtomic(path string, b []byte) error {
 		os.Remove(tmp)
 		return err
 	}
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync() // best effort: directory entry durability
-		d.Close()
-	}
+	syncDir(dir)
 	return nil
+}
+
+// syncDir fsyncs a directory so a rename into it survives a host crash. It is
+// best effort on filesystems that reject directory fsync.
+func syncDir(dir string) {
+	d, err := os.Open(dir)
+	if err != nil {
+		return
+	}
+	_ = d.Sync()
+	_ = d.Close()
 }

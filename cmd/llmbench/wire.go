@@ -112,6 +112,12 @@ func prepareRun(g *globalFlags, opCfg operator.Config, expPath, commit string) (
 			return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("submit: sandbox target %q: %w", cfg.Target, err)}
 		}
 	}
+	if target.GitOps != nil && os.Getenv("LLMBENCH_GITHUB_TOKEN") == "" {
+		// Without the token the gitops hook cannot be built at all; refusing
+		// before the run record exists prevents a run that holds the target
+		// lease while its hook can never complete.
+		return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("submit: target %q needs LLMBENCH_GITHUB_TOKEN in the controller environment", cfg.Target)}
+	}
 
 	promptBytes, err := os.ReadFile(experiment.BenchmarkPath(cfg, g.root))
 	if err != nil {

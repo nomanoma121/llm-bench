@@ -134,6 +134,13 @@ func TestPrepareRunRejectsUnimplementedTargets(t *testing.T) {
 			ActiveValue: "1", PausedValue: "0",
 		}},
 	}}
+	// Without a GitHub token the hook cannot be built: refuse early instead
+	// of persisting a run that can never acquire.
+	t.Setenv("LLMBENCH_GITHUB_TOKEN", "")
+	if _, _, err := prepareRun(g, gitopsCfg, exPath, ""); err == nil {
+		t.Fatal("gitops target without a token must be refused")
+	}
+	t.Setenv("LLMBENCH_GITHUB_TOKEN", "test-token")
 	rec, _, err := prepareRun(g, gitopsCfg, exPath, "")
 	if err != nil {
 		t.Fatalf("valid gitops target rejected: %v", err)

@@ -16,12 +16,15 @@ import (
 
 	"github.com/nomanoma121/llm-bench/internal/experiment"
 	"github.com/nomanoma121/llm-bench/internal/filestore"
+	"github.com/nomanoma121/llm-bench/internal/gitops"
 	"github.com/nomanoma121/llm-bench/internal/hook"
 	"github.com/nomanoma121/llm-bench/internal/httpapi"
+	"github.com/nomanoma121/llm-bench/internal/kube"
 	"github.com/nomanoma121/llm-bench/internal/operator"
 	"github.com/nomanoma121/llm-bench/internal/provenance"
 	"github.com/nomanoma121/llm-bench/internal/run"
 	"github.com/nomanoma121/llm-bench/internal/runner"
+	"github.com/nomanoma121/llm-bench/internal/sandbox"
 )
 
 const (
@@ -133,12 +136,13 @@ func prepareRun(g *globalFlags, opCfg operator.Config, expPath, commit string) (
 }
 
 // planHookSource rebuilds hooks from a run's frozen hook plan. It verifies
-// the plan digest on every call and refuses kinds whose implementations are
-// not wired yet (GitOps arrives in a later change).
+// the plan digest on every call.
 type planHookSource struct {
 	dir string // working directory for command hooks (repository root)
-	// sandboxClients builds (and caches) the sandbox client for a target.
+	// sandboxFor builds (and caches) the sandbox client for a target.
 	sandboxFor func(target string) SandboxHookDeps
+	// gitopsFor builds (and caches) the GitHub and kube gateways for a target.
+	gitopsFor func(target string) GitOpsHookDeps
 }
 
 // HooksFor implements run.HookSource.
@@ -160,7 +164,18 @@ func (s *planHookSource) HooksFor(r run.Run) ([]run.Hook, error) {
 			}
 			hooks = append(hooks, h)
 		case operator.KindGitOps:
-			return nil, fmt.Errorf("hook %q: gitops hooks arrive with milestone 4; do not select this target yet", p.Name)
+			if s.gitopsFor == nil {
+				return nil, fmt.Errorf("hook %q: no gitops gateways configured", p.Name)
+			}
+			deps := s.gitopsFor(r.Target)
+			if deps.GitHub == nil || deps.Kube == nil {
+				return nil, fmt.Errorf("hook %q: gitops gateways unavailable", p.Name)
+			}
+			hooks = append(hooks, &gitops.PauseRestore{
+				Plan: *p.GitOps,
+				GH:   deps.GitHub,
+				Kube: deps.Kube,
+			})
 		case operator.KindSandboxClaim:
 			if s.sandboxFor == nil {
 				return nil, fmt.Errorf("hook %q: no sandbox client configured", p.Name)
@@ -179,15 +194,18 @@ func (s *planHookSource) HooksFor(r run.Run) ([]run.Hook, error) {
 }
 
 // buildEngine wires the engine for the current configuration.
-func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration, sandboxFor func(target string) SandboxHookDeps) *run.Engine {
+func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration,
+	sandboxFor func(target string) SandboxHookDeps,
+	gitopsFor func(target string) GitOpsHookDeps,
+) *run.Engine {
 	store := mustFileStore(g)
 	return &run.Engine{
 		Store:     store,
 		Leases:    store,
 		Snapshots: store,
-		Hooks:     &planHookSource{dir: g.root, sandboxFor: sandboxFor},
+		Hooks:     &planHookSource{dir: g.root, sandboxFor: sandboxFor, gitopsFor: gitopsFor},
 		Executor:  executorRouter{g: g, cfg: cfg, sandboxFor: sandboxFor},
-		Finalizer: nil, // publication arrives with milestone 5; nil short-circuits finalizing
+		Finalizer: nil, // publication arrives with the review change; nil short-circuits finalizing
 		Log:       controllerLogger(),
 		Interval:  interval,
 		MaxExecutionDuration: func(target string) time.Duration {
@@ -203,7 +221,7 @@ func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration, sa
 func currentTime() time.Time { return time.Now() }
 
 // controllerLogger returns a stderr logger. The verbosity is controlled with
-// LLMBENCH_LOG_LEVEL (0 = info-equivalent warnings, higher = more detail).
+// LLMBENCH_LOG_LEVEL (higher values reduce output).
 func controllerLogger() logr.Logger {
 	return stdr.New(log.New(os.Stderr, "", log.LstdFlags)).V(logLevel())
 }
@@ -236,6 +254,55 @@ func targetKind(t operator.Target) string {
 // SandboxHookDeps carries what a sandbox claim hook needs at build time.
 type SandboxHookDeps struct {
 	Client runner.SandboxClient
+}
+
+// sandboxDepsFunc lazily creates one sandbox client per target.
+func sandboxDepsFunc(g *globalFlags, cfg operator.Config) func(target string) SandboxHookDeps {
+	clients := map[string]runner.SandboxClient{}
+	return func(target string) SandboxHookDeps {
+		t, ok := cfg.Targets[target]
+		if !ok || t.Sandbox == nil {
+			return SandboxHookDeps{}
+		}
+		if c, ok := clients[target]; ok {
+			return SandboxHookDeps{Client: c}
+		}
+		c := &sandbox.Client{Namespace: t.Sandbox.Namespace, Kubeconfig: g.kubeconfig}
+		clients[target] = c
+		return SandboxHookDeps{Client: c}
+	}
+}
+
+// GitOpsHookDeps carries what a gitops hook needs at build time. The plan is
+// taken from the run's frozen hook plan; only the gateways are injected.
+type GitOpsHookDeps struct {
+	GitHub gitops.GitHubAPI
+	Kube   gitops.Kube
+}
+
+// gitopsDepsFunc lazily creates the GitHub and kube gateways per target.
+func gitopsDepsFunc(g *globalFlags, cfg operator.Config) func(target string) GitOpsHookDeps {
+	deps := map[string]GitOpsHookDeps{}
+	return func(target string) GitOpsHookDeps {
+		t, ok := cfg.Targets[target]
+		if !ok || t.GitOps == nil {
+			return GitOpsHookDeps{}
+		}
+		if d, ok := deps[target]; ok {
+			return d
+		}
+		gh, err := gitops.NewGitHubAPIFromEnv(context.Background(), t.GitOps.Owner, t.GitOps.Repository, t.GitOps.BaseBranch)
+		if err != nil {
+			return GitOpsHookDeps{}
+		}
+		checker, kubeErr := kube.NewChecker(g.kubeconfig)
+		if kubeErr != nil {
+			return GitOpsHookDeps{}
+		}
+		d := GitOpsHookDeps{GitHub: gh, Kube: checker}
+		deps[target] = d
+		return d
+	}
 }
 
 // executorRouter picks the local or sandbox executor per target.

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: llmbench
+description: Experimental LLM benchmark harness and GPU Agent Sandbox resources
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

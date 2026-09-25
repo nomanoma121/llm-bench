@@ -1,0 +1,56 @@
+nameOverride: ""
+fullnameOverride: ""
+
+harness:
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: IfNotPresent
+  repositoryPVC: ""
+  dataPVC: ""
+  apiTokenSecret: ""
+  githubTokenSecret: ""
+  discordWebhookSecret: ""
+  port: 8080
+  retryInterval: 30s
+
+  browser:
+    image: ""
+    binary: /usr/bin/chromium
+    extraArgs: []
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  nodeSelector: {}
+  tolerations: []
+
+operatorConfig:
+  targets: {}
+
+sandbox:
+  enabled: true
+  warmPoolReplicas: 0
+  devImage: ""
+  sandboxdImage: ""
+  gpuResourceClaimTemplate: ""
+  workspaceStorageClass: ""
+  workspaceSize: 20Gi
+  modelPVC: ""
+  cachePVC: ""
+  nodeSelector: {}
+  tolerations: []
+  resources:
+    requests:
+      cpu: "2"
+      memory: 8Gi
+    limits:
+      memory: 32Gi

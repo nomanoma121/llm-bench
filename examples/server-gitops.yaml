@@ -1,0 +1,23 @@
+targets:
+  gpu:
+    gitops:
+      owner: example-owner
+      repository: example-manifests
+      base_branch: main
+      file_path: apps/inference/values.yaml
+      yaml_path: [replicaCount]
+      active_value: "1"
+      paused_value: "0"
+      application:
+        namespace: argocd
+        name: local-inference
+      workload:
+        namespace: inference
+        deployment: local-inference
+        active_replicas: 1
+    sandbox:
+      namespace: bench
+      warm_pool: demo-llmbench
+visual:
+  width: 1280
+  height: 720

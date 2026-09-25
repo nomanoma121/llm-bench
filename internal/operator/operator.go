@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -137,6 +138,9 @@ type GitOpsPlan struct {
 	WorkloadNamespace, Deployment           string
 	ActiveReplicas                          int
 }
+
+// YAMLPathString renders the manifest path for error messages.
+func (p GitOpsPlan) YAMLPathString() string { return strings.Join(p.YAMLPath, ".") }
 
 // SandboxPlan is the sanitized, run-bound snapshot of a sandbox claim hook.
 type SandboxPlan struct {
@@ -339,6 +343,12 @@ func validateGitOps(g GitOps) error {
 	}
 	if len(g.YAMLPath) == 0 {
 		errs = append(errs, errors.New("yaml_path is required"))
+	}
+	if g.ActiveValue == g.PausedValue {
+		errs = append(errs, errors.New("active_value and paused_value must differ"))
+	}
+	if g.Workload.ActiveReplicas <= 0 {
+		errs = append(errs, errors.New("workload.active_replicas must be positive"))
 	}
 	return errors.Join(errs...)
 }

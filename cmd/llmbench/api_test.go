@@ -42,7 +42,7 @@ func TestDispatcherAdvancesSubmittedRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := buildEngine(g, opCfg, 100*time.Millisecond, newSandboxClients(g))
+	engine := buildEngine(g, opCfg, 100*time.Millisecond, newSandboxClients(g), nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := engine.Submit(ctx, r, inputs); err != nil {
@@ -125,16 +125,33 @@ func TestPrepareRunRejectsUnimplementedTargets(t *testing.T) {
 	}
 	g := &globalFlags{root: root, state: t.TempDir(), output: t.TempDir()}
 
-	// GitOps hooks are not implemented in this build and must be refused
-	// before any run record exists.
-	opCfg := operator.Config{Targets: map[string]operator.Target{
-		"gpu": {GitOps: &operator.GitOps{}},
+	// GitOps targets are implemented here, but their gateways must be
+	// constructible before a run may exist.
+	gitopsCfg := operator.Config{Targets: map[string]operator.Target{
+		"gpu": {GitOps: &operator.GitOps{
+			Owner: "o", Repository: "r", BaseBranch: "main",
+			FilePath: "apps/values.yaml", YAMLPath: []string{"replicas"},
+			ActiveValue: "1", PausedValue: "0",
+		}},
 	}}
-	if _, _, err := prepareRun(g, opCfg, exPath, strings.Repeat("a", 40)); err == nil {
-		t.Error("gitops target accepted although the integration is not available")
+	// Without a GitHub token the hook cannot be built: refuse early instead
+	// of persisting a run that can never acquire.
+	t.Setenv("LLMBENCH_GITHUB_TOKEN", "")
+	if _, _, err := prepareRun(g, gitopsCfg, exPath, ""); err == nil {
+		t.Fatal("gitops target without a token must be refused")
+	}
+	// With a token but without a reachable cluster configuration the kube
+	// gateway cannot be built either; that must also be refused up front.
+	t.Setenv("LLMBENCH_GITHUB_TOKEN", "test-token")
+	t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "absent"))
+	if _, _, err := prepareRun(g, gitopsCfg, exPath, ""); err == nil {
+		t.Fatal("gitops target without a kube configuration must be refused")
 	}
 
-	// Sandbox hooks ARE implemented here; the requirement is the full commit.
+	// The frozen gitops plan itself is covered by the operator tests
+	// (BuildHookPlan/PlanDigest).
+
+	// Sandbox targets require the full commit.
 	sandboxCfg := operator.Config{Targets: map[string]operator.Target{
 		"gpu": {Sandbox: &operator.Sandbox{Namespace: "bench", WarmPool: "pool"}},
 	}}
@@ -162,7 +179,7 @@ func TestAPIServiceDeniesLocalWithoutToken(t *testing.T) {
 	opCfg := operator.Config{Targets: map[string]operator.Target{
 		"local": {Hooks: []operator.CommandHook{}, AllowHTTPLocal: true},
 	}}
-	engine := buildEngine(g, opCfg, time.Second, newSandboxClients(g))
+	engine := buildEngine(g, opCfg, time.Second, newSandboxClients(g), nil)
 
 	// allow_http_local alone is not enough: the API must be authenticated.
 	svc := &apiService{g: g, opCfg: opCfg, engine: engine, store: mustFileStore(g), authenticated: false}

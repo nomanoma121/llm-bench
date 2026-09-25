@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -17,7 +18,10 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	sandboxsdk "sigs.k8s.io/agent-sandbox/clients/go/sandbox"
+	extensionsclient "sigs.k8s.io/agent-sandbox/clients/k8s/extensions/clientset/versioned/typed/api/v1beta1"
 	extv1beta1 "sigs.k8s.io/agent-sandbox/extensions/api/v1beta1"
+
+	"github.com/nomanoma121/llm-bench/internal/run"
 )
 
 // ClaimName derives the deterministic SandboxClaim name for a run. A fresh
@@ -31,28 +35,61 @@ func ClaimName(runID string) string { return "llmbench-" + runID }
 // doubles as the deterministic process handle.
 func runtimePIDFile(runID string) string { return "/tmp/llmbench-runtime-" + runID + ".pid" }
 
+// convergenceTimeout bounds how long Acquire/Release wait for a claim
+// transition before reporting run.ErrPending (the engine retries later).
+const convergenceTimeout = 15 * time.Second
+
 // Client implements runner.SandboxClient on top of the Agent Sandbox SDK.
 type Client struct {
 	// Namespace holds the SandboxClaims.
 	Namespace string
 	// Kubeconfig optionally points at a cluster; empty means in-cluster
-	// config with the default kubeconfig fallback.
+	// config with the default kubeconfig fallback. An explicit path that
+	// cannot be loaded is an error: silently connecting to another cluster
+	// would release the wrong claim.
 	Kubeconfig string
 	Log        logr.Logger
+	// Extensions optionally overrides the claim clientset (tests and
+	// pre-built clients). When nil it is built from Kubeconfig.
+	Extensions extensionsclient.ExtensionsV1beta1Interface
+	// ConvergenceTimeout overrides how long Acquire/Release wait for a claim
+	// transition before reporting run.ErrPending. Defaults to
+	// convergenceTimeout.
+	ConvergenceTimeout time.Duration
 }
 
-// EnsureSandboxClaim creates the deterministic SandboxClaim if absent.
-// AlreadyExists is success after verifying the warm pool reference matches,
-// which makes the operation idempotent across retries and restarts.
-func (c *Client) EnsureSandboxClaim(ctx context.Context, runID, warmPool string) error {
+func (c *Client) converge() time.Duration {
+	if c.ConvergenceTimeout > 0 {
+		return c.ConvergenceTimeout
+	}
+	return convergenceTimeout
+}
+
+// claims resolves the SandboxClaim client, honouring an injected clientset.
+func (c *Client) claims() (extensionsclient.SandboxClaimInterface, error) {
+	if c.Extensions != nil {
+		return c.Extensions.SandboxClaims(c.Namespace), nil
+	}
 	helper, err := c.k8sHelper()
+	if err != nil {
+		return nil, err
+	}
+	return helper.ExtensionsClient.SandboxClaims(c.Namespace), nil
+}
+
+// EnsureSandboxClaim creates the deterministic SandboxClaim if absent and
+// waits until it reports Ready. AlreadyExists is success after verifying the
+// warm pool reference matches; a claim that has not become ready within the
+// convergence timeout yields run.ErrPending so the engine retries the hook
+// instead of entering the (non-repeatable) execution phase.
+func (c *Client) EnsureSandboxClaim(ctx context.Context, claimName, warmPool string) error {
+	claims, err := c.claims()
 	if err != nil {
 		return err
 	}
-	name := ClaimName(runID)
 	claim := &extv1beta1.SandboxClaim{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
+			Name:      claimName,
 			Namespace: c.Namespace,
 			Labels:    map[string]string{"app.kubernetes.io/managed-by": "llmbench"},
 		},
@@ -60,41 +97,101 @@ func (c *Client) EnsureSandboxClaim(ctx context.Context, runID, warmPool string)
 			WarmPoolRef: extv1beta1.SandboxWarmPoolRef{Name: warmPool},
 		},
 	}
-	if _, err := helper.ExtensionsClient.SandboxClaims(c.Namespace).Create(ctx, claim, metav1.CreateOptions{}); err != nil {
+	if _, err := claims.Create(ctx, claim, metav1.CreateOptions{}); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("sandbox: create claim %s: %w", name, err)
+			return fmt.Errorf("sandbox: create claim %s: %w", claimName, err)
 		}
-		stored, getErr := helper.ExtensionsClient.SandboxClaims(c.Namespace).Get(ctx, name, metav1.GetOptions{})
+		stored, getErr := claims.Get(ctx, claimName, metav1.GetOptions{})
 		if getErr != nil {
-			return fmt.Errorf("sandbox: get claim %s: %w", name, getErr)
+			return fmt.Errorf("sandbox: get claim %s: %w", claimName, getErr)
 		}
 		if stored.Spec.WarmPoolRef.Name != warmPool {
-			return fmt.Errorf("sandbox: claim %s exists with warm pool %q, want %q", name, stored.Spec.WarmPoolRef.Name, warmPool)
+			return fmt.Errorf("sandbox: claim %s exists with warm pool %q, want %q", claimName, stored.Spec.WarmPoolRef.Name, warmPool)
 		}
+	}
+	ready, err := c.waitClaimReady(ctx, claimName)
+	if err != nil {
+		return err
+	}
+	if !ready {
+		return fmt.Errorf("sandbox: claim %s is not ready yet: %w", claimName, run.ErrPending)
 	}
 	return nil
 }
 
-// ReleaseSandboxClaim deletes the claim (pod and workspace go with it).
-// Artifacts must have been pulled beforehand. A missing claim is success.
-func (c *Client) ReleaseSandboxClaim(ctx context.Context, runID string) error {
-	helper, err := c.k8sHelper()
+// ReleaseSandboxClaim deletes the claim and waits until it is gone: a DELETE
+// that is merely accepted still holds the GPU while the pod terminates, and
+// the restore hook must not start before the claim (and its GPU) is released.
+// Still-terminating claims yield run.ErrPending.
+func (c *Client) ReleaseSandboxClaim(ctx context.Context, claimName string) error {
+	claims, err := c.claims()
 	if err != nil {
 		return err
 	}
-	if err := helper.ExtensionsClient.SandboxClaims(c.Namespace).Delete(ctx, ClaimName(runID), metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("sandbox: release claim %s: %w", ClaimName(runID), err)
+	if err := claims.Delete(ctx, claimName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("sandbox: release claim %s: %w", claimName, err)
 	}
-	return nil
+	deadline := time.Now().Add(c.converge())
+	for {
+		_, err := claims.Get(ctx, claimName, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return nil // released
+		}
+		if err != nil {
+			return fmt.Errorf("sandbox: get claim %s: %w", claimName, err)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("sandbox: claim %s is still terminating: %w", claimName, run.ErrPending)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+// waitClaimReady polls the claim's Ready condition up to convergenceTimeout.
+func (c *Client) waitClaimReady(ctx context.Context, claimName string) (bool, error) {
+	claims, err := c.claims()
+	if err != nil {
+		return false, err
+	}
+	deadline := time.Now().Add(c.converge())
+	for {
+		claim, err := claims.Get(ctx, claimName, metav1.GetOptions{})
+		if err != nil {
+			return false, fmt.Errorf("sandbox: get claim %s: %w", claimName, err)
+		}
+		for _, cond := range claim.Status.Conditions {
+			if cond.Type == "Ready" {
+				if cond.Status == metav1.ConditionTrue {
+					return true, nil
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			return false, nil
+		}
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 }
 
 // sandboxHandle attaches to a claim and returns the SDK handle with
 // exec/file access over the port-forward transport.
 func (c *Client) sandboxHandle(ctx context.Context, claim string) (*sandboxsdk.Sandbox, error) {
+	restCfg, err := c.restConfig()
+	if err != nil {
+		return nil, err
+	}
 	client, err := sandboxsdk.NewClient(ctx, sandboxsdk.Options{
 		Namespace:  c.Namespace,
 		Runtime:    sandboxsdk.RuntimeSandboxd,
-		RestConfig: c.restConfig(),
+		RestConfig: restCfg,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: client: %w", err)
@@ -109,9 +206,9 @@ func (c *Client) sandboxHandle(ctx context.Context, claim string) (*sandboxsdk.S
 // Start launches the runtime detached inside the sandbox and records its pid
 // at a deterministic in-sandbox path (the returned handle). Starting while a
 // recorded pid is alive is a no-op, so retries never double-start a runtime.
-func (c *Client) Start(ctx context.Context, runID string, argv []string, env map[string]string, cwd string) (string, error) {
+func (c *Client) Start(ctx context.Context, runID, claim string, argv []string, env map[string]string, cwd string) (string, error) {
 	handle := runtimePIDFile(runID)
-	sb, err := c.sandboxHandle(ctx, ClaimName(runID))
+	sb, err := c.sandboxHandle(ctx, claim)
 	if err != nil {
 		return "", err
 	}
@@ -122,7 +219,11 @@ func (c *Client) Start(ctx context.Context, runID string, argv []string, env map
 	if strings.TrimSpace(res.Stdout) == "alive" {
 		return handle, nil
 	}
-	res, err = sb.Run(ctx, backgroundScript(argv, env, cwd, handle))
+	script, err := backgroundScript(argv, env, cwd, handle)
+	if err != nil {
+		return "", err
+	}
+	res, err = sb.Run(ctx, script)
 	if err != nil {
 		return "", fmt.Errorf("sandbox: start runtime: %w: %s%s", err, res.Stdout, res.Stderr)
 	}
@@ -133,8 +234,8 @@ func (c *Client) Start(ctx context.Context, runID string, argv []string, env map
 }
 
 // Stop terminates the recorded runtime. Idempotent.
-func (c *Client) Stop(ctx context.Context, runID, handle string) error {
-	sb, err := c.sandboxHandle(ctx, ClaimName(runID))
+func (c *Client) Stop(ctx context.Context, claim, handle string) error {
+	sb, err := c.sandboxHandle(ctx, claim)
 	if err != nil {
 		return err
 	}
@@ -147,14 +248,18 @@ func (c *Client) Stop(ctx context.Context, runID, handle string) error {
 
 // Exec runs argv inside the sandbox and returns stdout/stderr and the exit
 // code. sandboxd only accepts a shell string, so argv is quoted here at the
-// boundary; results are never retried automatically because commands have
-// side effects.
-func (c *Client) Exec(ctx context.Context, runID string, argv []string, env map[string]string, cwd string) ([]byte, []byte, int, error) {
-	sb, err := c.sandboxHandle(ctx, ClaimName(runID))
+// boundary; nothing else in the controller deals in shell syntax. Results are
+// never retried automatically because commands have side effects.
+func (c *Client) Exec(ctx context.Context, claim string, argv []string, env map[string]string, cwd string) ([]byte, []byte, int, error) {
+	sb, err := c.sandboxHandle(ctx, claim)
 	if err != nil {
 		return nil, nil, -1, err
 	}
-	res, err := sb.Run(ctx, execScript(argv, env, cwd))
+	script, err := execScript(argv, env, cwd)
+	if err != nil {
+		return nil, nil, -1, err
+	}
+	res, err := sb.Run(ctx, script)
 	if err != nil {
 		return nil, nil, -1, fmt.Errorf("sandbox: exec: %w", err)
 	}
@@ -162,8 +267,8 @@ func (c *Client) Exec(ctx context.Context, runID string, argv []string, env map[
 }
 
 // Put streams r into dest inside the sandbox.
-func (c *Client) Put(ctx context.Context, runID string, r io.Reader, dest string) error {
-	sb, err := c.sandboxHandle(ctx, ClaimName(runID))
+func (c *Client) Put(ctx context.Context, claim string, r io.Reader, dest string) error {
+	sb, err := c.sandboxHandle(ctx, claim)
 	if err != nil {
 		return err
 	}
@@ -174,8 +279,8 @@ func (c *Client) Put(ctx context.Context, runID string, r io.Reader, dest string
 }
 
 // Pull reads a file from the sandbox.
-func (c *Client) Pull(ctx context.Context, runID, path string) ([]byte, error) {
-	sb, err := c.sandboxHandle(ctx, ClaimName(runID))
+func (c *Client) Pull(ctx context.Context, claim, path string) ([]byte, error) {
+	sb, err := c.sandboxHandle(ctx, claim)
 	if err != nil {
 		return nil, err
 	}
@@ -186,41 +291,25 @@ func (c *Client) Pull(ctx context.Context, runID, path string) ([]byte, error) {
 	return b, nil
 }
 
-// ExecClaim runs a raw shell command on the claim (manual CLI operations).
-func (c *Client) ExecClaim(ctx context.Context, claim, command string) (string, error) {
-	sb, err := c.sandboxHandle(ctx, claim)
-	if err != nil {
-		return "", err
-	}
-	res, err := sb.Run(ctx, command)
-	if err != nil {
-		return "", fmt.Errorf("sandbox: exec: %w", err)
-	}
-	return strings.TrimSpace(res.Stdout) + res.Stderr, nil
-}
-
-// PullClaim reads a file from the claim (manual CLI operations).
-func (c *Client) PullClaim(ctx context.Context, claim, path string) ([]byte, error) {
-	sb, err := c.sandboxHandle(ctx, claim)
+func (c *Client) k8sHelper() (*sandboxsdk.K8sHelper, error) {
+	restCfg, err := c.restConfig()
 	if err != nil {
 		return nil, err
 	}
-	return sb.Read(ctx, path)
+	return sandboxsdk.NewK8sHelper(restCfg, c.logger())
 }
 
-func (c *Client) k8sHelper() (*sandboxsdk.K8sHelper, error) {
-	return sandboxsdk.NewK8sHelper(c.restConfig(), c.logger())
-}
-
-func (c *Client) restConfig() *rest.Config {
+// restConfig resolves the cluster configuration. An explicitly requested
+// kubeconfig must load or the caller fails; only the default path falls back.
+func (c *Client) restConfig() (*rest.Config, error) {
 	if c.Kubeconfig == "" {
-		return nil // SDK: in-cluster config, then default kubeconfig
+		return nil, nil // SDK: in-cluster config, then default kubeconfig
 	}
 	cfg, err := clientcmd.BuildConfigFromFlags("", c.Kubeconfig)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("sandbox: load kubeconfig %s: %w", c.Kubeconfig, err)
 	}
-	return cfg
+	return cfg, nil
 }
 
 func (c *Client) logger() logr.Logger {
@@ -246,41 +335,68 @@ func quoteArgv(argv []string) string {
 
 // execScript builds the sh payload for one argv invocation with env and cwd.
 // This is the only place in the controller where shell syntax is produced.
-func execScript(argv []string, env map[string]string, cwd string) string {
+func execScript(argv []string, env map[string]string, cwd string) (string, error) {
+	exports, err := exportLines(env)
+	if err != nil {
+		return "", err
+	}
 	var b strings.Builder
 	b.WriteString("set -e\n")
-	for k, v := range env {
-		fmt.Fprintf(&b, "export %s=%s\n", shellSafeName(k), quote(v))
+	for _, line := range exports {
+		b.WriteString(line)
+		b.WriteString("\n")
 	}
 	if cwd != "" && cwd != "/" {
 		fmt.Fprintf(&b, "cd %s\n", quote(cwd))
 	}
 	b.WriteString(quoteArgv(argv))
 	b.WriteString("\n")
-	return b.String()
+	return b.String(), nil
 }
 
 // backgroundScript detaches the runtime, records its pid and never blocks.
-func backgroundScript(argv []string, env map[string]string, cwd, pidFile string) string {
+func backgroundScript(argv []string, env map[string]string, cwd, pidFile string) (string, error) {
+	exports, err := exportLines(env)
+	if err != nil {
+		return "", err
+	}
 	var b strings.Builder
 	b.WriteString("set -e\n")
-	for k, v := range env {
-		fmt.Fprintf(&b, "export %s=%s\n", shellSafeName(k), quote(v))
+	for _, line := range exports {
+		b.WriteString(line)
+		b.WriteString("\n")
 	}
 	fmt.Fprintf(&b, "cd %s\n", quote(cwd))
 	fmt.Fprintf(&b, "rm -f %s\n", quote(pidFile))
 	fmt.Fprintf(&b, "nohup %s > /tmp/llmbench-runtime.log 2>&1 &\n", quoteArgv(argv))
 	fmt.Fprintf(&b, "echo $! > %s\n", quote(pidFile))
-	return b.String()
+	return b.String(), nil
 }
 
-// shellSafeName keeps only characters valid in a POSIX variable name.
-func shellSafeName(name string) string {
-	var b strings.Builder
+// exportLines renders environment assignments, rejecting names that are not
+// valid POSIX identifiers instead of silently rewriting them.
+func exportLines(env map[string]string) ([]string, error) {
+	lines := make([]string, 0, len(env))
+	for name, value := range env {
+		if !validEnvName(name) {
+			return nil, fmt.Errorf("sandbox: %q is not a valid environment variable name", name)
+		}
+		lines = append(lines, fmt.Sprintf("export %s=%s", name, quote(value)))
+	}
+	return lines, nil
+}
+
+func validEnvName(name string) bool {
+	if name == "" {
+		return false
+	}
 	for i, r := range name {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' || (i > 0 && r >= '0' && r <= '9') {
-			b.WriteRune(r)
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_':
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
 		}
 	}
-	return b.String()
+	return true
 }

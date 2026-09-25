@@ -97,6 +97,12 @@ root = %q
 files = []
 for dirpath, dirnames, filenames in os.walk(root):
     dirnames.sort()
+    for name in list(dirnames):
+        p = os.path.join(dirpath, name)
+        st = os.lstat(p)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            sys.stderr.write("not a directory: " + p + "\n")
+            sys.exit(3)
     for name in sorted(filenames):
         path = os.path.join(dirpath, name)
         st = os.lstat(path)

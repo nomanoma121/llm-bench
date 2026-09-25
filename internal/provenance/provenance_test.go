@@ -153,6 +153,30 @@ func TestHashTreeLocalRejectsSymlinks(t *testing.T) {
 	}
 }
 
+func TestHashTreeScriptRejectsDirectorySymlinks(t *testing.T) {
+	script := HashTreeScript("/models/m")
+	// The script must inspect os.walk's dirnames for symlinks: a symlinked
+	// directory would otherwise be silently skipped (followlinks=False) and
+	// the digest would not cover it.
+	if !strings.Contains(script, "list(dirnames)") || !strings.Contains(script, "S_ISLNK") {
+		t.Fatalf("manifest script does not reject directory symlinks:\n%s", script)
+	}
+	if !strings.Contains(script, "import hashlib, json, os, stat, sys") {
+		t.Fatal("manifest script lost its imports")
+	}
+}
+
+func TestValidateCommitSHA(t *testing.T) {
+	if err := ValidateCommitSHA(strings.Repeat("a", 40)); err != nil {
+		t.Fatalf("valid sha rejected: %v", err)
+	}
+	for _, bad := range []string{"HEAD", strings.Repeat("a", 39), strings.Repeat("A", 40), strings.Repeat("z", 40), strings.Repeat("a", 40) + " "} {
+		if err := ValidateCommitSHA(bad); err == nil {
+			t.Errorf("invalid commit %q accepted", bad)
+		}
+	}
+}
+
 func TestParseModelIdentityRecomputesDigest(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "f"), []byte("data"), 0o644); err != nil {

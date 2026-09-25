@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/nomanoma121/llm-bench/internal/experiment"
@@ -23,16 +24,19 @@ import (
 // safe to retry at the engine's write-ahead boundaries except where noted
 // (Exec has side effects and is never replayed by the transport).
 type SandboxClient interface {
-	EnsureSandboxClaim(ctx context.Context, runID, warmPool string) error
+	// EnsureSandboxClaim creates the claim if absent and only returns once it
+	// is usable; not-yet-ready claims surface as run.ErrPending.
+	EnsureSandboxClaim(ctx context.Context, claimName, warmPool string) error
 	// Start launches the runtime detached; the handle is an opaque string.
 	// Starting while a previous runtime is alive is a no-op.
-	Start(ctx context.Context, runID string, argv []string, env map[string]string, cwd string) (handle string, err error)
+	Start(ctx context.Context, runID, claimName string, argv []string, env map[string]string, cwd string) (handle string, err error)
 	// Stop terminates the recorded runtime. Idempotent.
-	Stop(ctx context.Context, runID, handle string) error
-	Exec(ctx context.Context, runID string, argv []string, env map[string]string, cwd string) (stdout, stderr []byte, exitCode int, err error)
-	Put(ctx context.Context, runID string, r io.Reader, dest string) error
-	Pull(ctx context.Context, runID, path string) ([]byte, error)
-	ReleaseSandboxClaim(ctx context.Context, runID string) error
+	Stop(ctx context.Context, claimName, handle string) error
+	Exec(ctx context.Context, claimName string, argv []string, env map[string]string, cwd string) (stdout, stderr []byte, exitCode int, err error)
+	Put(ctx context.Context, claimName string, r io.Reader, dest string) error
+	Pull(ctx context.Context, claimName, path string) ([]byte, error)
+	// ReleaseSandboxClaim waits until the claim and its GPU are gone.
+	ReleaseSandboxClaim(ctx context.Context, claimName string) error
 }
 
 // GitVerifier verifies commits and exports snapshots. Implemented by
@@ -51,19 +55,23 @@ type Sandbox struct {
 	Client SandboxClient
 	Git    GitVerifier
 	Root   string // repository root used for commit verification
+	// Claim is the deterministic claim name from the run's frozen hook plan.
+	Claim string
+	// Limits resolves the operator ceilings for a target (readiness and
+	// execution) so recipe timeouts can never exceed them.
 	Limits func(target string) (readyLimit, execLimit time.Duration, ok bool)
 	// ModelPins returns operator-pinned model tree digests per target.
 	ModelPins func(target string) map[string]string
-	Log       func() (sink interface{})
 }
 
 // In-sandbox constants. They match the chart's documented dev image layout.
 const (
 	sandboxWorkspace = "/workspace"
 	sandboxSrc       = "/workspace/src"
+	sandboxInput     = "/workspace/input"
 	sandboxOutput    = "/workspace/output"
 	sandboxModels    = "/models"
-	sandboxLog       = "/workspace/invoke.log"
+	sandboxTar       = "/workspace/src.tar"
 )
 
 // Execute implements run.Executor. The caller (engine) has already persisted
@@ -71,6 +79,9 @@ const (
 func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.Artifacts, error) {
 	if r.InputCommit == "" {
 		return run.Artifacts{}, errors.New("runner: sandbox execution requires an input commit")
+	}
+	if s.Claim == "" {
+		return run.Artifacts{}, errors.New("runner: sandbox execution requires the claim name from the run's hook plan")
 	}
 	if r.Artifacts.Dir == "" {
 		return run.Artifacts{}, errors.New("runner: run has no artifact directory")
@@ -98,16 +109,29 @@ func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.Artifacts, error)
 		return run.Artifacts{}, fmt.Errorf("runner: commit verification failed: %w", err)
 	}
 
-	// 2. Upload the source snapshot.
+	// 2. Prepare the workspace and upload the source snapshot. Every command
+	// is a plain argv: the runner never builds shell programs (quoting and the
+	// shell boundary live in the sandbox adapter).
+	if _, stderr, code, err := s.Client.Exec(ctx, s.Claim, []string{"mkdir", "-p", sandboxSrc, sandboxInput, sandboxOutput}, nil, "/"); err != nil || code != 0 {
+		return run.Artifacts{}, fmt.Errorf("runner: prepare workspace: %v exit=%d: %s", err, code, truncate(string(stderr), 256))
+	}
 	tar, err := s.Git.Archive(ctx, r.InputCommit)
 	if err != nil {
 		return run.Artifacts{}, err
 	}
-	if err := s.Client.Put(ctx, r.ID, bytes.NewReader(tar), sandboxWorkspace+"/src.tar"); err != nil {
+	if err := s.Client.Put(ctx, s.Claim, bytes.NewReader(tar), sandboxTar); err != nil {
 		return run.Artifacts{}, err
 	}
-	if _, _, code, err := s.Client.Exec(ctx, r.ID, []string{"/bin/sh", "-c", "mkdir -p " + sandboxSrc + " && tar -xf " + sandboxWorkspace + "/src.tar -C " + sandboxSrc}, nil, "/"); err != nil || code != 0 {
-		return run.Artifacts{}, fmt.Errorf("runner: unpack source: %w", err)
+	if _, stderr, code, err := s.Client.Exec(ctx, s.Claim, []string{"tar", "-xf", sandboxTar, "-C", sandboxSrc}, nil, "/"); err != nil || code != 0 {
+		return run.Artifacts{}, fmt.Errorf("runner: unpack source: %v exit=%d: %s", err, code, truncate(string(stderr), 256))
+	}
+	// The frozen snapshot is the contract for prompt and recipe: upload it so
+	// the environment variables point at existing files.
+	if err := s.Client.Put(ctx, s.Claim, bytes.NewReader(inputPrompt), sandboxInput+"/prompt.md"); err != nil {
+		return run.Artifacts{}, err
+	}
+	if err := s.Client.Put(ctx, s.Claim, bytes.NewReader(inputConfig), sandboxInput+"/config.yaml"); err != nil {
+		return run.Artifacts{}, err
 	}
 
 	env := sandboxEnv(r, cfg)
@@ -119,7 +143,7 @@ func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.Artifacts, error)
 		pins := s.ModelPins(r.Target)
 		pin = pins[cfg.Model]
 	}
-	pre, err := s.modelDigest(ctx, r.ID, modelDir)
+	pre, err := s.modelDigest(ctx, modelDir)
 	if err != nil {
 		return run.Artifacts{}, err
 	}
@@ -129,27 +153,31 @@ func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.Artifacts, error)
 
 	// 4. Runtime start (optional) + readiness.
 	if cfg.Runtime.Start != nil {
-		handle, err := s.Client.Start(ctx, r.ID, cfg.Runtime.Start.Argv, env, sandboxSrc)
-		if err != nil {
+		if _, err := s.Client.Start(ctx, r.ID, s.Claim, cfg.Runtime.Start.Argv, env, sandboxSrc); err != nil {
 			return run.Artifacts{}, fmt.Errorf("runner: start runtime: %w", err)
 		}
-		_ = handle
 		if err := s.waitReady(ctx, r, cfg); err != nil {
 			return run.Artifacts{}, err
 		}
 	}
 
-	// 5. Invoke.
-	_, stderr, code, err := s.Client.Exec(ctx, r.ID, cfg.Invoke.Argv, env, sandboxSrc)
-	if err != nil {
-		return run.Artifacts{}, fmt.Errorf("runner: invoke transport: %v: %s", err, truncate(string(stderr), 512))
+	// 5. Invoke. The log is persisted on the harness side because the sandbox
+	// (and its filesystem) is removed at release time.
+	stdout, stderr, code, execErr := s.Client.Exec(ctx, s.Claim, cfg.Invoke.Argv, env, sandboxSrc)
+	logBody := formatInvokeLog(cfg.Invoke.Argv, stdout, stderr, code, execErr)
+	logPath := filepath.Join(r.Artifacts.Dir, "invoke.log")
+	if err := os.WriteFile(logPath, logBody, 0o644); err != nil {
+		return run.Artifacts{}, err
+	}
+	if execErr != nil {
+		return run.Artifacts{}, fmt.Errorf("runner: invoke transport: %v: %s", execErr, truncate(string(stderr), 512))
 	}
 	if code != 0 {
 		return run.Artifacts{}, fmt.Errorf("runner: invoke failed with exit %d: %s", code, truncate(string(stderr), 512))
 	}
 
 	// 6. Model identity after invocation: must not have changed.
-	post, err := s.modelDigest(ctx, r.ID, modelDir)
+	post, err := s.modelDigest(ctx, modelDir)
 	if err != nil {
 		return run.Artifacts{}, err
 	}
@@ -161,19 +189,11 @@ func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.Artifacts, error)
 	if err := os.MkdirAll(filepath.Join(r.Artifacts.Dir, "output"), 0o755); err != nil {
 		return run.Artifacts{}, err
 	}
-	index, err := s.Client.Pull(ctx, r.ID, sandboxOutput+"/index.html")
+	index, err := s.Client.Pull(ctx, s.Claim, sandboxOutput+"/index.html")
 	if err != nil {
 		return run.Artifacts{}, fmt.Errorf("runner: pull index.html: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(r.Artifacts.Dir, "output", "index.html"), index, 0o644); err != nil {
-		return run.Artifacts{}, err
-	}
-	logData, err := s.Client.Pull(ctx, r.ID, sandboxLog)
-	if err != nil {
-		logData = nil // a run without a log still produced its artifact
-	}
-	logPath := filepath.Join(r.Artifacts.Dir, "invoke.log")
-	if err := os.WriteFile(logPath, logData, 0o644); err != nil {
 		return run.Artifacts{}, err
 	}
 	identityPath := filepath.Join(r.Artifacts.Dir, "model-identity.json")
@@ -188,18 +208,44 @@ func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.Artifacts, error)
 	return run.Artifacts{
 		Dir:               r.Artifacts.Dir,
 		IndexSHA256:       sha256Hex(index),
-		LogSHA256:         sha256Hex(logData),
+		LogSHA256:         sha256Hex(logBody),
 		ModelTreeDigest:   pre.TreeDigest,
 		ModelIdentityPath: identityPath,
 	}, nil
 }
 
+// formatInvokeLog records the invoked argv, captured output and exit status.
+func formatInvokeLog(argv []string, stdout, stderr []byte, code int, execErr error) []byte {
+	var b bytes.Buffer
+	fmt.Fprintf(&b, "$ %s\n", strings.Join(argv, " "))
+	b.Write(stdout)
+	if len(stdout) > 0 && stdout[len(stdout)-1] != '\n' {
+		b.WriteString("\n")
+	}
+	if len(stderr) > 0 {
+		b.WriteString("--- stderr ---\n")
+		b.Write(stderr)
+		if stderr[len(stderr)-1] != '\n' {
+			b.WriteString("\n")
+		}
+	}
+	fmt.Fprintf(&b, "[exit: %d", code)
+	if execErr != nil {
+		fmt.Fprintf(&b, " transport error: %v", execErr)
+	}
+	b.WriteString("]\n")
+	return b.Bytes()
+}
+
 // modelDigest computes the model tree digest inside the sandbox with the
 // shared manifest script.
-func (s *Sandbox) modelDigest(ctx context.Context, runID, modelDir string) (provenance.ModelIdentity, error) {
-	stdout, stderr, _, err := s.Client.Exec(ctx, runID, []string{"python3", "-c", provenance.HashTreeScript(modelDir)}, nil, "/")
+func (s *Sandbox) modelDigest(ctx context.Context, modelDir string) (provenance.ModelIdentity, error) {
+	stdout, stderr, code, err := s.Client.Exec(ctx, s.Claim, []string{"python3", "-c", provenance.HashTreeScript(modelDir)}, nil, "/")
 	if err != nil {
 		return provenance.ModelIdentity{}, fmt.Errorf("runner: model identity: %v: %s", err, truncate(string(stderr), 256))
+	}
+	if code != 0 {
+		return provenance.ModelIdentity{}, fmt.Errorf("runner: model identity: exit %d: %s", code, truncate(string(stderr), 256))
 	}
 	id, err := provenance.ParseModelIdentity(stdout)
 	if err != nil {
@@ -220,7 +266,7 @@ func (s *Sandbox) waitReady(ctx context.Context, r run.Run, cfg experiment.Confi
 	}
 	deadline := time.Now().Add(readyLimit)
 	for {
-		_, stderr, code, err := s.Client.Exec(ctx, r.ID, start.ReadyArgv, nil, sandboxSrc)
+		_, stderr, code, err := s.Client.Exec(ctx, s.Claim, start.ReadyArgv, nil, sandboxSrc)
 		if err == nil && code == 0 {
 			return nil
 		}
@@ -238,7 +284,7 @@ func (s *Sandbox) waitReady(ctx context.Context, r run.Run, cfg experiment.Confi
 func sandboxEnv(r run.Run, cfg experiment.Config) map[string]string {
 	return map[string]string{
 		"LLMBENCH_RUN_ID":       r.ID,
-		"LLMBENCH_PROMPT_PATH":  sandboxSrc + "/input/prompt.md",
+		"LLMBENCH_PROMPT_PATH":  sandboxInput + "/prompt.md",
 		"LLMBENCH_OUTPUT_DIR":   sandboxOutput,
 		"LLMBENCH_MODEL_ID":     cfg.Model,
 		"LLMBENCH_MODEL_PATH":   filepath.Join(sandboxModels, cfg.Model),
@@ -251,6 +297,7 @@ func sandboxEnv(r run.Run, cfg experiment.Config) map[string]string {
 // before any restore hook runs.
 type ClaimHook struct {
 	RunID    string
+	Claim    string
 	WarmPool string
 	Client   SandboxClient
 }
@@ -260,15 +307,15 @@ func (h *ClaimHook) Name() string { return "sandbox-claim" }
 
 // Acquire implements run.Hook.
 func (h *ClaimHook) Acquire(ctx context.Context) error {
-	return h.Client.EnsureSandboxClaim(ctx, h.RunID, h.WarmPool)
+	return h.Client.EnsureSandboxClaim(ctx, h.Claim, h.WarmPool)
 }
 
 // Release implements run.Hook. The runtime is stopped best-effort; the claim
 // release error decides the hook result because the claim must not outlive
 // the release phase.
 func (h *ClaimHook) Release(ctx context.Context) error {
-	stopErr := h.Client.Stop(ctx, h.RunID, runtimePIDFileOf(h.RunID))
-	if err := h.Client.ReleaseSandboxClaim(ctx, h.RunID); err != nil {
+	stopErr := h.Client.Stop(ctx, h.Claim, runtimePIDFileOf(h.RunID))
+	if err := h.Client.ReleaseSandboxClaim(ctx, h.Claim); err != nil {
 		return err
 	}
 	_ = stopErr // the claim is gone; a leaked process dies with the sandbox pod

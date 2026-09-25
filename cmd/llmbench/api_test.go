@@ -11,6 +11,7 @@ import (
 
 	"github.com/nomanoma121/llm-bench/internal/httpapi"
 	"github.com/nomanoma121/llm-bench/internal/operator"
+	"github.com/nomanoma121/llm-bench/internal/run"
 )
 
 // regression: the serve dispatcher must pick up submitted runs.
@@ -41,7 +42,7 @@ func TestDispatcherAdvancesSubmittedRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := buildEngine(g, opCfg, 100*time.Millisecond, sandboxDepsFunc(g, opCfg))
+	engine := buildEngine(g, opCfg, 100*time.Millisecond, newSandboxClients(g))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := engine.Submit(ctx, r, inputs); err != nil {
@@ -161,7 +162,7 @@ func TestAPIServiceDeniesLocalWithoutToken(t *testing.T) {
 	opCfg := operator.Config{Targets: map[string]operator.Target{
 		"local": {Hooks: []operator.CommandHook{}, AllowHTTPLocal: true},
 	}}
-	engine := buildEngine(g, opCfg, time.Second, sandboxDepsFunc(g, opCfg))
+	engine := buildEngine(g, opCfg, time.Second, newSandboxClients(g))
 
 	// allow_http_local alone is not enough: the API must be authenticated.
 	svc := &apiService{g: g, opCfg: opCfg, engine: engine, store: mustFileStore(g), authenticated: false}
@@ -276,20 +277,48 @@ func isBadRequest(err error) bool {
 	return errors.As(err, &bad)
 }
 
-func TestSandboxDepsFuncBuildsClientPerTarget(t *testing.T) {
+func TestSandboxClientsAreCachedAndNamespaceKeyed(t *testing.T) {
 	g := &globalFlags{kubeconfig: "/tmp/kubeconfig"}
+	clients := newSandboxClients(g)
+	first := clients.client("bench")
+	if first == nil {
+		t.Fatal("sandbox client missing")
+	}
+	if clients.client("bench") != first {
+		t.Error("client must be cached per namespace")
+	}
+	if clients.client("other") == first {
+		t.Error("different namespaces must not share a client")
+	}
+}
+
+func TestExecutorRoutingUsesFrozenPlan(t *testing.T) {
+	g := &globalFlags{root: "/repo", state: t.TempDir(), output: t.TempDir()}
 	cfg := operator.Config{Targets: map[string]operator.Target{
-		"local": {Hooks: []operator.CommandHook{}},
-		"gpu":   {Sandbox: &operator.Sandbox{Namespace: "bench", WarmPool: "pool"}},
+		// The target disappeared from the configuration, but the run's frozen
+		// plan still says sandbox: local fallback must be refused.
 	}}
-	deps := sandboxDepsFunc(g, cfg)
-	if deps("local").Client != nil {
-		t.Error("local target must not get a sandbox client")
+	router := executorRouter{g: g, cfg: cfg, sandboxClients: newSandboxClients(g)}
+	rec := run.Run{
+		ID: "r1", Target: "gpu",
+		HookPlan: []operator.PlannedHook{{
+			Kind:    operator.KindSandboxClaim,
+			Name:    "sandbox-claim",
+			Sandbox: &operator.SandboxPlan{Namespace: "bench", WarmPool: "pool", SandboxClaimName: "llmbench-r1"},
+		}},
 	}
-	if deps("gpu").Client == nil {
-		t.Fatal("sandbox target must get a client (production wiring)")
+	// The sandbox path must be taken (and fail at the client, not silently
+	// execute locally).
+	_, err := router.Execute(context.Background(), rec)
+	if err == nil {
+		t.Fatal("expected an error from the sandbox path")
 	}
-	if deps("gpu").Client != deps("gpu").Client {
-		t.Error("client must be cached per target")
+	if strings.Contains(err.Error(), "locally") {
+		t.Fatalf("sandbox run fell back to the local executor: %v", err)
+	}
+
+	// A local run needs its target in the configuration.
+	if _, err := router.Execute(context.Background(), run.Run{ID: "r2", Target: "gone"}); err == nil {
+		t.Fatal("unknown local target must be refused")
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -110,8 +111,10 @@ func prepareRun(g *globalFlags, opCfg operator.Config, expPath, commit string) (
 		// can never progress.
 		return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("submit: target %q requires an integration that is not available in this build", cfg.Target)}
 	}
-	if target.Sandbox != nil && len(commit) != 40 {
-		return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("submit: sandbox target %q requires a full 40-hex input commit", cfg.Target)}
+	if target.Sandbox != nil {
+		if err := provenance.ValidateCommitSHA(commit); err != nil {
+			return run.Run{}, nil, &httpapi.BadRequestError{Err: fmt.Errorf("submit: sandbox target %q: %w", cfg.Target, err)}
+		}
 	}
 
 	promptBytes, err := os.ReadFile(experiment.BenchmarkPath(cfg, g.root))
@@ -180,8 +183,9 @@ func prepareRun(g *globalFlags, opCfg operator.Config, expPath, commit string) (
 // not wired yet (GitOps arrives in a later change).
 type planHookSource struct {
 	dir string // working directory for command hooks (repository root)
-	// sandboxClients builds (and caches) the sandbox client for a target.
-	sandboxFor func(target string) SandboxHookDeps
+	// sandboxClients resolves the client for the namespace recorded in the
+	// run's frozen hook plan.
+	sandboxClients *sandboxClients
 }
 
 // HooksFor implements run.HookSource.
@@ -205,14 +209,14 @@ func (s *planHookSource) HooksFor(r run.Run) ([]run.Hook, error) {
 		case operator.KindGitOps:
 			return nil, fmt.Errorf("hook %q: gitops hooks arrive with milestone 4; do not select this target yet", p.Name)
 		case operator.KindSandboxClaim:
-			if s.sandboxFor == nil {
+			if s.sandboxClients == nil || p.Sandbox == nil {
 				return nil, fmt.Errorf("hook %q: no sandbox client configured", p.Name)
 			}
-			deps := s.sandboxFor(r.Target)
 			hooks = append(hooks, &runner.ClaimHook{
 				RunID:    r.ID,
+				Claim:    p.Sandbox.SandboxClaimName,
 				WarmPool: p.Sandbox.WarmPool,
-				Client:   deps.Client,
+				Client:   s.sandboxClients.client(p.Sandbox.Namespace),
 			})
 		default:
 			return nil, fmt.Errorf("hook %q: unknown plan kind %q", p.Name, p.Kind)
@@ -222,14 +226,14 @@ func (s *planHookSource) HooksFor(r run.Run) ([]run.Hook, error) {
 }
 
 // buildEngine wires the engine for the current configuration.
-func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration, sandboxFor func(target string) SandboxHookDeps) *run.Engine {
+func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration, sandboxes *sandboxClients) *run.Engine {
 	store := mustFileStore(g)
 	return &run.Engine{
 		Store:     store,
 		Leases:    store,
 		Snapshots: store,
-		Hooks:     &planHookSource{dir: g.root, sandboxFor: sandboxFor},
-		Executor:  executorRouter{g: g, cfg: cfg, sandboxFor: sandboxFor},
+		Hooks:     &planHookSource{dir: g.root, sandboxClients: sandboxes},
+		Executor:  executorRouter{g: g, cfg: cfg, sandboxClients: sandboxes},
 		Finalizer: nil, // publication arrives with milestone 5; nil short-circuits finalizing
 		Log:       controllerLogger(),
 		Interval:  interval,
@@ -276,25 +280,30 @@ func targetKind(t operator.Target) string {
 	return "local"
 }
 
-// SandboxHookDeps carries what a sandbox claim hook needs at build time.
-type SandboxHookDeps struct {
-	Client runner.SandboxClient
-}
-
-// executorRouter picks the local or sandbox executor per target.
+// executorRouter picks the local or sandbox executor. The choice is driven
+// by the run's frozen hook plan, never by the current operator config: a
+// sandbox run recovered after a configuration change must not silently fall
+// back to local execution.
 type executorRouter struct {
-	g          *globalFlags
-	cfg        operator.Config
-	sandboxFor func(target string) SandboxHookDeps
+	g              *globalFlags
+	cfg            operator.Config
+	sandboxClients *sandboxClients
 }
 
 // Execute implements run.Executor.
 func (r executorRouter) Execute(ctx context.Context, rec run.Run) (run.Artifacts, error) {
-	target, ok := r.cfg.Targets[rec.Target]
-	if ok && target.Sandbox != nil {
-		deps := r.sandboxFor(rec.Target)
+	if plan := sandboxPlanOf(rec.HookPlan); plan != nil {
+		if r.sandboxClients == nil {
+			return run.Artifacts{}, fmt.Errorf("wire: run %s needs a sandbox executor but none is configured", rec.ID)
+		}
+		if _, ok := r.cfg.Targets[rec.Target]; !ok {
+			// The target disappeared from the configuration: keep using the
+			// frozen plan instead of guessing a different execution kind.
+			_ = ok
+		}
 		exec := &runner.Sandbox{
-			Client: deps.Client,
+			Client: r.sandboxClients.client(plan.Namespace),
+			Claim:  plan.SandboxClaimName,
 			Git:    provenance.Git{Root: r.g.root},
 			Root:   r.g.root,
 			// Operator limits are injected here so recipe readiness timeouts
@@ -307,28 +316,55 @@ func (r executorRouter) Execute(ctx context.Context, rec run.Run) (run.Artifacts
 				lim := r.cfg.EffectiveLimits(t)
 				return lim.MaxReadyDuration, lim.MaxExecutionDuration, true
 			},
-			ModelPins: func(target string) map[string]string { return r.cfg.Targets[target].Sandbox.ModelSHA256 },
+			ModelPins: func(target string) map[string]string {
+				t, ok := r.cfg.Targets[target]
+				if !ok || t.Sandbox == nil {
+					return nil
+				}
+				return t.Sandbox.ModelSHA256
+			},
 		}
 		return exec.Execute(ctx, rec)
+	}
+	if target, ok := r.cfg.Targets[rec.Target]; !ok || target.Sandbox != nil {
+		return run.Artifacts{}, fmt.Errorf("wire: run %s is not a local target; refusing to execute it locally", rec.ID)
 	}
 	return runner.NewLocal(r.g.root).Execute(ctx, rec)
 }
 
-// sandboxDepsFunc lazily creates one sandbox client per target.
-func sandboxDepsFunc(g *globalFlags, cfg operator.Config) func(target string) SandboxHookDeps {
-	clients := map[string]runner.SandboxClient{}
-	return func(target string) SandboxHookDeps {
-		t, ok := cfg.Targets[target]
-		if !ok || t.Sandbox == nil {
-			return SandboxHookDeps{}
-		}
-		if c, ok := clients[target]; ok {
-			return SandboxHookDeps{Client: c}
-		}
-		c := &sandbox.Client{Namespace: t.Sandbox.Namespace, Kubeconfig: g.kubeconfig}
-		clients[target] = c
-		return SandboxHookDeps{Client: c}
+// sandboxClients provides sandbox clients keyed by namespace. The key comes
+// from the run's frozen hook plan, so an operator configuration change can
+// never redirect a recovery to another namespace. Access is guarded because
+// different targets are dispatched concurrently.
+type sandboxClients struct {
+	mu    sync.Mutex
+	g     *globalFlags
+	cache map[string]runner.SandboxClient
+}
+
+func newSandboxClients(g *globalFlags) *sandboxClients {
+	return &sandboxClients{g: g, cache: map[string]runner.SandboxClient{}}
+}
+
+func (p *sandboxClients) client(namespace string) runner.SandboxClient {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if c, ok := p.cache[namespace]; ok {
+		return c
 	}
+	c := &sandbox.Client{Namespace: namespace, Kubeconfig: p.g.kubeconfig}
+	p.cache[namespace] = c
+	return c
+}
+
+// sandboxPlanOf returns the frozen sandbox plan of a run, if any.
+func sandboxPlanOf(plan []operator.PlannedHook) *operator.SandboxPlan {
+	for i := range plan {
+		if plan[i].Kind == operator.KindSandboxClaim && plan[i].Sandbox != nil {
+			return plan[i].Sandbox
+		}
+	}
+	return nil
 }
 
 func mustFileStore(g *globalFlags) *filestore.Store {

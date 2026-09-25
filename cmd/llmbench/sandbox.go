@@ -39,7 +39,7 @@ func sandboxAcquireCmd(g *globalFlags, namespace *string) *cobra.Command {
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c := sandboxClient(g, *namespace)
-			if err := c.EnsureSandboxClaim(context.Background(), args[0], args[1]); err != nil {
+			if err := c.EnsureSandboxClaim(context.Background(), sandbox.ClaimName(args[0]), args[1]); err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "claim %s ready\n", sandbox.ClaimName(args[0]))
@@ -55,11 +55,17 @@ func sandboxRunCmd(g *globalFlags, namespace *string) *cobra.Command {
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c := sandboxClient(g, *namespace)
-			out, err := c.ExecClaim(context.Background(), args[0], args[1])
+			// Manual operations take an explicit shell command from the
+			// operator; the controller's automated paths never build one.
+			stdout, stderr, code, err := c.Exec(context.Background(), args[0], []string{"/bin/sh", "-c", args[1]}, nil, "")
 			if err != nil {
 				return err
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), out)
+			fmt.Fprint(cmd.OutOrStdout(), string(stdout))
+			fmt.Fprint(cmd.ErrOrStderr(), string(stderr))
+			if code != 0 {
+				return fmt.Errorf("sandbox run: exit %d", code)
+			}
 			return nil
 		},
 	}
@@ -72,7 +78,7 @@ func sandboxPullCmd(g *globalFlags, namespace *string) *cobra.Command {
 		Args:  cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c := sandboxClient(g, *namespace)
-			b, err := c.PullClaim(context.Background(), args[0], args[1])
+			b, err := c.Pull(context.Background(), args[0], args[1])
 			if err != nil {
 				return err
 			}
@@ -91,7 +97,7 @@ func sandboxReleaseCmd(g *globalFlags, namespace *string) *cobra.Command {
 				return errors.New("release: run id required")
 			}
 			c := sandboxClient(g, *namespace)
-			if err := c.ReleaseSandboxClaim(context.Background(), args[0]); err != nil {
+			if err := c.ReleaseSandboxClaim(context.Background(), sandbox.ClaimName(args[0])); err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "claim %s released\n", sandbox.ClaimName(args[0]))

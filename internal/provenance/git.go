@@ -82,6 +82,10 @@ func (g Git) git(ctx context.Context, args ...string) (string, error) {
 	return out.String(), nil
 }
 
+// ValidateCommitSHA reports whether commit is a full lowercase 40-hex SHA.
+// Exported so submit can reject malformed commits before creating a run.
+func ValidateCommitSHA(commit string) error { return validateSHA(commit) }
+
 func validateSHA(commit string) error {
 	if len(commit) != 40 || strings.TrimSpace(commit) != commit {
 		return fmt.Errorf("provenance: %q is not a full 40-hex commit", commit)

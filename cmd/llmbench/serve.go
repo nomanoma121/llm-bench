@@ -77,7 +77,7 @@ func newServeCmd(g *globalFlags) *cobra.Command {
 				engine: engine,
 				store:  mustFileStore(g),
 			}
-			handler := (&httpapi.Server{Service: svc, Token: token}).Handler()
+			handler := (&httpapi.Server{Service: svc, Token: token, Log: controllerLogger()}).Handler()
 			srv := &http.Server{
 				Addr:              addr,
 				Handler:           handler,

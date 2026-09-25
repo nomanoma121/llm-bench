@@ -5,11 +5,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/go-logr/stdr"
 
 	"github.com/nomanoma121/llm-bench/internal/experiment"
 	"github.com/nomanoma121/llm-bench/internal/filestore"
@@ -175,7 +177,7 @@ func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration) *r
 		Hooks:     &planHookSource{dir: g.root},
 		Executor:  runner.NewLocal(g.root),
 		Finalizer: nil, // publication arrives with milestone 5; nil short-circuits finalizing
-		Log:       logr.Discard(),
+		Log:       controllerLogger(),
 		Interval:  interval,
 		MaxExecutionDuration: func(target string) time.Duration {
 			t, ok := cfg.Targets[target]
@@ -188,6 +190,22 @@ func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration) *r
 }
 
 func currentTime() time.Time { return time.Now() }
+
+// controllerLogger returns a stderr logger. The verbosity is controlled with
+// LLMBENCH_LOG_LEVEL (0 = info-equivalent warnings, higher = more detail).
+func controllerLogger() logr.Logger {
+	return stdr.New(log.New(os.Stderr, "", log.LstdFlags)).V(logLevel())
+}
+
+func logLevel() int {
+	if v := os.Getenv("LLMBENCH_LOG_LEVEL"); v != "" {
+		var n int
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil {
+			return -n
+		}
+	}
+	return 0
+}
 
 func newRunID() (string, error) {
 	var b [16]byte

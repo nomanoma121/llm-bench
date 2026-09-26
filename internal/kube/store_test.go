@@ -238,6 +238,88 @@ func (f *fakeElector) Run(ctx context.Context) {
 	<-ctx.Done()
 }
 
+// lateElector returns from Run before invoking the stored OnStartedLeading
+// callback, modelling a goroutine that is scheduled after leadership was
+// already lost. It captures the first round's callback only.
+type lateElector struct {
+	mu      sync.Mutex
+	onStart func(context.Context)
+	calls   int
+}
+
+func (l *lateElector) capture(cb func(context.Context)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.onStart == nil {
+		l.onStart = cb
+	}
+}
+
+func (l *lateElector) callback() func(context.Context) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.onStart
+}
+
+func (l *lateElector) Run(ctx context.Context) {
+	l.mu.Lock()
+	l.calls++
+	call := l.calls
+	l.mu.Unlock()
+	if call == 1 {
+		return // lost before the callback goroutine ran
+	}
+	<-ctx.Done()
+}
+
+func TestLateLeadingCallbackDoesNotRun(t *testing.T) {
+	client := k8sfake.NewSimpleClientset()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	elec := &lateElector{}
+	ran := make(chan struct{}, 1)
+	go func() {
+		_ = RunWithLeadership(ctx, LeaderConfig{
+			Client: client, Namespace: "bench", LeaseName: "l", Identity: "test",
+			// A long retry period keeps the second round from starting while
+			// the test delivers the late callback.
+			RetryPeriod: 2 * time.Second,
+			newElector: func(cfg leaderelection.LeaderElectionConfig) (elector, error) {
+				elec.capture(cfg.Callbacks.OnStartedLeading)
+				return elec, nil
+			},
+		}, func(context.Context) error {
+			select {
+			case ran <- struct{}{}:
+			default:
+			}
+			return nil
+		})
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		elec.mu.Lock()
+		calls := elec.calls
+		elec.mu.Unlock()
+		if calls > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the first round never ran")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond) // let runOnce close accepting
+	if cb := elec.callback(); cb != nil {
+		cb(ctx)
+	}
+	select {
+	case <-ran:
+		t.Fatal("a callback delivered after the round ended must not run the leader function")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 func TestRunWithLeadershipReentersElection(t *testing.T) {
 	client := k8sfake.NewSimpleClientset()
 	ctx, cancel := context.WithCancel(context.Background())

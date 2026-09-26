@@ -106,13 +106,17 @@ func runOnce(ctx context.Context, cfg LeaderConfig, lock *resourcelock.LeaseLock
 		Callbacks: leaderelection.LeaderCallbacks{
 			OnStartedLeading: func(leaderCtx context.Context) {
 				leadingMu.Lock()
-				if accepting {
-					leading.Add(1)
+				if !accepting {
+					// The elector already returned and the next round may
+					// start: a callback that arrives this late must not run
+					// the leader function at all, otherwise two rounds would
+					// execute effects concurrently.
 					leadingMu.Unlock()
-					defer leading.Done()
-				} else {
-					leadingMu.Unlock()
+					return
 				}
+				leading.Add(1)
+				leadingMu.Unlock()
+				defer leading.Done()
 				if err := fn(leaderCtx); err != nil && cfg.Log.GetSink() != nil {
 					cfg.Log.Error(err, "leader function returned")
 				}

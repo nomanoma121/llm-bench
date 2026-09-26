@@ -459,7 +459,7 @@ required_improvement = max(absolute_floor, relative_floor * baseline_median)
 | `--kind model`(モデル比較) | `RuntimeBuildDigest`、workload(`WorkloadDigest`)、`MeasurementProtocolDigest`、**`EnvironmentDigest`** | model tree digest |
 
 - 既存 `BenchmarkFingerprint` は visual A/B 用として据え置き(変更しない)
-- **`WorkloadDigest`** を新設する(protocol が指定する workload matrix のうち、その run が実際に実行した workload の canonical digest)。protocol 全体の一致だけで足りる場合は追加要求しない
+- **`WorkloadDigest`** を新設する。**MVP では workload の部分選択を許さず**、`WorkloadDigest` = 「その run が実行した workload matrix 全体」の canonical digest(protocol の matrix をそのまま実行する)。したがって `SubmitOptions` と `RequestDigest` に workload selector は入れない。部分選択を導入する場合は `WorkloadSelector` と `WorkloadCase` の canonical schema を先に定義してから追加する
 - `MeasurementProtocolDigest` の内訳(schema 版、driver の content digest、workload matrix、warmup、KV 充填手順、反復数、**実行順序の規則**、collector 設定と content digest)は operator 側に置く。**objective は含めない**(`PromotionPolicy` の所属)
 - balanced randomization は「規則」が protocol、「実際の AB/BA 順と seed」が evidence と session 台帳に属する
 
@@ -515,7 +515,7 @@ OptimizationSession
 - scope は **repository/controller store 全体**。TTL は無し(Run が存在する限り binding も存在する)
 - `RunID = Truncate128(SHA256(repository_namespace + "\0" + request_id))` と**決定論的に導出**する。Run に `RequestID` と `RequestDigest` を保存するので、別途 idempotency store は不要
 - 同 request-id + 同 RequestDigest → **既存 Run を返す**。同 request-id + 異なる digest → **409 Conflict**
-- **RequestDigest は canonical な「submit 内容全体」**の digest とする。少なくとも recipe snapshot identity、input commit、target、**`Kind`**、measurement protocol ID/digest、workload selector、(あれば)window ID を漏れなく含める(`Kind` を独立させたため、visual → measurement の変更も 409 で検出できる必要がある)
+- **RequestDigest は canonical な「submit 内容全体」**の digest とする。少なくとも recipe snapshot identity、input commit、target、**`Kind`**、measurement protocol ID/digest、(あれば)window ID を漏れなく含める(`Kind` を独立させたため、visual → measurement の変更も 409 で検出できる必要がある)
 
 ### 9.2 exit code
 

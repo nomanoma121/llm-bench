@@ -248,7 +248,7 @@ Phase:  pending ──▶ acquiring ──▶ running ──▶ releasing ──
 - **(window-bound Run, `WindowID != ""`)** TargetLease と GitOps restore は **Window が所有**するため、Run は acquire/release を一切通らない(`LeaseState=not_applicable` で固定)。Run の terminal 順序は「run-scoped hook を逆順 release → `Window.ActiveRunID` を CAS で解放(**成功後のみ**)→ terminal」。`ActiveRunID` の解放に失敗したら `ErrPending` で再試行する
 - releasing が完了する前に terminal にしない
 - **releasing 完了後の分岐は ExecutionResult で決定**: `failure → failed`、`success → succeeded`。**公開の成否は run の終了条件に含めない**(§1.5, §4.12)
-- 1 target の同時実行は LeaseStore が排除する。submit 自体は常に可能で、後続 run は `acquiring` で待機する
+- 排他は 2 層: **target owner 同士**(standalone Run ↔ standalone Run / standalone Run ↔ Window)は **TargetLease** が排除し、**Window 内の Run 同士**は **`Window.ActiveRunID`** が排除する。submit 自体は常に可能で、後続 run は `acquiring` で待機する
 
 ### 3.2 主要な型と interface(run パッケージで定義)
 
@@ -284,7 +284,10 @@ type Artifacts struct {
     // ArtifactDigest は payload(output/ 配下の全 regular file。§4.4 の canonical 規則)の tree digest。
     // **artifact 確定保存の瞬間に計算**し、この値が非空の間だけ preview(§4.9)・review(§4.8)・
     // adopt(§4.12)が artifact を「確定済み」として扱う。3 者は必ず同じ関数(provenance.ArtifactDigest)
-    // を使う。digest が空 = 未確定(実行中・保存失敗)なので配信も adopt もしない
+    // を使う。
+    // 空の意味は RunKind で異なる(v1.7):
+    //   visual Run      : 空 = sealed visual artifact がまだ無い(実行中・保存失敗)
+    //   measurement Run : 空が正常(visual payload を作らない)。判定は MetricsDigest を見る
     ArtifactDigest    string
 }
 
@@ -505,7 +508,7 @@ loop:
 ### 3.4 Dispatcher(並列とリカバリ)
 
 - `Engine.Run` は周期 tick(既定 30s、`--retry-interval`)ごとに `ListUnfinished` を走査し、**実行中でない run に worker goroutine を割り当てる**(run ID 単位の in-flight 排他)
-- run 毎に worker が立つため**異なる target は並行して進む**。同一 target の後続 run は ErrLeaseBusy 待ちとして `acquiring` で待機し、先行 run の lease 解放後に自動前進する
+- run 毎に worker が立つため**異なる target は並行して進む**。同一 target の後続 run は待機理由を owner で書き分ける: **standalone は `ErrLeaseBusy`**、**window-bound は `ActiveRunID` busy(`ErrPending`、待機理由に window ID を記録)**。先行 owner の解放(または Window 内の先行 run の完了)後に自動前進する
 - 起動時: `ListUnfinished` の全 run を dispatch 対象にする。**HookSource は Run.HookPlan(snapshot)から再構成し、構築前に HookPlanDigest を毎回検証する**。snapshot の Kind が実装として存在しない場合は永続エラーとして手動介入を要求する
 - hook の長時間待機は禁止: PR マージ待ち等も一律 `ErrPending` を返し、worker が interval を置いて再試行する
 - k8s モードの leader は、Lease を喪失した時点で自分が起動した全 worker の context を cancel する(milestone 6)
@@ -583,7 +586,8 @@ type Config struct {
     Defaults Limits      // target が省略した場合の既定上限
     // (v1.7) 測定 protocol と最適化 profile は operator 所有。recipe からは選べない
     MeasurementProtocols map[string]MeasurementProtocol // allowlist 本体(snapshot の元)
-    OptimizationProfiles map[string]OptimizationProfile // protocol と policy と budget の束
+    PromotionPolicies    map[string]PromotionPolicy     // policy 本体(snapshot の元)
+    OptimizationProfiles map[string]OptimizationProfile // kind/protocol/policy/budget の束
 }
 
 // (v1.7) 測定 protocol と昇格 policy。**どちらも operator 所有**で recipe からは変更できない。
@@ -596,9 +600,21 @@ type MeasurementProtocol struct {
     KVFill      string   // 例: "none" | "to:64k" | "to:250k"
     Repetitions int      // pair 数
     OrderRule   string   // 例: "balanced-randomized-pairs"(実際の順序と seed は evidence に記録)
-    Collector   []struct{ Name string; IntervalMS int; ContentDigest string }
+    RuntimeReset string  // 例: "none" | "between-pairs" | "between-runs"(測定条件の一部)
+    RequiredSources []string // promotion に必須の metric source(例: driver, external_gpu)
+    Version     int64    // upstream commit 等の runtime identity(あれば)
+    Collector   []struct {
+        Name          string
+        IntervalMS    int
+        ContentDigest string
+        // 実行と出力の境界(§optimization §5.4)。stdout 直 capture か専用 dir か
+        ExecMode      string // "sandbox-exec" | "separate-container"
+        OutputMode    string // "stdout-transport" | "private-dir"
+    }
     Validity    struct{ Rules []string } // measurement_valid の判定規則(§optimization §5.5)
 }
+// Validate は参照整合を fail-closed で検査する: OptimizationProfile の Protocol/Policy が
+// それぞれ MeasurementProtocols/PromotionPolicies に存在しない場合は設定エラー。
 type PromotionPolicy struct {
     SchemaVersion int
     PrimaryMetric string   // 例: decode_step_ms
@@ -612,9 +628,14 @@ type PromotionPolicy struct {
         CorrectnessPredicates  []string
     }
     AllowedSources []string // promotion に使える metric source(harness/driver/external_gpu)
+    // 判定不能域の扱い(operator が変更できるため typed field として digest 対象)
+    GrayZone    struct{ Action string } // "inconclusive" | "needs-more-samples"
+    MaxRepetitions int                  // adaptive sampling を導入するまでの上限(MVP は 3)
 }
 type OptimizationProfile struct {
-    Protocol     string // MeasurementProtocols のキー
+    Kind         RunKind // visual | measurement(profile が固定し caller は上書き不可)
+    Protocol     string  // MeasurementProtocols のキー(存在しなければ Validate がエラー)
+    Policy       string  // PromotionPolicies のキー(存在しなければ Validate がエラー)
     Policy       string // PromotionPolicies のキー
     MaxRounds    int
     MaxRuns      int

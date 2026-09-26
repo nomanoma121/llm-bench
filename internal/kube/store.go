@@ -153,6 +153,10 @@ func leaseConfigMapName(target string) string { return "llmbench-lease-" + targe
 // AcquireTargetLease implements run.LeaseStore. The lease is a ConfigMap
 // whose "owner" holds the run ID; create-or-adopt is idempotent for the
 // owning run and ErrLeaseBusy for any other.
+//
+// The create/get sequence is retried when the previous holder deletes the
+// lease in between (Get returns NotFound): that is a normal handoff, not a
+// failure of the waiting run.
 func (s *LeaseStore) AcquireTargetLease(ctx context.Context, target, runID string) error {
 	cms := s.client.CoreV1().ConfigMaps(s.namespace)
 	cm := &corev1.ConfigMap{
@@ -163,11 +167,16 @@ func (s *LeaseStore) AcquireTargetLease(ctx context.Context, target, runID strin
 		},
 		Data: map[string]string{"owner": runID},
 	}
-	if _, err := cms.Create(ctx, cm, metav1.CreateOptions{}); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
+	for attempt := 0; attempt < 5; attempt++ {
+		if _, err := cms.Create(ctx, cm, metav1.CreateOptions{}); err == nil {
+			return nil
+		} else if !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("kube: create lease %s: %w", target, err)
 		}
 		existing, err := cms.Get(ctx, leaseConfigMapName(target), metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			continue // the holder released it: retry the create
+		}
 		if err != nil {
 			return fmt.Errorf("kube: get lease %s: %w", target, err)
 		}
@@ -176,7 +185,7 @@ func (s *LeaseStore) AcquireTargetLease(ctx context.Context, target, runID strin
 		}
 		return nil
 	}
-	return nil
+	return fmt.Errorf("kube: %w: target %s lease was churning", run.ErrLeaseBusy, target)
 }
 
 // ReleaseTargetLease implements run.LeaseStore. It deletes only the lease

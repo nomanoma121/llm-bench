@@ -158,7 +158,13 @@ func newServeCmd(g *globalFlags) *cobra.Command {
 
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
+			// The dispatcher waits for its workers before returning; serve
+			// waits for the dispatcher so the process never exits while an
+			// effect is still running (and so the leader lease is only
+			// released after the workers have stopped).
+			dispatchDone := make(chan struct{})
 			go func() {
+				defer close(dispatchDone)
 				if err := dispatch(ctx); err != nil && ctx.Err() == nil {
 					controllerLogger().Error(err, "dispatcher stopped")
 				}
@@ -174,6 +180,7 @@ func newServeCmd(g *globalFlags) *cobra.Command {
 			if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 				return err
 			}
+			<-dispatchDone
 			return nil
 		},
 	}

@@ -10,10 +10,12 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/client-go/tools/leaderelection"
 
 	"github.com/nomanoma121/llm-bench/internal/run"
 )
@@ -185,4 +187,92 @@ func TestRunWithLeadershipRunsAndStops(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("losing the lease did not cancel the leader context")
 	}
+}
+
+func TestAcquireTargetLeaseRetriesAcrossHandoff(t *testing.T) {
+	client := k8sfake.NewSimpleClientset()
+	leases := NewLeaseStore(client, "bench")
+	ctx := context.Background()
+
+	// The previous holder deletes the lease between our Create and Get: the
+	// waiting run must retry the create instead of failing.
+	if err := leases.AcquireTargetLease(ctx, "gpu", "old"); err != nil {
+		t.Fatal(err)
+	}
+	deleted := false
+	client.PrependReactor("get", "configmaps", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		if deleted {
+			return false, nil, nil
+		}
+		deleted = true
+		// Simulate the holder releasing the lease just before our Get.
+		_ = client.Tracker().Delete(corev1.SchemeGroupVersion.WithResource("configmaps"), "bench", "llmbench-lease-gpu")
+		return true, nil, apierrors.NewNotFound(corev1.Resource("configmaps"), "llmbench-lease-gpu")
+	})
+	if err := leases.AcquireTargetLease(ctx, "gpu", "new"); err != nil {
+		t.Fatalf("handoff race must not fail the waiting run: %v", err)
+	}
+	owner, err := client.CoreV1().ConfigMaps("bench").Get(ctx, "llmbench-lease-gpu", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner.Data["owner"] != "new" {
+		t.Fatalf("lease owner = %q", owner.Data["owner"])
+	}
+}
+
+type fakeElector struct {
+	calls   int
+	returns int // how many times Run returns before honoring ctx
+	onStart func(context.Context)
+}
+
+func (f *fakeElector) Run(ctx context.Context) {
+	f.calls++
+	if f.calls <= f.returns {
+		return // simulate "lost leadership"
+	}
+	if f.onStart != nil {
+		go f.onStart(ctx)
+	}
+	<-ctx.Done()
+}
+
+func TestRunWithLeadershipReentersElection(t *testing.T) {
+	client := k8sfake.NewSimpleClientset()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	elec := &fakeElector{returns: 1} // lose the lease once, then lead
+	started := make(chan struct{})
+	go func() {
+		_ = RunWithLeadership(ctx, LeaderConfig{
+			Client: client, Namespace: "bench", LeaseName: "l", Identity: "test",
+			RetryPeriod: 10 * time.Millisecond,
+			newElector: func(cfg leaderelection.LeaderElectionConfig) (elector, error) {
+				elec.onStart = cfg.Callbacks.OnStartedLeading
+				return elec, nil
+			},
+		}, func(leaderCtx context.Context) error {
+			select {
+			case <-started:
+			default:
+				close(started)
+			}
+			<-leaderCtx.Done()
+			return nil
+		})
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("leadership was never acquired")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for elec.calls < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if elec.calls < 2 {
+		t.Fatalf("election was not retried after losing the lease (calls=%d)", elec.calls)
+	}
+	cancel()
 }

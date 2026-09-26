@@ -80,7 +80,11 @@ func (e *Engine) Submit(ctx context.Context, r Run, inputs map[string][]byte) (R
 // drives each with its own worker goroutine. Runs on different targets
 // therefore proceed concurrently; runs on the same target serialize on the
 // TargetLease.
+//
+// When ctx is cancelled Run waits for every worker it started to return, so
+// callers can rely on "Run returned" meaning "no worker is mid-effect".
 func (e *Engine) Run(ctx context.Context) error {
+	var workers sync.WaitGroup
 	scan := func() {
 		runs, err := e.Store.ListUnfinished(ctx)
 		if err != nil {
@@ -90,7 +94,11 @@ func (e *Engine) Run(ctx context.Context) error {
 		for _, r := range runs {
 			// Drive registers itself engine-wide; a no-op when a worker for
 			// this run already exists.
-			go e.Drive(ctx, r.ID)
+			workers.Add(1)
+			go func(id string) {
+				defer workers.Done()
+				e.Drive(ctx, id)
+			}(r.ID)
 		}
 	}
 
@@ -100,6 +108,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			workers.Wait() // no worker is mid-effect when we return
 			return ctx.Err()
 		case <-tick.C:
 			scan()

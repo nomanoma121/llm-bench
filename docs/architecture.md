@@ -150,7 +150,8 @@ internal/
   httpapi/             # chi HTTP サーバ(薄い)。認証・デコード → run の Service へ委譲
                        #   preview(§4.9)は別リスナの別ハンドラ
   measurement/         # (v1.7 予定)evidence schema・canonical 化・digest・上限・validity 判定
-  window/              # (v1.7 予定)MeasurementWindow の状態機械と reconciler(§3.6)
+  window/              # (v1.7 予定)MeasurementWindow の reconciler(§3.6)。
+                       #   Window の永続型と WindowStore は run が所有し、window は run に依存する
   optimize/            # (v1.7 予定)PromotionPolicy・decide・session 台帳(§4.15/§4.16)
 ```
 
@@ -353,6 +354,10 @@ var (
 type Evidence struct {
     Path   string // <output>/runs/<runID>/evidence/metrics.json
     Digest string // sealed bytes の SHA-256(MetricsDigest)
+    // Valid は sealed evidence の measurement_valid(harness が検証して設定する)。
+    // Engine は Kind=measurement の成功条件にこれを使う(JSON を Engine が読まない)
+    Valid          bool
+    InvalidReasons []string
 }
 type ExecutionOutputs struct {
     Artifacts          Artifacts
@@ -394,6 +399,27 @@ type LeaseStore interface {
     //   owner 不一致    → 削除せず ErrLeaseBusy(古い owner のリトライが次の owner の
     //                      TargetLease を消さない)
     ReleaseTargetLease(ctx context.Context, target string, owner OwnerRef) error
+}
+
+// (v1.7) MeasurementWindow の永続型。**所有は run パッケージ**(Run と同じ理由:
+// window の reconciler は run の契約(OwnerRef/LeaseStore/HookSource)を必要とするため、
+// 型を window 側に置くと run → window → run の循環になる)。
+// internal/window は reconciler(実装)だけを持ち、run に依存する
+type Window struct {
+    ID, Target string
+    Phase      WindowPhase // pending | acquiring | open | closing | closed
+    Result     string      // none | success | failure
+    LeaseState LeaseState
+    HookPlan        []operator.PlannedHook
+    HookPlanDigest  string
+    Hooks           []HookState
+    ActiveRunID     string
+    MaxDurationDeadline time.Time
+    IdleDeadline        time.Time
+    LastActivityAt      time.Time
+    Error           string
+    StoreVersion    string
+    CreatedAt, UpdatedAt time.Time
 }
 
 // (v1.7) MeasurementWindow の store。RunStore と同じ CAS/ListUnfinished 契約
@@ -460,7 +486,11 @@ loop:
     save(ExecutionState=invoking)          # write-ahead
     ctx timeout = operator Limits.MaxExecutionDuration(F17)
     out, err := executor.Execute(ctx, r)   # 成果物は Dir へ確定保存+ハッシュ済みで返る
-    # error でも Evidence は保存する(valid かどうかは evidence 側が持つ)
+    # **Kind ごとの必須成果物は Engine が検証する**(Executor の nil error を成功と同一視しない)
+    #   visual                : Artifacts.ArtifactDigest == "" → failure
+    #   measurement           : out.Evidence.Digest == "" または !out.Evidence.Valid → failure
+    #   visual + protocol     : ArtifactDigest のみが成功条件。invalid evidence は visual run を失敗させない
+    # error でも Evidence は保存する(MetricsDigest は残す。valid かは Evidence.Valid が持つ)
     save(ExecutionState=completed, ExecutionResult=success|failure,
          Artifacts=out.Artifacts, MetricsDigest=out.Evidence.Digest,
          RuntimeBuildDigest=out.RuntimeBuildDigest, EnvironmentDigest=out.EnvironmentDigest,

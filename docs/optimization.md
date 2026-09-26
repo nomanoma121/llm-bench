@@ -231,6 +231,7 @@ runs/<run-id>/
 - `MetricsDigest` は「sealed bytes の SHA-256」(canonical JSON を harness が生成する)。**`MetricsDigest != ""` は「evidence が存在する」ことだけを意味し、成功を意味しない**
 - 実行が失敗しても、**取得できた evidence は seal してよい**(`measurement_valid` と `invalid_reasons` を持たせる)
 - `measurement` run の成功条件は「**valid な evidence が存在する**」こと。validity の判定基準は §5.5 の表が正であり、**correctness 失敗・候補起因 OOM/Xid は validity を落とさない**(valid evidence 上の reject)。invalid/infra 由来の evidence しか無い run を使った `decide` は `inconclusive` を返す(§6.3)
+- **Kind ごとの必須成果物は `Engine` が検証する**(`Executor` の nil error を成功と同一視しない)。`visual` は `ArtifactDigest` 必須、`measurement` は `Evidence.Digest != "" && Evidence.Valid` 必須、`visual` + protocol は `ArtifactDigest` のみが成功条件(invalid evidence で visual run を失敗させない)
 - **`ExecutionResult` の決定規則(measurement)**: valid な測定が得られたら `success`(correctness 失敗や候補起因 OOM は *測定結果* であって Execute の error にしない)。測定チャネル/infra の失敗は `failure` とし、取得済み evidence があれば seal して保存する。これにより「Run の成功」と「promotion の accept」が分離する
 - `output/` に evidence を置かない(single-file 契約と衝突する)
 
@@ -370,8 +371,10 @@ server 側は operator の `measurement_protocols`(本体)と `targets.<id>.meas
 ```yaml
 optimization_profiles:
   v100-llamacpp:
+    kind: measurement          # profile が kind/protocol/policy/sampling を固定
     protocol: qwen-flash-longctx-v1
-    promotion_policy: latency-v1
+    policy: latency-v1
+    sampling: three-pairs-balanced
     max_rounds: 20
     max_runs: 160
     max_gpu_seconds: 21600

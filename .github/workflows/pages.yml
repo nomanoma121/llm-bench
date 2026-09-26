@@ -25,12 +25,30 @@ permissions:
 jobs:
   verify:
     name: verify
-    runs-on: ubuntu-latest
+    # Pull-request code is untrusted, so it runs in a disposable Linux
+    # container with a read-only token instead of on the host that holds the
+    # deployment credentials. Pull requests run on a runner registered with
+    # llm-bench-verify; the privileged deploy job uses a different label on the
+    # host. See docs/usage.md.
+    runs-on: [self-hosted, Linux, llm-bench-verify]
+    timeout-minutes: 20
     steps:
+      # A skipped job counts as a successful required check, so a fork pull
+      # request is failed explicitly instead of being skipped. (Forking cannot
+      # be disabled on a user-owned private repository through the API.)
+      - name: Reject pull requests from forks
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::error::pull requests from forks do not run on this self-hosted runner"
+          exit 1
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          # The runner keeps its Go module/build cache on local disk already;
+          # saving it to the Actions cache hangs the post step on self-hosted
+          # runners and wastes bandwidth.
+          cache: false
       - name: Verify adopted artifacts
         run: go run ./cmd/llmbench adopted verify --root experiments
       - name: Build the site
@@ -45,7 +63,10 @@ jobs:
     name: deploy
     needs: verify
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    # Only merged main code reaches this job, which is the only one holding
+    # pages/id-token permissions.
+    runs-on: [self-hosted, llm-bench-deploy]
+    timeout-minutes: 20
     permissions:
       contents: read   # actions/checkout needs it; listing permissions drops the rest
       pages: write
@@ -58,6 +79,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          # The runner keeps its Go module/build cache on local disk already;
+          # saving it to the Actions cache hangs the post step on self-hosted
+          # runners and wastes bandwidth.
+          cache: false
       - name: Build the site
         run: go run ./cmd/llmbench site build --root experiments --out _site
       - uses: actions/configure-pages@v5

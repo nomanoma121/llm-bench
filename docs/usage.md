@@ -64,14 +64,6 @@ review:
   discord_webhook_env: LLMBENCH_DISCORD_WEBHOOK
 ```
 
-```yaml
-review:
-  owner: example
-  repository: llm-bench
-  bot_login: bench-app[bot]
-  discord_webhook_env: LLMBENCH_DISCORD_WEBHOOK
-```
-
 The Discord setting is optional; when set, provide that environment variable in the controller and Discord receives only the Issue link. Once both runs have succeeded with sealed artifacts and finished restoration, request and record a review:
 
 ```sh

@@ -331,6 +331,11 @@ func (c Config) Validate() error {
 			return err
 		}
 	}
+	if c.Preview != nil {
+		if err := validatePreviewBaseURL(c.Preview.BaseURL); err != nil {
+			return err
+		}
+	}
 	if c.Review != nil {
 		if c.Review.Owner == "" || c.Review.Repository == "" {
 			return errors.New("operator: review requires owner and repository")

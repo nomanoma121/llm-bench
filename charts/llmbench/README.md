@@ -1,6 +1,6 @@
 # llmbench Helm Chart (values scaffold)
 
-**This chart currently ships values only: there is no `templates/` directory, so installing it creates no resources.** It records the intended shape of the harness deployment and the Agent Sandbox GPU workspace so the templates can be added later against a reviewed specification. Install the upstream Agent Sandbox controllers and CRDs separately; this chart will not install them.
+**This chart is a values-only scaffold: there is no `templates/` directory, so installing it creates no resources.** It records the intended shape of the harness deployment and the Agent Sandbox GPU workspace so the templates can be added later against a reviewed specification. Install the upstream Agent Sandbox controllers and CRDs separately; this chart will not install them.
 
 ## Intended values
 

@@ -29,14 +29,14 @@
 - [ ] Persist cluster run/session state durably and enforce one active run per target across harness replicas. Kubernetes ConfigMap run records and atomic target claims are implemented for the benchmark workflow; durable Agent conversation and external-effect fencing are not.
 - [ ] Add leader election and failover tests; spread harness replicas across nodes with Pod anti-affinity. Lease election and fake-client tests exist; the Chart still fixes one replica because failover is not proven safe end-to-end.
 - [ ] Package the harness, RBAC, configuration, and SandboxTemplate/WarmPool integration as a Helm Chart.
-- [x] Add an experimental single-replica Helm Chart scaffold for those resources. The HTTP path can now select a Sandbox target; multi-replica deployment remains disabled until coordination and recovery are implemented.
+- [x] Add an experimental Helm Chart values scaffold for those resources (values-only scaffold: no `templates/` yet, so it installs nothing). The HTTP path can select a Sandbox target; multi-replica deployment remains disabled until coordination and recovery are implemented.
 - [ ] Isolate generated HTML from the credentialed harness across a network boundary. Publication now writes run output to a separate static site (dedicated origin, CSP required); a hostile-HTML review workload should still not share the harness network.
 - [ ] Verify restoration after process, Pod, node, and GitHub failures.
 - [ ] Exercise GitHub PR, Argo CD, Deployment, and SandboxClaim transitions end-to-end on a non-production cluster with the target manifest repository.
 
 ## 4. Human evaluation and Agent loop
 
-- [x] Post A/B requests and run links to the originating Issue; accept A/B/tie/invalid feedback through the authenticated API and record it in the Issue. Free-form Issue replies are not parsed as votes.
+- [x] Post A/B requests and run links to the originating Issue; record A/B/tie/invalid votes through the CLI (which posts marker comments) and rebuild the vote history from the Issue. There is no vote endpoint on the HTTP API; free-form Issue replies are not parsed as votes.
 - [x] Optionally send Discord notifications linking to that Issue.
 - [x] Add Agent-facing skills under `.agents/skills/` for experiment authoring, running, and result analysis.
 - [x] Serve the A/B comparison from the published site and record votes through the CLI; the Issue is the canonical history.

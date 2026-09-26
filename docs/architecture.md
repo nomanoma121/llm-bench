@@ -540,7 +540,7 @@ type SandboxClient interface { // 実装: internal/sandbox。argv を受け取�
 type ExpectedFile struct{ Path, SHA256 string } // snapshot 由来の期待値
 type Git interface { // 実装: internal/provenance
     VerifyCommit(ctx, commit string, expected []ExpectedFile) error
-    Archive(ctx, commit string) (io.Reader, error)
+    Archive(ctx, commit string) ([]byte, error) // tar ストリーム
 }
 type Publisher interface { // 実装: internal/pages
     Publish(ctx context.Context, runID string, html []byte) (publicURL string, err error)

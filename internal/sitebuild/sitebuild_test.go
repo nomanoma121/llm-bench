@@ -111,16 +111,27 @@ func TestBuildEscapesUntrustedArtifact(t *testing.T) {
 }
 
 func TestMetaCSPIsInsertedBeforeArtifactContent(t *testing.T) {
-	got := withMetaCSP([]byte(`<html><head><script>first()</script></head><body></body></html>`))
+	// A script before any head must not precede the policy.
+	got := withMetaCSP([]byte(`<script>fetch("https://example.test")</script><html><head></head></html>`))
+	if !strings.HasPrefix(got, "<meta http-equiv=\"Content-Security-Policy\"") {
+		t.Fatalf("policy must come first: %s", got)
+	}
+	// A <head> mentioned inside a script string must not fool the insertion.
+	got = withMetaCSP([]byte(`<script>const x = "<head>"</script>`))
 	meta := strings.Index(got, "http-equiv=\"Content-Security-Policy\"")
 	script := strings.Index(got, "<script>")
 	if meta < 0 || script < 0 || meta > script {
-		t.Fatalf("meta CSP must precede artifact content: %s", got)
+		t.Fatalf("policy must precede the script: %s", got)
 	}
-	// A document without head still gets the policy first.
-	got = withMetaCSP([]byte(`<script>only()</script>`))
-	if !strings.HasPrefix(got, "<meta http-equiv=\"Content-Security-Policy\"") {
-		t.Fatalf("policy must come first: %s", got)
+	// A leading doctype stays first so the document keeps standards mode.
+	got = withMetaCSP([]byte(`<!DOCTYPE html><html><head><title>x</title></head></html>`))
+	if !strings.HasPrefix(got, "<!DOCTYPE html><meta http-equiv=\"Content-Security-Policy\"") {
+		t.Fatalf("doctype must stay first: %s", got)
+	}
+	// Leading whitespace and a BOM are tolerated.
+	got = withMetaCSP([]byte("\xef\xbb\xbf\n<!doctype HTML><html></html>"))
+	if !strings.HasPrefix(got, "\xef\xbb\xbf\n<!doctype HTML><meta http-equiv=") {
+		t.Fatalf("bom/whitespace handling: %q", got)
 	}
 }
 

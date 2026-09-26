@@ -406,12 +406,18 @@ func (e *Engine) stepReleasing(ctx context.Context, r *Run) (wait bool, err erro
 }
 
 // stepFinalizing migrates records written before v1.6: they waited for the
-// controller to publish, which no longer exists. The lease is already
-// released, so the run is simply succeeded; the recorded publication fields
-// stay untouched as history.
+// controller to publish, which no longer exists. Only a consistent record
+// (successful execution with the lease already released) may go straight to
+// succeeded; anything else is repaired through the normal releasing path, so
+// a malformed record can never reach terminal without releasing its lease.
 func (e *Engine) stepFinalizing(ctx context.Context, r *Run) (wait bool, err error) {
-	r.Phase = PhaseSucceeded
-	r.WaitReason = ""
+	if r.ExecutionResult == ResultSuccess && r.LeaseState == LeaseReleased {
+		r.Phase = PhaseSucceeded
+		r.WaitReason = ""
+		return false, e.save(ctx, r)
+	}
+	r.WaitReason = "legacy finalizing record is inconsistent; releasing before finishing"
+	r.Phase = PhaseReleasing
 	return false, e.save(ctx, r)
 }
 

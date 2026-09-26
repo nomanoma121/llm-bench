@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,7 +63,7 @@ func fixture(t *testing.T, body string) (Options, string) {
 		runs: map[string]run.Run{runID: {
 			ID: runID, Target: "local", Experiment: "experiments/example-model/exp-1/config.yaml",
 			Phase: run.PhaseSucceeded, RecipeJSON: string(recipeJSON),
-			PromptSHA256: "prompt", ControllerVersion: "test",
+			Fingerprint: "fingerprint", PromptSHA256: "prompt", ControllerVersion: "test",
 			Artifacts: run.Artifacts{Dir: artifactDir, ArtifactDigest: digest},
 		}},
 		dirs: map[string]string{runID: artifactDir},
@@ -526,4 +527,109 @@ func indexOf(h, n string) int {
 		}
 	}
 	return -1
+}
+
+func TestDryRunTouchesNothing(t *testing.T) {
+	opts, root := fixture(t, "<html/>")
+	opts.Write = false
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	expDir := filepath.Join(root, "experiments", model, "exp-1")
+	if _, err := os.Stat(expDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry run created the destination: %v", err)
+	}
+
+	// An interrupted swap is left untouched by a dry run.
+	opts2, root2 := fixture(t, "<html/>")
+	if _, err := Run(context.Background(), opts2); err != nil {
+		t.Fatal(err)
+	}
+	expDir2 := filepath.Join(root2, "experiments", model, "exp-1")
+	tmp := filepath.Join(expDir2, ".adopt-tmp-"+runID)
+	if err := os.Rename(filepath.Join(expDir2, "output"), tmp); err != nil {
+		t.Fatal(err)
+	}
+	opts2.Write = false
+	res, err := Run(context.Background(), opts2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NoOp || !res.Replaced {
+		t.Fatalf("dry run should report a fresh adoption of the interrupted destination: %+v", res)
+	}
+	if _, err := os.Stat(tmp); err != nil {
+		t.Fatalf("dry run must not recover the staging directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(expDir2, "output")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("dry run must not move the staging directory into place")
+	}
+}
+
+func TestInvalidExistingManifestIsAHardError(t *testing.T) {
+	opts, root := fixture(t, "<html/>")
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(root, "experiments", model, "exp-1", "output", ManifestName)
+	body, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Break the inventory: the no-op path must not accept this manifest.
+	broken := strings.Replace(string(body), `"prompt_sha256": "prompt"`, `"prompt_sha256": ""`, 1)
+	if err := os.WriteFile(manifestPath, []byte(broken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), opts); err == nil {
+		t.Fatal("expected an invalid existing manifest to fail closed")
+	}
+	if err := Verify(filepath.Join(root, "experiments")); err == nil {
+		t.Fatal("expected verify to report the invalid manifest")
+	}
+}
+
+func TestVerifyRejectsSymlinkedModelDirectory(t *testing.T) {
+	opts, root := fixture(t, "<html/>")
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	expRoot := filepath.Join(root, "experiments")
+	moved := filepath.Join(root, "moved-model")
+	if err := os.Rename(filepath.Join(expRoot, model), moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(moved, filepath.Join(expRoot, model)); err != nil {
+		t.Fatal(err)
+	}
+	err := Verify(expRoot)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected a symlink rejection, got %v", err)
+	}
+}
+
+func TestManifestRequiresProvenanceFields(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base := func() *Manifest {
+		return &Manifest{
+			SchemaVersion: SchemaVersion, RunID: runID, ExperimentID: "exp-1", Model: model,
+			BenchmarkFingerprint: "fp", ArtifactDigest: "d", PromptSHA256: "p",
+			ControllerVersion: "test", AdoptedAt: time.Unix(0, 0).UTC(),
+			Artifacts: []provenance.PayloadFile{{Path: "index.html", Size: 1, SHA256: provenance.SHA256Hex([]byte("x"))}},
+		}
+	}
+	for name, mutate := range map[string]func(*Manifest){
+		"fingerprint": func(m *Manifest) { m.BenchmarkFingerprint = "" },
+		"prompt":      func(m *Manifest) { m.PromptSHA256 = "" },
+		"review url":  func(m *Manifest) { m.Review = &ReviewRef{ReviewID: "r", VoteCommentID: 1, Choice: review.ChoiceA} },
+	} {
+		m := base()
+		mutate(m)
+		if err := validateManifest(m); err == nil {
+			t.Fatalf("%s: expected validation to fail", name)
+		}
+	}
 }

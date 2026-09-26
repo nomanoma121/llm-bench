@@ -162,22 +162,45 @@ func Build(opts BuildOptions) error {
 	return writeFile(filepath.Join(opts.Out, "index.html"), indexTemplate, index)
 }
 
-// withMetaCSP inserts the meta policy before any artifact content, so nothing
-// runs before it applies. A document without <head> gets it at the very top.
+// withMetaCSP places the meta policy at the top of the artifact document.
+//
+// It never searches the document for a tag: the payload is untrusted, so a
+// <head> inside a script string or a quoted attribute could otherwise be
+// mistaken for the real head and leave executable content before the policy.
+// Inserting right after a leading doctype (or at the very beginning when there
+// is none) is the only position that structurally precedes every element.
 func withMetaCSP(payload []byte) string {
-	meta := []byte(`<meta http-equiv="Content-Security-Policy" content="` + MetaCSP + `">`)
-	lower := bytes.ToLower(payload)
-	if i := bytes.Index(lower, []byte("<head")); i >= 0 {
-		if end := bytes.IndexByte(lower[i:], '>'); end >= 0 {
-			insert := i + end + 1
-			out := make([]byte, 0, len(payload)+len(meta))
-			out = append(out, payload[:insert]...)
-			out = append(out, meta...)
-			out = append(out, payload[insert:]...)
-			return string(out)
-		}
+	meta := `<meta http-equiv="Content-Security-Policy" content="` + MetaCSP + `">`
+	insert := len(leadingDoctype(payload))
+	return string(payload[:insert]) + meta + string(payload[insert:])
+}
+
+// leadingDoctype returns the byte prefix that must stay first for the document
+// to keep standards mode: an optional UTF-8 BOM and whitespace followed by a
+// doctype. Anything else yields an empty prefix.
+func leadingDoctype(payload []byte) []byte {
+	bom := []byte("\xef\xbb\xbf")
+	b := bytes.TrimPrefix(payload, bom)
+	// Index arithmetic below works on b; the prefix length must count the BOM.
+	offset := len(payload) - len(b)
+	i := 0
+	for i < len(b) && (b[i] == ' ' || b[i] == '\t' || b[i] == '\r' || b[i] == '\n') {
+		i++
 	}
-	return string(meta) + string(payload)
+	rest := b[i:]
+	doctype := []byte("<!doctype")
+	if len(rest) < len(doctype) || !bytes.EqualFold(rest[:len(doctype)], doctype) {
+		return nil
+	}
+	// The doctype ends at the first '>' within a short, bounded window.
+	limit := len(rest)
+	if limit > 256 {
+		limit = 256
+	}
+	if end := bytes.IndexByte(rest[:limit], '>'); end >= 0 {
+		return payload[:offset+i+end+1]
+	}
+	return nil
 }
 
 // writeFile renders a template to a file, creating parent directories.

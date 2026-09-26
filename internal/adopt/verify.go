@@ -26,6 +26,10 @@ func Verify(root string) error {
 	var problems []error
 	unreviewed := map[string]int{}
 	for _, modelDir := range entries {
+		if err := checkDirEntry(root, modelDir); err != nil {
+			problems = append(problems, err)
+			continue
+		}
 		if !modelDir.IsDir() {
 			continue
 		}
@@ -36,6 +40,10 @@ func Verify(root string) error {
 			continue
 		}
 		for _, expDir := range experiments {
+			if err := checkDirEntry(filepath.Join(root, model), expDir); err != nil {
+				problems = append(problems, err)
+				continue
+			}
 			if !expDir.IsDir() {
 				continue
 			}
@@ -115,6 +123,9 @@ func Find(root string) ([]Adopted, error) {
 	}
 	var out []Adopted
 	for _, modelDir := range entries {
+		if err := checkDirEntry(root, modelDir); err != nil {
+			return nil, err
+		}
 		if !modelDir.IsDir() {
 			continue
 		}
@@ -123,6 +134,9 @@ func Find(root string) ([]Adopted, error) {
 			return nil, err
 		}
 		for _, expDir := range experiments {
+			if err := checkDirEntry(filepath.Join(root, modelDir.Name()), expDir); err != nil {
+				return nil, err
+			}
 			if !expDir.IsDir() {
 				continue
 			}
@@ -176,4 +190,14 @@ func (a Adopted) Payload() ([]byte, error) {
 		return body, nil
 	}
 	return nil, errors.New("adopt: adopted artifact has no index.html")
+}
+
+// checkDirEntry rejects symlinked model/experiment directories instead of
+// silently skipping them: the published tree must not contain links out of the
+// repository, and CI has to say so rather than pass.
+func checkDirEntry(parent string, e os.DirEntry) error {
+	if e.Type()&os.ModeSymlink == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s is a symlink; the experiments tree must contain only real directories", filepath.Join(parent, e.Name()))
 }

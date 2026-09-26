@@ -140,36 +140,28 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		return Result{}, fmt.Errorf("adopt: artifact changed after sealing (%s != %s)", digest, r.Artifacts.ArtifactDigest)
 	}
 
-	unlock, err := lockDestination(intoAbs)
-	if err != nil {
-		return Result{}, err
-	}
-	defer unlock()
-	if err := recoverDestination(intoAbs); err != nil {
-		return Result{}, err
-	}
-
+	// Decide the destination state and the review evidence. A dry run must
+	// not touch the filesystem at all (no lock file, no recovery of an
+	// interrupted swap): it only reports what a write would do.
 	current, err := readManifest(intoAbs)
 	if err != nil {
 		return Result{}, err
 	}
 	res := Result{Destination: intoAbs}
-	if current != nil {
-		switch {
-		case current.RunID == r.ID && current.ArtifactDigest == digest:
-			// Re-running the same adoption is a no-op and needs no review: the
-			// destination already proves the decision was made.
-			res.Manifest = *current
-			res.NoOp = true
-			return res, nil
-		case current.ArtifactDigest == digest:
-			// Identical bytes, different run: update the recorded provenance
-			// so the manifest matches the run the human asked to adopt.
-			res.ProvenanceUpdated = true
-		default:
-			return Result{}, fmt.Errorf("adopt: %s already holds a different artifact (run %s)", opts.Into, current.RunID)
-		}
-	} else {
+	switch {
+	case current != nil && current.RunID == r.ID && current.ArtifactDigest == digest:
+		// Re-running the same adoption is a no-op and needs no review: the
+		// destination already records the decision.
+		res.Manifest = *current
+		res.NoOp = true
+		return res, nil
+	case current != nil && current.ArtifactDigest == digest:
+		// Identical bytes, different run: update the recorded provenance so
+		// the manifest matches the run the human asked to adopt.
+		res.ProvenanceUpdated = true
+	case current != nil:
+		return Result{}, fmt.Errorf("adopt: %s already holds a different artifact (run %s)", opts.Into, current.RunID)
+	default:
 		res.Replaced = true
 	}
 
@@ -177,7 +169,6 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-
 	manifest := Manifest{
 		SchemaVersion:        SchemaVersion,
 		RunID:                r.ID,
@@ -196,6 +187,32 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	res.Manifest = manifest
 	if !opts.Write {
 		return res, nil
+	}
+
+	// The write path serializes the destination: recovery, the checks above,
+	// staging, swap and cleanup all happen while the lock is held.
+	unlock, err := lockDestination(intoAbs)
+	if err != nil {
+		return Result{}, err
+	}
+	defer unlock()
+	if err := recoverDestination(intoAbs); err != nil {
+		return Result{}, err
+	}
+	// Re-read under the lock: another process may have adopted meanwhile.
+	locked, err := readManifest(intoAbs)
+	if err != nil {
+		return Result{}, err
+	}
+	if locked != nil {
+		if locked.RunID == r.ID && locked.ArtifactDigest == digest {
+			res.Manifest = *locked
+			res.NoOp = true
+			return res, nil
+		}
+		if locked.ArtifactDigest != digest {
+			return Result{}, fmt.Errorf("adopt: %s already holds a different artifact (run %s)", opts.Into, locked.RunID)
+		}
 	}
 	if err := writeStaged(intoAbs, r.ID, sourceDir, manifest); err != nil {
 		return Result{}, err
@@ -463,14 +480,20 @@ func tmpComplete(dir string) (bool, error) {
 
 var errInvalidManifest = errors.New("adopt: invalid manifest")
 
-// readManifest loads the manifest of a destination; it returns nil when the
-// destination holds no manifest (an unadopted placeholder or empty directory).
+// readManifest loads and validates the manifest of a destination; it returns
+// nil when the destination holds no manifest (an unadopted placeholder or
+// empty directory). A manifest that exists but does not validate is a hard
+// error: treating it as "no adoption yet" would be fail-open.
 func readManifest(intoAbs string) (*Manifest, error) {
-	m, err := readManifestFile(filepath.Join(intoAbs, "output", ManifestName))
+	dir := filepath.Join(intoAbs, "output")
+	m, err := readManifestFile(filepath.Join(dir, ManifestName))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
+		return nil, err
+	}
+	if err := validateManifestAgainst(dir, m); err != nil {
 		return nil, err
 	}
 	return m, nil
@@ -498,8 +521,9 @@ func validateManifest(m *Manifest) error {
 	if !runIDPattern.MatchString(m.RunID) {
 		return fmt.Errorf("%w: run_id %q", errInvalidManifest, m.RunID)
 	}
-	if m.ExperimentID == "" || m.Model == "" || m.ArtifactDigest == "" || m.ControllerVersion == "" {
-		return fmt.Errorf("%w: missing required fields", errInvalidManifest)
+	if m.ExperimentID == "" || m.Model == "" || m.ArtifactDigest == "" || m.ControllerVersion == "" ||
+		m.BenchmarkFingerprint == "" || m.PromptSHA256 == "" {
+		return fmt.Errorf("%w: missing required provenance fields", errInvalidManifest)
 	}
 	if m.AdoptedAt.IsZero() {
 		return fmt.Errorf("%w: adopted_at is required", errInvalidManifest)
@@ -531,7 +555,7 @@ func validateManifest(m *Manifest) error {
 		return fmt.Errorf("%w: index.html is %d bytes, over the %d byte limit", errInvalidManifest, m.Artifacts[0].Size, provenance.MaxArtifactBytes)
 	}
 	if m.Review != nil {
-		if m.Review.ReviewID == "" || m.Review.VoteCommentID == 0 ||
+		if m.Review.ReviewID == "" || m.Review.IssueURL == "" || m.Review.VoteCommentID == 0 ||
 			(m.Review.Choice != review.ChoiceA && m.Review.Choice != review.ChoiceB) {
 			return fmt.Errorf("%w: review evidence is incomplete", errInvalidManifest)
 		}

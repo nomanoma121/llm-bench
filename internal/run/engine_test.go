@@ -985,3 +985,40 @@ func TestRunWaitsForWorkersOnCancel(t *testing.T) {
 	}
 	_ = released
 }
+
+func TestLegacyFinalizingRecordWithoutReleasedLeaseIsRepaired(t *testing.T) {
+	// A malformed legacy record must not jump to terminal: it goes through
+	// releasing so nothing skips restoration.
+	f := newFixture(t, "a")
+	if _, err := f.engine.Submit(context.Background(), f.newRun("r1"), nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := f.engine.Drain(ctx, "r1"); err != nil {
+		t.Fatal(err)
+	}
+	r, err := f.store.LoadRun(ctx, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Phase = PhaseFinalizing
+	r.LeaseState = LeaseAcquired
+	r.ExecutionResult = ResultFailure
+	if err := f.store.SaveRun(ctx, &r); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.engine.Drain(ctx, "r1"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.store.LoadRun(ctx, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Phase != PhaseFailed {
+		t.Fatalf("phase = %s, want failed after releasing", got.Phase)
+	}
+	if got.LeaseState != LeaseReleased {
+		t.Fatalf("lease = %s, want released", got.LeaseState)
+	}
+}

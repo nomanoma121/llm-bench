@@ -168,6 +168,12 @@ closing:   ActiveRunID が空になるまで release を開始しない
 - TargetLease release 完了前に `closed` へ行かない
 - standalone Run の意味論は変更しない
 
+### 4.5c v1.6 以前の record との後方互換
+
+- **`Run.Kind == ""` は legacy visual として扱う**(v1.6 record はすべて visual artifact を持つ)。新規 Run は必ず non-empty の `Kind` を保存する
+- `LeaseState` は既存 record の値をそのまま維持する。**`not_applicable` は新規 window-bound Run だけ**が持つ
+- `WindowID == ""` は従来の standalone Run と同義(新規・legacy とも)
+
 ### 4.5b window-bound Run の LeaseState
 
 window-bound Run は TargetLease を所有しないため、`LeaseState` に **`not_applicable`** を追加し、window-bound では acquire/release のどのステップも実行しない(値は submit 時に `not_applicable` で固定)。`releasing` の完了判定・terminal 判定で `LeaseState` を参照してはならない。
@@ -285,18 +291,32 @@ driver は harness から port-forward 越しに動かさない(ネットワー�
 **信頼境界(実装契約)**: 同一 Pod・同一 filesystem・同一 UID では candidate が driver binary や collector 出力を書き換えられるため、次を必須とする。
 
 - driver/collector は **candidate が書き込めない場所**から実行する(読み取り専用マウント / 別コンテナ / root 所有の非書込パス + candidate を非 root で実行、のいずれか)
+- **出力チャネルも candidate から保護する**(実行物だけでは足りない)。次のいずれかに固定する:
+  - driver の stdout を sandboxd transport 経由で harness が直接 capture する(推奨。candidate が触れるファイルを経由しない)
+  - または `raw-measurement.json` を **candidate が書き込めない専用ディレクトリ**(root 所有・非書込)に置く
+- protocol の実行契約に **ディレクトリ/ファイルの ownership** まで含める(誰が書ける場所か)
 - `MeasurementProtocolDigest` には **driver と collector の content digest**(ファイルツリーの digest)を含める。version 文字列だけでは不足
 - harness は回収した `raw-measurement.json` を**自分で validate/normalize/canonical 化**して evidence を書く(Sandbox に最終 evidence を書かせない)
 
 ### 5.5 measurement validity gate
 
-次のいずれかを検出したら `measurement_valid = false` とし、**性能比較から除外**する:
+`measurement_valid` は **「測定自体が信頼できるか」だけ**を表し、**候補の性能や正しさを表さない**。次のいずれかを検出したら `false` とし、性能比較から除外する(`decide` は `inconclusive`):
 
 - 同じ GPU 上の foreign process(他ジョブ)
 - サーマル/パワーリミットによるスロットリング、期待しない clock 変化
 - ホストの異常 CPU 負荷・バックグラウンドビルド
-- collector の欠測(gap)
-- OOM / Xid / プロセス異常終了
+- collector の欠測(gap)、測定チャネルの故障
+- 測定環境の故障(環境起因の Xid・device lost 等)
+
+一方、**valid な evidence の上での候補の失敗は reject** であって invalid ではない:
+
+| 事象 | 扱い |
+|---|---|
+| correctness gate 失敗(valid evidence) | `reject`(Session は non-retryable) |
+| 候補起因の OOM / resource violation(valid evidence) | `reject`(non-retryable) |
+| 候補起因の Xid(例: カーネルが候補の不正なカーネル起動で落ちた) | `reject`(non-retryable) |
+| 環境起因の Xid / device lost | `measurement_valid=false` → `inconclusive` |
+| infra 障害で evidence が取れない | `inconclusive`(Session が新規 Run で再測定) |
 
 これが無いと「0.8 ms 改善」の実体がバックグラウンドビルドの有無になる。
 
@@ -320,7 +340,15 @@ PromotionPolicy: primary objective(name, direction=min), minimum effect size,
 
 保存先: `Run` に `MeasurementProtocolID / MeasurementProtocolJSON / MeasurementProtocolDigest`(submit 時 snapshot)。`PromotionPolicyID / PromotionPolicyJSON / PromotionPolicyDigest` は **D で型と canonical snapshot を定義**し、**永続化(session への束縛)は E** で行う。
 
-recipe は「protocol 名を選ぶ」ことだけ許す。optimization では operator の `optimization_profiles` が protocol と policy を bind する:
+**選択入力は submit 時のみ**で、recipe からは指定できない:
+
+```
+SubmitOptions:
+  kind: visual | measurement          # 省略時は visual(operator profile の既定に従う)
+  measurement_protocol: <operator-owned-id>
+```
+
+server 側は operator allowlist(`targets.<id>.measurement_protocols` / `optimization_profiles`)に照合してから protocol snapshot を固定する。allowlist に無い protocol 名は 400。optimization では operator の `optimization_profiles` が protocol と policy を bind する:
 
 ```yaml
 optimization_profiles:
@@ -335,9 +363,23 @@ optimization_profiles:
 
 ### 6.2 判定は harness(Agent に採否権を与えない)
 
-`llmbench optimize decide` は sealed evidence と policy だけを入力とする**純関数**に近づける:
+`llmbench optimize decide` は **2層**にする。store / evidence の I/O は `LoadDecisionInput`、判定は `Decide(input) Verdict` の純関数で、CLI は load → decide の wrapper にすぎない。
 
-入力: baseline/candidate の run IDs、`MetricsDigest[]`、`MeasurementProtocolDigest`、`PromotionPolicyDigest`、algorithm version
+```go
+func LoadDecisionInput(ctx, store, baselineRunIDs, candidateRunIDs []string) (DecisionInput, error)
+func Decide(in DecisionInput) Verdict   // 純関数。VerdictDigest はここから決定論的に決まる
+```
+
+`DecisionInput` には comparability gate に必要な provenance と sealed metrics を**すべて**含める(store を内部で読む `Decide` は純関数ではない):
+
+```
+DecisionInput:
+  baseline/candidate: [{RunID, Kind, ModelTreeDigest, RuntimeSpecDigest, RuntimeBuildDigest,
+                        EnvironmentDigest, WorkloadDigest, MeasurementProtocolDigest,
+                        MeasurementProtocolSnapshot, MetricsDigest, MetricsJSON}]
+  PromotionPolicyID / PromotionPolicySnapshot / PromotionPolicyDigest
+  AlgorithmVersion
+```
 出力:
 
 verdict は `accept | reject | inconclusive`。**`inconclusive` は「候補の良し悪しを判定できない」**ケース(measurement_valid=false、collector gap、foreign process、infra 障害による evidence 欠落)であり、reject とは区別する。
@@ -457,7 +499,7 @@ OptimizationSession
 - scope は **repository/controller store 全体**。TTL は無し(Run が存在する限り binding も存在する)
 - `RunID = Truncate128(SHA256(repository_namespace + "\0" + request_id))` と**決定論的に導出**する。Run に `RequestID` と `RequestDigest` を保存するので、別途 idempotency store は不要
 - 同 request-id + 同 RequestDigest → **既存 Run を返す**。同 request-id + 異なる digest → **409 Conflict**
-- RequestDigest には recipe snapshot identity、input commit、target、protocol digest、(あれば)window ID を含める
+- **RequestDigest は canonical な「submit 内容全体」**の digest とする。少なくとも recipe snapshot identity、input commit、target、**`Kind`**、measurement protocol ID/digest、workload selector、(あれば)window ID を漏れなく含める(`Kind` を独立させたため、visual → measurement の変更も 409 で検出できる必要がある)
 
 ### 9.2 exit code
 

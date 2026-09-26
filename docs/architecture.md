@@ -300,7 +300,8 @@ type Run struct {
     RecipeJSON      string          // 検証済み experiment.Config の canonical JSON
     PromptSHA256    string
     // ── v1.7(測定・最適化。docs/optimization.md)──
-    Kind               RunKind // visual | measurement(operator の MeasurementProtocol 由来)
+    Kind               RunKind // visual | measurement(operator profile / SubmitOptions が決める。
+                       //              "" は legacy record のみ = visual として扱う)
     WindowID           string  // 空なら standalone。非空なら MeasurementWindow に束縛(§3.6)
     RequestID          string  // idempotency key(submit 時に指定。RunID は決定論的に導出)
     RequestDigest      string  // request-id に束縛された内容の digest(不一致は 409)
@@ -346,15 +347,22 @@ var (
 // ExecutionOutputs は 1 回の実行が確定させた provenance をまとめて返す。
 // Run にフィールドを足すだけでは保存経路が無いため、ExecCompleted の CAS 保存と
 // 同じタイミングで Run へ反映する(measurement の digest 群もここを通る)
+type Evidence struct {
+    Path   string // <output>/runs/<runID>/evidence/metrics.json
+    Digest string // sealed bytes の SHA-256(MetricsDigest)
+}
 type ExecutionOutputs struct {
     Artifacts          Artifacts
-    EvidencePath       string // sealed evidence(Sandbox から回収した raw を harness が正規化したもの)
+    Evidence           Evidence // sealed evidence。MetricsDigest はここから Run へ保存する
     RuntimeBuildDigest string
     EnvironmentDigest  string
+    WorkloadDigest     string
 }
 type Executor interface {
     // 呼び出し前に worker が ExecutionState=invoking を保存すること(契約)。
     // 戻り時点で成果物は Artifacts.Dir へ確定保存+ハッシュ済みであること。
+    // **error を返した場合でも、返却済みの sealed Evidence は Run へ保存する**
+    // (「failed run でも MetricsDigest を持てる」契約の実装経路)
     // ErrPending を返してよいのは invoking に入る前の preparation(例: runtime build)だけで、
     // invoking 中の再試行は禁止(v1.6 の「同一 Run を再実行しない」)
     Execute(ctx context.Context, r Run) (ExecutionOutputs, error)
@@ -373,16 +381,16 @@ type OwnerRef struct{ Kind string; ID string } // kind: "run" | "window"
 // TargetLease の store。実装: filestore / kube
 // 用語注意: SandboxClaim(Sandbox 側 GPU claim)は扱わない。そちらは sandbox.Hook が管理する
 type LeaseStore interface {
-    // 冪等: 同一 runID が owner なら成功。他 run が保持中は ErrLeaseBusy。atomic create
-    AcquireTargetLease(ctx context.Context, target, runID string) error
+    // 冪等: 同じ owner なら成功。他 owner が保持中は ErrLeaseBusy。atomic create
+    AcquireTargetLease(ctx context.Context, target string, owner OwnerRef) error
     // 条件付き削除で完全に冪等:
-    //   owner == runID → 削除して成功(k8s: UID/resourceVersion precondition 付き DELETE、
-    //                     filestore: lock 下の owner 比較+削除)
-    //   存在しない    → 成功(NotFound = success。releasing 保存後のクラッシュで
-    //                     解放済みのときの再呼び出しを吸収する)
-    //   owner != runID → 削除せず ErrLeaseBusy(古い run のリトライが次の run の
-    //                     TargetLease を消さない)
-    ReleaseTargetLease(ctx context.Context, target, runID string) error
+    //   owner 一致      → 削除して成功(k8s: UID/resourceVersion precondition 付き DELETE、
+    //                      filestore: lock 下の owner 比較+削除)
+    //   存在しない      → 成功(NotFound = success。releasing 保存後のクラッシュで
+    //                      解放済みのときの再呼び出しを吸収する)
+    //   owner 不一致    → 削除せず ErrLeaseBusy(古い owner のリトライが次の owner の
+    //                      TargetLease を消さない)
+    ReleaseTargetLease(ctx context.Context, target string, owner OwnerRef) error
 }
 
 // (v1.7) MeasurementWindow の store。RunStore と同じ CAS/ListUnfinished 契約
@@ -399,7 +407,9 @@ func (e *Engine) Submit(ctx context.Context, r Run) error
 // Submit の snapshot 保存順(厳密):
 //   1. <output>/runs/<runID>/input/ を temp dir に書く
 //   2. fsync + atomic rename で snapshot 確定
-//   3. Run(pending + LeaseState=acquiring + HookPlan snapshot)を保存
+//   3. Run(pending + HookPlan snapshot)を保存。LeaseState は owner で決まる:
+//        standalone   → acquiring(worker が lease を取得)
+//        window-bound → not_applicable(Window が保持。Run は lease を触らない)
 // この順により「Run だけ存在して snapshot がない」状態を作らない。
 // 逆方向のクラッシュで残る孤立 input dir は起動時に GC 可能(既知の無害な残留)
 // TargetLease 取得は worker が write-ahead で行う(submit 時に取ると「取得成功→保存前クラッシュ」で幽霊 lease が残るため)
@@ -446,8 +456,12 @@ loop:
     # 正常開始は not_started からのみ
     save(ExecutionState=invoking)          # write-ahead
     ctx timeout = operator Limits.MaxExecutionDuration(F17)
-    a, err := executor.Execute(ctx, r)     # 成果物は Dir へ確定保存+ハッシュ済みで返る
-    save(ExecutionState=completed, ExecutionResult=success|failure, Artifacts=a) → releasing
+    out, err := executor.Execute(ctx, r)   # 成果物は Dir へ確定保存+ハッシュ済みで返る
+    # error でも Evidence は保存する(valid かどうかは evidence 側が持つ)
+    save(ExecutionState=completed, ExecutionResult=success|failure,
+         Artifacts=out.Artifacts, MetricsDigest=out.Evidence.Digest,
+         RuntimeBuildDigest=out.RuntimeBuildDigest, EnvironmentDigest=out.EnvironmentDigest,
+         WorkloadDigest=out.WorkloadDigest) → releasing
   case releasing:
     # 解放対象 = HookPhase が acquiring / acquired / releasing の hook のみ(not_started は触らない)
     # 厳密逆順で 1 個ずつ:
@@ -457,11 +471,18 @@ loop:
     - その他の error → save(Hooks[i].Error) して releasing に留まり interval 再試行
       # error 種別を問わず released にせず、TargetLease も解放せず terminal に進まない。
       # ErrPending は UI 表示上の「待機」分類に過ぎない(不変条件の構造的担保)
-    hook 解放完了後:
-    save(LeaseState=releasing) → err := leases.ReleaseTargetLease(...)
+    hook 解放完了後、owner で 2 経路に分かれる:
+    # (a) standalone Run(WindowID == "")
+    save(LeaseState=releasing) → err := leases.ReleaseTargetLease(target, OwnerRef{Kind:"run", ID:r.ID})
     - nil   → save(LeaseState=released)
     - error → LeaseState=releasing のまま interval 再試行(NotFound は成功扱いの契約)
-    # lease released の保存後のみ分岐する(公開の成否は run の終了条件ではない):
+    # (b) window-bound Run(WindowID != "")
+    #     lease も GitOps restore も Window が所有するため何も解放しない。
+    #     ActiveRunID の CAS 解放が成功した後のみ terminal へ進む
+    window.ActiveRunID を CAS で空にする
+    - 成功 → 次へ
+    - 失敗(他 owner が入っている等) → ErrPending として interval 再試行
+    # どちらの経路も、復元責務が完了した保存後のみ分岐する(公開の成否は run の終了条件ではない):
     - ExecutionResult == failure → **failed**
     - ExecutionResult == success  → **succeeded**
   case finalizing:  # 旧 record の移行専用。新規 run はこの phase に入らない

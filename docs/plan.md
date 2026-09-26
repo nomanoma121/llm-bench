@@ -24,7 +24,7 @@
 - [x] Add a single-run Agent Sandbox executor using an operator-owned SandboxTemplate and GPU ResourceClaim; send a Git commit snapshot, invoke build/runtime commands in the Sandbox, and collect HTML/logs.
 - [x] Add the official Go SDK access layer for named SandboxClaims, port-forwarded sandboxd commands, file transfer, and explicit release; expose manual operations in the CLI.
 - [ ] Keep the Agent session outside the Sandbox; reattach to its Claim after backing Pod replacement and avoid replaying non-idempotent commands.
-- [ ] Support multiple attempts within an optimization round; release GPU before human review. Keep the SandboxWarmPool at zero idle replicas.
+- [ ] Support optimization rounds as **collections of independent runs** (one measurement run per attempt), starting with a MeasurementWindow that holds the pause across rounds; release the GPU before human review and keep the SandboxWarmPool at zero idle replicas. Never re-run the same run.
 - [x] Keep GPU claims and inference pause/restore as operator-injected hooks; the target lease is engine-managed (acquired write-ahead, released as the final step of `releasing`). Do not add SSH execution.
 - [ ] Persist cluster run/session state durably and enforce one active run per target across harness replicas. Kubernetes ConfigMap run records, atomic target leases and leader election (with worker cancellation on lease loss) are implemented; durable Agent conversation and proven external-effect fencing are not.
 - [ ] Add failover tests and spread harness replicas across nodes with Pod anti-affinity. Lease election (including re-election after loss) has fake-client tests; multi-replica stays disabled because external-effect fencing is not proven safe end-to-end, and the chart has no templates yet.
@@ -34,7 +34,7 @@
 - [ ] Verify restoration after process, Pod, node, and GitHub failures.
 - [ ] Exercise GitHub PR, Argo CD, Deployment, and SandboxClaim transitions end-to-end on a non-production cluster with the target manifest repository.
 
-## 3b. Publication split (designed in `docs/architecture.md` v1.6, not implemented yet)
+## 3b. Publication split (designed in `docs/architecture.md` v1.6, implemented)
 
 The controller will stop owning permanent publication: it serves an authenticated preview of a run's artifacts, and a human merges accepted artifacts into `experiments/<model-id>/<experiment-id>/output/` for CI to publish.
 

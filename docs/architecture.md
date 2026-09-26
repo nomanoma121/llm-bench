@@ -227,7 +227,7 @@ Phase:  pending ──▶ acquiring ──▶ running ──▶ releasing ──
                  (クラッシュ時は保存済み状態から冪等に再開)
 ```
 
-- *(v1.7)* `RunKind = visual | measurement`。**状態機械は共通**で、必須成果物だけが変わる: `visual` は `ArtifactDigest` 必須、`measurement` は `MetricsDigest` 必須で `ArtifactDigest` を作らない。kind は recipe が直接指定できず、operator 所有の MeasurementProtocol を使う run だけが `measurement` になる(`docs/optimization.md` §3)
+- *(v1.7)* `RunKind = visual | measurement`。**状態機械は共通**で、必須成果物だけが変わる: `visual` は `ArtifactDigest` 必須、`measurement` は `MetricsDigest` 必須で `ArtifactDigest` を作らない。**kind と MeasurementProtocol の付与は独立**で、どちらも recipe からは指定できない(operator の profile / 明示リクエストが決める。`docs/optimization.md` §3)
 - *(v1.7)* **resource ownership の不変条件を変更**する: `1 target = 1 exclusive owner`、owner は standalone Run または MeasurementWindow(§3.6)。standalone Run の意味論(terminal ⇒ 復元完了)は**変更しない**。window-bound Run は run-scoped resource だけを持ち、target が paused のまま terminal になりうる
 - `Phase = pending | acquiring | running | releasing | succeeded | failed`
 - **`finalizing` は v1.6 で廃止**した(公開は run の成功条件ではない)。v1.5.x の record が `finalizing` で停留している場合のみ、worker が `succeeded` へ移行する(legacy 移行。§3.3)
@@ -243,8 +243,9 @@ Phase:  pending ──▶ acquiring ──▶ running ──▶ releasing ──
 
 **ターミナル遷移の不変条件**:
 
-- release は厳密逆順。hook i を解放するには i+1..n が `released` であること
-- **TargetLease の解放は releasing フェーズの最後のステップ**(`LeaseState=releasing` を保存 → `ReleaseTargetLease`(NotFound=成功)→ `released` を保存)。terminal 書き込みは lease 解放保存の後でのみ行う
+- **(standalone Run)** release は厳密逆順。hook i を解放するには i+1..n が `released` であること
+- **(standalone Run)** **TargetLease の解放は releasing フェーズの最後のステップ**(`LeaseState=releasing` を保存 → `ReleaseTargetLease`(NotFound=成功)→ `released` を保存)。terminal 書き込みは lease 解放保存の後でのみ行う
+- **(window-bound Run, `WindowID != ""`)** TargetLease と GitOps restore は **Window が所有**するため、Run は acquire/release を一切通らない(`LeaseState=not_applicable` で固定)。Run の terminal 順序は「run-scoped hook を逆順 release → `Window.ActiveRunID` を CAS で解放(**成功後のみ**)→ terminal」。`ActiveRunID` の解放に失敗したら `ErrPending` で再試行する
 - releasing が完了する前に terminal にしない
 - **releasing 完了後の分岐は ExecutionResult で決定**: `failure → failed`、`success → succeeded`。**公開の成否は run の終了条件に含めない**(§1.5, §4.12)
 - 1 target の同時実行は LeaseStore が排除する。submit 自体は常に可能で、後続 run は `acquiring` で待機する
@@ -256,7 +257,7 @@ type Phase string // pending | acquiring | running | releasing | succeeded | fai
 type ExecutionResult string // none | success | failure
 type ExecutionState string // not_started | invoking | completed
 type HookPhase string // not_started | acquiring | acquired | releasing | released
-type LeaseState string // acquiring | acquired | releasing | released
+type LeaseState string // acquiring | acquired | releasing | released | not_applicable(window-bound Run は lease を持たない)
 
 // 用語: コントローラ側の target 排他を **TargetLease**、Agent Sandbox 側の GPU claim を
 // **SandboxClaim** と呼び分ける。以下の LeaseStore は TargetLease のみを扱う
@@ -306,6 +307,7 @@ type Run struct {
     MeasurementProtocolID     string
     MeasurementProtocolJSON   string // snapshot(operator config 変更後も復元できる)
     MeasurementProtocolDigest string
+    WorkloadDigest     string  // protocol が指定する workload matrix のうち実際に実行した workload
     RuntimeSpecDigest  string  // 何をビルドするつもりだったか(submit 時に既知)
     RuntimeBuildDigest string  // 実際に動いた binary/image
     EnvironmentDigest  string  // GPU/driver/toolkit 等の安定条件
@@ -341,10 +343,21 @@ var (
     ErrVersionConflict = errors.New("run: store version conflict")
 )
 
+// ExecutionOutputs は 1 回の実行が確定させた provenance をまとめて返す。
+// Run にフィールドを足すだけでは保存経路が無いため、ExecCompleted の CAS 保存と
+// 同じタイミングで Run へ反映する(measurement の digest 群もここを通る)
+type ExecutionOutputs struct {
+    Artifacts          Artifacts
+    EvidencePath       string // sealed evidence(Sandbox から回収した raw を harness が正規化したもの)
+    RuntimeBuildDigest string
+    EnvironmentDigest  string
+}
 type Executor interface {
     // 呼び出し前に worker が ExecutionState=invoking を保存すること(契約)。
-    // 戻り時点で成果物は Artifacts.Dir へ確定保存+ハッシュ済みであること
-    Execute(ctx context.Context, r Run) (Artifacts, error)
+    // 戻り時点で成果物は Artifacts.Dir へ確定保存+ハッシュ済みであること。
+    // ErrPending を返してよいのは invoking に入る前の preparation(例: runtime build)だけで、
+    // invoking 中の再試行は禁止(v1.6 の「同一 Run を再実行しない」)
+    Execute(ctx context.Context, r Run) (ExecutionOutputs, error)
 }
 // TargetLease の store。実装: filestore / kube
 // 用語注意: SandboxClaim(Sandbox 側 GPU claim)は扱わない。そちらは sandbox.Hook が管理する
@@ -402,6 +415,8 @@ loop:
   r := store.LoadRun(id)
   switch r.Phase:
   case pending, acquiring:
+    # (v1.7) runtime build などの冪等な preparation は ExecutionState=invoking より前に
+    # 完了させる(cache miss の再試行を ErrPending で表現してよいのはこの段階だけ)
     # (v1.7) window-bound Run は lease/hook(window-scoped)を取らない:
     #   Window を read → phase==open かつ target 一致を確認
     #   - open だが ActiveRunID が他 run → ErrPending
@@ -540,16 +555,20 @@ func CanonicalJSON(c Config) ([]byte, error)   // snapshot 用の決定論的シ
 type Config struct {
     Targets map[string]Target
     Preview *Preview
-    Site    *Site   // deprecated(v1.5): フェーズ 8〜10 の移行期間のみ併存。フェーズ 11 で削除する
     Review  *Review
     Defaults Limits      // target が省略した場合の既定上限
 }
 
-// BuildHookPlan は hook の並び順を決定する**唯一の箇所**:
-//   command hooks(宣言順) → gitops(設定あれば) → sandbox-claim(設定あれば)
-// Load/Validate はこの関数の結果に対して不変条件(gitops が sandbox-claim より先、等)を検証する。
-// 検証対象を「設定ファイルの見た目」ではなくこの出力にすることで、順序の定義が一箇所に集まる
+// hook 計画は 3 契約に分かれ、それぞれが digest を持つ。順序の定義はこの 3 箇所に集約する:
+//   BuildHookPlan(t, runID)          standalone Run: command → gitops → sandbox-claim
+//   BuildWindowHookPlan(t, windowID) MeasurementWindow: gitops のみ(ブランチ名は windowID 由来)
+//   BuildWindowBoundRunHookPlan(t, runID) window-bound Run: command → sandbox-claim
+// window-bound Run の実効順序は Window の GitOps pause → command → SandboxClaim となり、
+// 「command が gitops より先」という旧不変条件の明示的な例外になる(§3.6)
+// Load/Validate は各関数の出力に対して不変条件(gitops が sandbox-claim より先、等)を検証する。
 func BuildHookPlan(t Target, runID string) []PlannedHook // run ID 依存フィールド(ブランチ名・claim 名)を含むため runID を受ける
+func BuildWindowHookPlan(t Target, windowID string) []PlannedHook
+func BuildWindowBoundRunHookPlan(t Target, runID string) []PlannedHook
 
 // hook 計画の要素型。run パッケージから参照される(operator → run 依存を作らないためここに置く。
 // §2.4 の「run → operator(型のみ)」を維持し、循環を構造的に排除する)

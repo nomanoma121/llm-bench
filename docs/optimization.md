@@ -72,9 +72,11 @@ const (
 )
 ```
 
-- recipe 作者は `Kind` を直接指定できない。**operator 所有の MeasurementProtocol を使う run だけが `measurement`** になり、submit 時に snapshot として固定する
+- `Kind` と protocol の付与は**独立**する。`Kind` は operator の profile / 明示リクエストが決め、submit 時に snapshot として固定する。**recipe は protocol 名も Kind も指定できない**(experiment.Config に selector を足さない)
+- `MeasurementProtocol` は `visual` にも `measurement` にも付与できる(visual run に所要時間・VRAM の evidence を付けるのは自由。review marker v2 はその両方を扱う)
 - 実行実装は分けるが**状態機械は共通**: `ExecutorRouter{visual: VisualExecutor, measurement: MeasurementExecutor}`
 - `measurement` は `output/` を作らない(single-file 契約の対象外)。`visual` は従来どおり `output/index.html` 必須
+- `ArtifactDigest` は **sealed visual artifact の有無**を表す。`measurement` では空が正常であり、「空 = 未確定」という v1.6 の意味は visual に限定する
 
 ---
 
@@ -119,6 +121,19 @@ Window record: `ID / Target / Phase / Result / LeaseState / HookPlan / HookPlanD
 
 `WindowStore` は `RunStore` と同じ契約(CAS による `StoreVersion`、`ListUnfinished`)。
 
+### 4.3b hook 計画の所有分割
+
+hook 計画を 3 契約に分け、それぞれに digest を持たせる。
+
+| 契約 | 対象 | 内容 |
+|---|---|---|
+| `BuildHookPlan(target, runID)` | standalone Run | 従来どおり `command → gitops → sandbox-claim` |
+| `BuildWindowHookPlan(target, windowID)` | Window | **GitOps pause/restore のみ**。ブランチ名は **windowID 由来** |
+| `BuildWindowBoundRunHookPlan(target, runID)` | window-bound Run | `command → sandbox-claim`(**GitOps を含めない**) |
+
+- window-bound Run の実効順序は `(Window) GitOps pause → command → SandboxClaim` となり、旧不変条件「command が GitOps より先」の**明示的な例外**になる(Window が pause を持ち上げるため)
+- 3 契約すべてで `HookPlanDigest` を検証してから構築する(従来の原則を維持)
+
 ### 4.4 owner の一般化
 
 ```go
@@ -153,6 +168,10 @@ closing:   ActiveRunID が空になるまで release を開始しない
 - TargetLease release 完了前に `closed` へ行かない
 - standalone Run の意味論は変更しない
 
+### 4.5b window-bound Run の LeaseState
+
+window-bound Run は TargetLease を所有しないため、`LeaseState` に **`not_applicable`** を追加し、window-bound では acquire/release のどのステップも実行しない(値は submit 時に `not_applicable` で固定)。`releasing` の完了判定・terminal 判定で `LeaseState` を参照してはならない。
+
 ### 4.6 window-bound Run の acquire/release
 
 engine の**明示分岐**で実装する(no-op な LeaseStore/HookSource の差し替えは、standalone run まで通す fail-open を作るので禁止)。
@@ -166,9 +185,9 @@ window-bound Run:
   3. ActiveRunID を CAS で自分にする
   4. run-scoped hook(command / SandboxClaim)を通常どおり acquire
   5. execute
-  6. run-scoped hook を通常どおり release
+  6. run-scoped hook を通常どおり release(**window-scoped の TargetLease / GitOps restore は触らない**)
   7. ActiveRunID を CAS で空にする
-  8. terminal
+  8. **CAS が成功してからのみ** terminal へ進む(失敗は ErrPending で再試行)
 ```
 
 ### 4.7 recovery
@@ -201,7 +220,10 @@ runs/<run-id>/
 ```
 
 - **sealed evidence の authoritative writer は harness**。Sandbox には `raw-measurement.json` を書かせ、harness が `PullLimited` で回収 → validate → normalize → canonical JSON → fsync → atomic rename → `MetricsDigest` を計算して Run に保存する
-- `MetricsDigest` は「sealed bytes の SHA-256」(canonical JSON を harness が生成する)
+- Executor の戻り型は `Artifacts` ではなく **`ExecutionOutputs{Artifacts, EvidencePath, RuntimeBuildDigest, EnvironmentDigest}`** とし、`ExecCompleted` の保存と同じ CAS で Run へ反映する(そうしないと measurement executor が確定した digest を保存する経路が無い)
+- `MetricsDigest` は「sealed bytes の SHA-256」(canonical JSON を harness が生成する)。**`MetricsDigest != ""` は「evidence が存在する」ことだけを意味し、成功を意味しない**
+- 実行が失敗(OOM/Xid/correctness 失敗/collector 欠測)しても、**取得できた evidence は seal してよい**(`measurement_valid=false` と `invalid_reasons` を持たせる)
+- `measurement` run の成功条件は「**valid な evidence が存在する**」こと。invalid/infra 由来の evidence しか無い run を使った `decide` は `inconclusive` を返す(§6.3)
 - `output/` に evidence を置かない(single-file 契約と衝突する)
 
 ### 5.2 スキーマ(versioned)
@@ -260,6 +282,12 @@ runs/<run-id>/
 
 driver は harness から port-forward 越しに動かさない(ネットワーク jitter が primary latency に混ざる)。**「runtime の外で測る」= candidate が変更できないコードで測る**、という意味に固定する。
 
+**信頼境界(実装契約)**: 同一 Pod・同一 filesystem・同一 UID では candidate が driver binary や collector 出力を書き換えられるため、次を必須とする。
+
+- driver/collector は **candidate が書き込めない場所**から実行する(読み取り専用マウント / 別コンテナ / root 所有の非書込パス + candidate を非 root で実行、のいずれか)
+- `MeasurementProtocolDigest` には **driver と collector の content digest**(ファイルツリーの digest)を含める。version 文字列だけでは不足
+- harness は回収した `raw-measurement.json` を**自分で validate/normalize/canonical 化**して evidence を書く(Sandbox に最終 evidence を書かせない)
+
 ### 5.5 measurement validity gate
 
 次のいずれかを検出したら `measurement_valid = false` とし、**性能比較から除外**する:
@@ -290,7 +318,7 @@ PromotionPolicy: primary objective(name, direction=min), minimum effect size,
   retry/gray-zone rule, allowed metric sources
 ```
 
-保存先: `Run` に `MeasurementProtocolID / MeasurementProtocolJSON / MeasurementProtocolDigest`、`OptimizationSession` に `PromotionPolicyID / PromotionPolicyJSON / PromotionPolicyDigest`。
+保存先: `Run` に `MeasurementProtocolID / MeasurementProtocolJSON / MeasurementProtocolDigest`(submit 時 snapshot)。`PromotionPolicyID / PromotionPolicyJSON / PromotionPolicyDigest` は **D で型と canonical snapshot を定義**し、**永続化(session への束縛)は E** で行う。
 
 recipe は「protocol 名を選ぶ」ことだけ許す。optimization では operator の `optimization_profiles` が protocol と policy を bind する:
 
@@ -311,6 +339,8 @@ optimization_profiles:
 
 入力: baseline/candidate の run IDs、`MetricsDigest[]`、`MeasurementProtocolDigest`、`PromotionPolicyDigest`、algorithm version
 出力:
+
+verdict は `accept | reject | inconclusive`。**`inconclusive` は「候補の良し悪しを判定できない」**ケース(measurement_valid=false、collector gap、foreign process、infra 障害による evidence 欠落)であり、reject とは区別する。
 
 ```json
 {
@@ -334,7 +364,8 @@ verdict も immutable(`VerdictDigest`)として session 台帳に残す。Agent 
 3. comparability gate        : §7 の must-equal + measurement_valid
 4. primary objective         : decode_step_ms を最小化
 5. regression guards         : prefill 回帰 <= X%、VRAM、必要なら cache
-6. human quality gate        : 最終候補のみ visual A/B(内側ループでは行わない)
+5.5 (machine) 判定不能        : measurement validity 欠落・collector gap・infra 障害 → `inconclusive`(reject とは別。Session が再測定を判断する)
+6. human quality gate        : **machine ゲート 1〜5 の外側**にある最終 release/adopt ゲート(最終候補のみ visual A/B。内側ループでは行わない)
 ```
 
 ### 6.4 noise-aware 判定
@@ -366,11 +397,13 @@ required_improvement = max(absolute_floor, relative_floor * baseline_median)
 
 | | must equal | may differ |
 |---|---|---|
-| `--kind runtime`(runtime 最適化) | model tree digest、workload、`MeasurementProtocolDigest`、`EnvironmentDigest` | `RuntimeSpecDigest`、`RuntimeBuildDigest` |
-| `--kind model`(モデル比較) | runtime build digest、workload、`MeasurementProtocolDigest` | model tree digest |
+| `--kind runtime`(runtime 最適化) | model tree digest、workload(`WorkloadDigest`)、`MeasurementProtocolDigest`、`EnvironmentDigest` | `RuntimeSpecDigest`、`RuntimeBuildDigest` |
+| `--kind model`(モデル比較) | `RuntimeBuildDigest`、workload(`WorkloadDigest`)、`MeasurementProtocolDigest`、**`EnvironmentDigest`** | model tree digest |
 
 - 既存 `BenchmarkFingerprint` は visual A/B 用として据え置き(変更しない)
-- `MeasurementProtocolDigest` の内訳(schema 版、driver 版、workload matrix、warmup、KV 充填手順、反復数、実行順、collector 設定、objective 定義)は operator 側に置く
+- **`WorkloadDigest`** を新設する(protocol が指定する workload matrix のうち、その run が実際に実行した workload の canonical digest)。protocol 全体の一致だけで足りる場合は追加要求しない
+- `MeasurementProtocolDigest` の内訳(schema 版、driver の content digest、workload matrix、warmup、KV 充填手順、反復数、**実行順序の規則**、collector 設定と content digest)は operator 側に置く。**objective は含めない**(`PromotionPolicy` の所属)
+- balanced randomization は「規則」が protocol、「実際の AB/BA 順と seed」が evidence と session 台帳に属する
 
 ---
 
@@ -445,7 +478,8 @@ OptimizationSession
 
 - `runtimes/<engine>/<variant>/{runtime.yaml,patches/,vendor/}`。`RuntimeSpecDigest = sha256(upstream commit + patch digests + build argv + outputs 宣言)` は submit 時に既知
 - `RuntimeBuildDigest = sha256(ビルド成果物ツリー)` は実行後に確定し、`EnvironmentDigest`(toolkit)とともに provenance に記録
-- build cache は PVC 上で `build-key = sha256(RuntimeSpecDigest + dev image digest + toolkit 版)`。ヒット時はツリー digest を照合してビルドをスキップ。ミス時は構築して atomic rename で封入し、`ready_timeout` を超えたら `run.ErrPending` で再試行
+- build cache は PVC 上で `build-key = sha256(RuntimeSpecDigest + dev image digest + toolkit 版)`。ヒット時はツリー digest を照合してビルドをスキップ。ミス時は構築して atomic rename で封入する
+- **build は `ExecutionState=invoking` より前の冪等な preparation として write-ahead 管理する**(または Run 作成前の session-level build として完了させる)。`Executor` から `ErrPending` を返して同一 Run を再試行させる設計は**禁止**(v1.6 の「invoking から同一 Run を再実行しない」と衝突する)。`ready_timeout` 超過は preparation 段階の `ErrPending` として扱い、`invoking` に入る前なら安全に再試行できる
 - 供給網: **`RuntimeSpecDigest` は fingerprint に入れない**(§7)。release は OCI image として行い、**identity は OCI digest**(tag は移動可能な alias)
 - **CUDA build に GPU は不要**(`CMAKE_CUDA_ARCHITECTURES` + `GGML_NATIVE=OFF`)。ただし**ビルドとベンチを同時に走らせない**(測定のホスト干渉を避ける)
 - ランナー役割: `llm-bench-verify`(untrusted PR・ephemeral)/ `llm-bench-image`(trusted・main のみの Linux builder)/ GPU ノードはベンチ専用
@@ -505,12 +539,12 @@ OptimizationSession
 
 | # | 内容 | 完了条件 |
 |---|---|---|
-| A | Measurement identity | `MetricsDigest` / `MeasurementProtocol*` / `RuntimeSpecDigest` / `RuntimeBuildDigest` / `EnvironmentDigest` を Run provenance に追加。既存 `BenchmarkFingerprint` を壊さない。objective/threshold は入れない |
+| A | Measurement identity | **`ExecutionOutputs` 戻り型**、`LeaseState=not_applicable`、`RunKind` と protocol の独立、`MetricsDigest` / `MeasurementProtocol*`(driver content digest 込み)/ `WorkloadDigest` / `RuntimeSpecDigest` / `RuntimeBuildDigest` / `EnvironmentDigest` を Run provenance に追加。既存 `BenchmarkFingerprint` を壊さない。objective/threshold は入れない |
 | B | Sealed evidence | `evidence/metrics.json`(schema、source/trust、validity、上限、atomic seal、durability)、`GET /v1/runs/{id}/metrics`、`llmbench metrics --json`。collector は harness timing + nvidia-smi + runtime `/metrics`(任意) |
 | C | Compare + remote Agent CLI | `submit --remote --request-id --wait --json`、`status --remote`、`wait`/`list`/`logs`、`preflight`(local + server-side)、`compare --kind model\|runtime`、exit code 契約 |
-| D | Promotion policy | `PromotionPolicy` snapshot/digest、`optimize decide`(純関数)、verdict 台帳 |
+| D | Promotion policy | `PromotionPolicy` の型 + canonical snapshot/digest、`optimize decide`(純関数)、`Verdict`(`accept\|reject\|inconclusive`)+ `VerdictDigest`。**永続化(台帳)は E** |
 | W | MeasurementWindow | `OwnerRef` 一般化、Window 状態機械、`ActiveRunID` CAS、timeout/idle close、recovery、engine の分岐 |
-| E | OptimizationSession | session 台帳、budget、Issue intent(`kind: benchmark\|optimize`)、round 記録、failure 分類と再試行 |
+| E | OptimizationSession | session 台帳(**PromotionPolicy snapshot と verdict history の永続化**)、budget、Issue intent(`kind: benchmark\|optimize`)、round 記録、failure 分類と再試行(同一 Run を再実行しない) |
 | F | Runtime spec | `runtimes/<engine>/<variant>`、`runtime verify`、spec/build digest、build cache |
 | G | GHCR release | main-only builder、digest pin、attestation/SBOM |
 | H | Public metrics | adopted evidence 契約(manifest v2)、site SVG、review 差分表 |

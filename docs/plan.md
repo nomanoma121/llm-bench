@@ -34,6 +34,15 @@
 - [ ] Verify restoration after process, Pod, node, and GitHub failures.
 - [ ] Exercise GitHub PR, Argo CD, Deployment, and SandboxClaim transitions end-to-end on a non-production cluster with the target manifest repository.
 
+## 3b. Publication split (designed in `docs/architecture.md` v1.6, not implemented yet)
+
+The controller will stop owning permanent publication: it serves an authenticated preview of a run's artifacts, and a human merges accepted artifacts into `experiments/<model-id>/<experiment-id>/output/` for CI to publish.
+
+- [ ] Serve candidate artifacts from a separate preview listener (upstream cluster authentication, `output/` only, sandbox CSP, root-confined paths, sealed artifacts only) and switch `review` from the published URL to a preview URL derived from `preview.base_url`.
+- [ ] Add `llmbench adopt` (digest-checked, atomic, idempotent, dry-run by default) and `manifest.json` with a complete payload inventory plus one canonical artifact digest shared by preview, review and adopt.
+- [ ] Add `llmbench adopted verify` and `llmbench site build`, and a GitHub Actions workflow that verifies on pull requests and deploys only on merges to `main`.
+- [ ] Remove the controller publication lifecycle (`internal/pages`, `PublishFinalizer`, the `finalizing` phase and the operator `site:` block) once that workflow is running, migrating legacy `finalizing` records.
+
 ## 4. Human evaluation and Agent loop
 
 - [x] Post A/B requests and run links to the originating Issue; record A/B/tie/invalid votes through the CLI (which posts marker comments) and rebuild the vote history from the Issue. There is no vote endpoint on the HTTP API; free-form Issue replies are not parsed as votes.

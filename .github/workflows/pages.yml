@@ -34,6 +34,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          # The runner keeps its Go module/build cache on local disk already;
+          # saving it to the Actions cache hangs the post step on self-hosted
+          # runners and wastes bandwidth.
+          cache: false
       - name: Verify adopted artifacts
         run: go run ./cmd/llmbench adopted verify --root experiments
       - name: Build the site
@@ -62,6 +66,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          # The runner keeps its Go module/build cache on local disk already;
+          # saving it to the Actions cache hangs the post step on self-hosted
+          # runners and wastes bandwidth.
+          cache: false
       - name: Build the site
         run: go run ./cmd/llmbench site build --root experiments --out _site
       - uses: actions/configure-pages@v5

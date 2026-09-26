@@ -118,6 +118,19 @@ Operational notes:
 - After changing a runner's labels, restart its service: a running listener only re-reads labels when it opens a new session, otherwise jobs stay queued.
 - Decommission: `./svc.sh stop && ./svc.sh uninstall` for the deploy runner, `launchctl unload ~/Library/LaunchAgents/dev.llmbench.verify-runner.plist` for the container loop, then remove both under Settings → Actions → Runners.
 
+## Measurement evidence
+
+A run with a measurement protocol records its numbers as **sealed evidence**, separate from the visual artifact: `output/index.html` stays the A/B payload, while `<output>/runs/<run-id>/evidence/metrics.json` holds the measurements the promotion decision reads.
+
+- The **harness is the authoritative writer**: a driver inside the Sandbox may write `raw-measurement.json`, but the harness validates it, tags every metric with its source (`harness` / `driver` / `external_gpu` / `runtime` / `profiler`), adds harness timing, and seals the canonical JSON with a SHA-256 digest. Identity, validity and environment always come from the harness, so the untrusted side cannot forge them.
+- `measurement_valid` answers "can this measurement be trusted" (collector gaps, foreign GPU processes, throttling, infrastructure failures). A candidate's correctness failure or OOM with clean evidence is a **rejection**, not an invalid measurement: it is recorded as a metric outcome, and the run itself still succeeds.
+- Bounds: 16 MiB per evidence file, 4096 points per series, 65536 points in total, 64 labels per metric. A driver cannot raise them.
+- Read it with `llmbench metrics <run-id>` (or `--raw` for the exact sealed bytes). Over HTTP it is `GET /v1/runs/{id}/metrics` on the authenticated control API — never on the preview listener. A recorded digest that no longer matches the file is an error, not an empty answer.
+
+```sh
+go run ./cmd/llmbench metrics <run-id>
+```
+
 ## Publication gate
 
 The controller never publishes. Publishing is triggered by a merge to `main`, so the repository must protect `main`: require pull requests (no direct pushes) and keep force pushes and branch deletion disabled. With that in place, "the artifact is on `main`" and "a human accepted it" are the same statement, which is what the published site claims.

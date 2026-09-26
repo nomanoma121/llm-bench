@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/nomanoma121/llm-bench/internal/experiment"
+	"github.com/nomanoma121/llm-bench/internal/measurement"
 	"github.com/nomanoma121/llm-bench/internal/provenance"
 	"github.com/nomanoma121/llm-bench/internal/run"
 )
@@ -226,5 +227,138 @@ func TestLocalExecuteRecordsArtifactDigest(t *testing.T) {
 	}
 	if artifacts.Artifacts.IndexSHA256 == "" {
 		t.Fatal("index hash must be recorded")
+	}
+}
+
+func TestLocalMeasurementRunSealsEvidence(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "input"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "input", "prompt.md"), []byte("p"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The driver writes a raw measurement next to the evidence directory and
+	// deliberately does not create output/index.html: a measurement run has no
+	// visual payload.
+	if err := os.MkdirAll(filepath.Join(dir, "evidence"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"metrics":[{"name":"decode_step_ms","value":17.71,"unit":"ms/step","labels":{"depth":"64k"},"samples":385}]}`
+	if err := os.WriteFile(filepath.Join(dir, "evidence", "raw-measurement.json"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l := NewLocal(dir)
+	r := artifactRun(dir, recipe(t, []string{"/bin/sh", "-c", "exit 0"}))
+	r.Kind = run.RunKindMeasurement
+	r.MeasurementProtocolID = "longctx"
+	r.MeasurementProtocolDigest = "pd"
+
+	out, err := l.Execute(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Artifacts.ArtifactDigest != "" {
+		t.Fatal("a measurement run must not seal a visual artifact")
+	}
+	if out.Evidence.Digest == "" || !out.Evidence.Valid {
+		t.Fatalf("evidence = %+v", out.Evidence)
+	}
+	e, err := measurement.Verify(out.Evidence.Path, out.Evidence.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Kind != "measurement" || e.Protocol.ID != "longctx" || e.Protocol.Digest != "pd" {
+		t.Fatalf("identity = %+v", e)
+	}
+	var harnessWall, driverStep bool
+	for _, m := range e.Metrics {
+		switch {
+		case m.Name == "decode_step_ms":
+			driverStep = true
+			if m.Source != measurement.SourceDriver {
+				t.Fatalf("driver metric source = %q", m.Source)
+			}
+		case m.Name == "wall_clock_ms":
+			harnessWall = true
+			if m.Source != measurement.SourceHarness {
+				t.Fatalf("harness metric source = %q", m.Source)
+			}
+		}
+	}
+	if !harnessWall || !driverStep {
+		t.Fatalf("metrics = %+v", e.Metrics)
+	}
+	// The evidence directory holds only the sealed file: the raw input is the
+	// driver's, the sealed file is the harness's record.
+	if _, err := os.Stat(out.Evidence.Path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLocalUnreadableRawMeasurementSealsInvalidEvidence(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "input"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "input", "prompt.md"), []byte("p"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "evidence"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A raw file that claims its own source is rejected: source is the
+	// harness's decision.
+	bad := `{"metrics":[{"name":"x","value":1,"unit":"ms","source":"runtime"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "evidence", "raw-measurement.json"), []byte(bad), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l := NewLocal(dir)
+	r := artifactRun(dir, recipe(t, []string{"/bin/sh", "-c", "exit 0"}))
+	r.Kind = run.RunKindMeasurement
+	r.MeasurementProtocolID = "longctx"
+	r.MeasurementProtocolDigest = "pd"
+
+	out, err := l.Execute(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Evidence.Digest == "" || out.Evidence.Valid {
+		t.Fatalf("expected sealed but invalid evidence: %+v", out.Evidence)
+	}
+	if len(out.Evidence.InvalidReasons) == 0 {
+		t.Fatal("an invalid measurement must carry a reason")
+	}
+}
+
+func TestLocalVisualRunWithProtocolAlsoSealsEvidence(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "input"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "input", "prompt.md"), []byte("p"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l := NewLocal(dir)
+	r := artifactRun(dir, recipe(t, []string{"/bin/sh", "-c", `printf '<html/>' > "$LLMBENCH_OUTPUT_DIR/index.html"`}))
+	r.MeasurementProtocolID = "visual-with-timing"
+	r.MeasurementProtocolDigest = "pd"
+
+	out, err := l.Execute(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Artifacts.ArtifactDigest == "" {
+		t.Fatal("a visual run must still seal its artifact")
+	}
+	if out.Evidence.Digest == "" || !out.Evidence.Valid {
+		t.Fatalf("a visual run with a protocol must carry harness evidence: %+v", out.Evidence)
+	}
+	e, err := measurement.Verify(out.Evidence.Path, out.Evidence.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Kind != "visual" {
+		t.Fatalf("kind = %q", e.Kind)
 	}
 }

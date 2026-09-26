@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 
 	"github.com/nomanoma121/llm-bench/internal/httpapi"
 	"github.com/nomanoma121/llm-bench/internal/kube"
+	"github.com/nomanoma121/llm-bench/internal/measurement"
 	"github.com/nomanoma121/llm-bench/internal/operator"
 	"github.com/nomanoma121/llm-bench/internal/preview"
 	"github.com/nomanoma121/llm-bench/internal/run"
@@ -53,6 +55,9 @@ type apiService struct {
 	opCfg  operator.Config
 	engine *run.Engine
 	store  run.RunStore
+	// artifactsDir resolves the run artifact root; evidence lives beside the
+	// visual payload on the harness volume.
+	artifactsDir func(runID string) string
 	// authenticated reports whether the API is protected by a token. Local
 	// targets may only run over HTTP when the API is authenticated AND the
 	// operator opted the target in (design §4.11).
@@ -77,6 +82,27 @@ func (s *apiService) Submit(ctx context.Context, experimentPath, inputCommit str
 // Status implements httpapi.RunService.
 func (s *apiService) Status(ctx context.Context, id string) (run.Run, error) {
 	return s.store.LoadRun(ctx, id)
+}
+
+// Metrics implements httpapi.RunService: sealed evidence is served only after
+// the recorded digest has been re-checked against the bytes on disk, so a
+// tampered or truncated file is refused instead of published.
+func (s *apiService) Metrics(ctx context.Context, id string) ([]byte, error) {
+	r, err := s.store.LoadRun(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if r.MetricsDigest == "" {
+		return nil, httpapi.ErrNoEvidence
+	}
+	path := filepath.Join(s.artifactsDir(r.ID), measurement.EvidenceDir, measurement.EvidenceFileName)
+	if _, err := measurement.Verify(path, r.MetricsDigest); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, httpapi.ErrNoEvidence
+		}
+		return nil, err
+	}
+	return os.ReadFile(path)
 }
 
 func newServeCmd(g *globalFlags) *cobra.Command {
@@ -163,6 +189,7 @@ func newServeCmd(g *globalFlags) *cobra.Command {
 				opCfg:         opCfg,
 				engine:        engine,
 				store:         engine.Store,
+				artifactsDir:  fs.ArtifactsDir,
 				authenticated: token != "",
 			}
 			handler := (&httpapi.Server{Service: svc, Token: token, Log: controllerLogger()}).Handler()

@@ -35,6 +35,7 @@ func newRootCmd() *cobra.Command {
 		newServeCmd(&g),
 		newSandboxCmd(&g),
 		newReviewCmd(&g),
+		newMetricsCmd(&g),
 		newAdoptCmd(&g),
 		newAdoptedCmd(&g),
 		newSiteCmd(&g),

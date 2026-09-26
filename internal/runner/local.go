@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/nomanoma121/llm-bench/internal/experiment"
 	"github.com/nomanoma121/llm-bench/internal/run"
@@ -82,7 +83,9 @@ func (l *Local) Execute(ctx context.Context, r run.Run) (run.ExecutionOutputs, e
 	cmd.Stderr = logFile
 	fmt.Fprintf(logFile, "$ %s\n", cfg.Invoke.Argv)
 
+	started := time.Now()
 	runErr := cmd.Run()
+	wallClock := time.Since(started)
 	fmt.Fprintf(logFile, "[exit: %v]\n", runErr)
 
 	if ctx.Err() != nil {
@@ -90,6 +93,21 @@ func (l *Local) Execute(ctx context.Context, r run.Run) (run.ExecutionOutputs, e
 	}
 	if runErr != nil {
 		return run.ExecutionOutputs{}, fmt.Errorf("runner: invoke failed: %w", runErr)
+	}
+
+	// A measurement run produces evidence instead of a visual payload: the
+	// single-file contract applies to visual runs only
+	// (docs/optimization.md §3).
+	if runKind(r) == run.RunKindMeasurement {
+		raw, err := readRawMeasurement(artifactDir)
+		if err != nil {
+			return run.ExecutionOutputs{}, err
+		}
+		evidence, err := sealEvidence(r, artifactDir, wallClock, raw)
+		if err != nil {
+			return run.ExecutionOutputs{}, err
+		}
+		return run.ExecutionOutputs{Evidence: evidence}, nil
 	}
 
 	indexPath := filepath.Join(outputDir, "index.html")
@@ -108,12 +126,25 @@ func (l *Local) Execute(ctx context.Context, r run.Run) (run.ExecutionOutputs, e
 	if err != nil {
 		return run.ExecutionOutputs{}, err
 	}
-	return run.ExecutionOutputs{Artifacts: run.Artifacts{
+	out := run.ExecutionOutputs{Artifacts: run.Artifacts{
 		Dir:            artifactDir,
 		IndexSHA256:    payload[0].SHA256,
 		LogSHA256:      logSum,
 		ArtifactDigest: digest,
-	}}, nil
+	}}
+	// A visual run with a protocol also carries harness evidence.
+	if needsEvidence(r) {
+		raw, err := readRawMeasurement(artifactDir)
+		if err != nil {
+			return run.ExecutionOutputs{}, err
+		}
+		evidence, err := sealEvidence(r, artifactDir, wallClock, raw)
+		if err != nil {
+			return run.ExecutionOutputs{}, err
+		}
+		out.Evidence = evidence
+	}
+	return out, nil
 }
 
 // envFor builds the child environment from an allowlist: LLMBENCH_* variables

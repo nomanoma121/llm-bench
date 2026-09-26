@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nomanoma121/llm-bench/internal/experiment"
+	"github.com/nomanoma121/llm-bench/internal/measurement"
 	"github.com/nomanoma121/llm-bench/internal/provenance"
 	"github.com/nomanoma121/llm-bench/internal/run"
 )
@@ -75,6 +76,7 @@ const (
 	sandboxOutput    = "/workspace/output"
 	sandboxModels    = "/models"
 	sandboxTar       = "/workspace/src.tar"
+	sandboxEvidence  = "/workspace/evidence"
 )
 
 // Execute implements run.Executor. The caller (engine) has already persisted
@@ -166,6 +168,7 @@ func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.ExecutionOutputs,
 
 	// 5. Invoke. The log is persisted on the harness side because the sandbox
 	// (and its filesystem) is removed at release time.
+	invokeStarted := time.Now()
 	stdout, stderr, code, execErr := s.Client.Exec(ctx, s.Claim, cfg.Invoke.Argv, env, sandboxSrc)
 	logBody := formatInvokeLog(cfg.Invoke.Argv, stdout, stderr, code, execErr)
 	logPath := filepath.Join(r.Artifacts.Dir, "invoke.log")
@@ -186,6 +189,26 @@ func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.ExecutionOutputs,
 	}
 	if post.TreeDigest != pre.TreeDigest {
 		return run.ExecutionOutputs{}, fmt.Errorf("runner: model changed during execution (%s -> %s)", pre.TreeDigest, post.TreeDigest)
+	}
+
+	wallClock := time.Since(invokeStarted)
+
+	// A measurement run produces evidence instead of a visual payload, so the
+	// single-file output contract does not apply
+	// (docs/optimization.md §3). Evidence is sealed on the harness side.
+	if runKind(r) == run.RunKindMeasurement {
+		raw, err := s.pullRawMeasurement(ctx)
+		if err != nil {
+			return run.ExecutionOutputs{}, err
+		}
+		evidence, err := sealEvidence(r, r.Artifacts.Dir, wallClock, raw)
+		if err != nil {
+			return run.ExecutionOutputs{}, err
+		}
+		if err := s.writeModelIdentity(pre, r.Artifacts.Dir); err != nil {
+			return run.ExecutionOutputs{}, err
+		}
+		return run.ExecutionOutputs{Evidence: evidence}, nil
 	}
 
 	// 7. Persist artifacts outside the sandbox. The payload is defined as the
@@ -214,23 +237,59 @@ func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.ExecutionOutputs,
 	if err != nil {
 		return run.ExecutionOutputs{}, err
 	}
+	if err := s.writeModelIdentity(pre, r.Artifacts.Dir); err != nil {
+		return run.ExecutionOutputs{}, err
+	}
 	identityPath := filepath.Join(r.Artifacts.Dir, "model-identity.json")
-	identityJSON, err := json.MarshalIndent(pre, "", "  ")
-	if err != nil {
-		return run.ExecutionOutputs{}, err
-	}
-	if err := os.WriteFile(identityPath, identityJSON, 0o644); err != nil {
-		return run.ExecutionOutputs{}, err
-	}
 
-	return run.ExecutionOutputs{Artifacts: run.Artifacts{
+	out := run.ExecutionOutputs{Artifacts: run.Artifacts{
 		Dir:               r.Artifacts.Dir,
 		IndexSHA256:       payload[0].SHA256,
 		LogSHA256:         sha256Hex(logBody),
 		ModelTreeDigest:   pre.TreeDigest,
 		ModelIdentityPath: identityPath,
 		ArtifactDigest:    digest,
-	}}, nil
+	}}
+	if needsEvidence(r) {
+		raw, err := s.pullRawMeasurement(ctx)
+		if err != nil {
+			return run.ExecutionOutputs{}, err
+		}
+		evidence, err := sealEvidence(r, r.Artifacts.Dir, wallClock, raw)
+		if err != nil {
+			return run.ExecutionOutputs{}, err
+		}
+		out.Evidence = evidence
+	}
+	return out, nil
+}
+
+// writeModelIdentity records the model tree digest observed inside the
+// sandbox.
+func (s *Sandbox) writeModelIdentity(pre provenance.ModelIdentity, artifactDir string) error {
+	b, err := json.MarshalIndent(pre, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(artifactDir, "model-identity.json"), b, 0o644)
+}
+
+// pullRawMeasurement fetches the optional raw measurement a trusted driver
+// wrote inside the sandbox. Absence is normal; the transfer is bounded so the
+// sandbox cannot exhaust harness memory.
+func (s *Sandbox) pullRawMeasurement(ctx context.Context) ([]byte, error) {
+	remote := sandboxEvidence + "/" + measurement.RawMeasurementFileName
+	if _, _, code, err := s.Client.Exec(ctx, s.Claim, []string{"test", "-f", remote}, nil, "/"); err != nil || code != 0 {
+		if err != nil {
+			return nil, fmt.Errorf("runner: check raw measurement: %w", err)
+		}
+		return nil, nil
+	}
+	b, err := s.Client.PullLimited(ctx, s.Claim, remote, measurement.MaxEvidenceBytes)
+	if err != nil {
+		return nil, fmt.Errorf("runner: pull raw measurement: %w", err)
+	}
+	return b, nil
 }
 
 // verifySingleOutputScript returns the python3 program that fails unless the

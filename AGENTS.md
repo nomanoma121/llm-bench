@@ -20,7 +20,7 @@ The Go module is rooted at the repository root. Packages are organised by what t
 - `internal/httpapi`: the thin chi HTTP layer (auth, decode, delegate).
 - `internal/review`: the Issue-based A/B review policy; the Issue is the canonical vote history.
 
-Workflow policy (`internal/run`, `internal/runner`, `internal/review`) must not import SDK packages, and an implementation package must never import a policy package. Prefer a small interface at the point of use over a general plugin framework.
+Workflow policy (`internal/run`, `internal/runner`, `internal/review`) must not import SDK packages: SDKs stay behind the interfaces those packages declare. Implementations of a policy interface (`internal/filestore`, `internal/kube`, `internal/hook`, `internal/sandbox`, `internal/gitops`) may import `internal/run` for its contract types and sentinel errors, but they must not contain workflow decisions; put those in `internal/run`. Prefer a small interface at the point of use over a general plugin framework.
 
 Every external effect follows the write-ahead rule: persist the intent (and the phase that follows it) before the call, make the effect idempotent, and release in strict reverse order. Restoration is complete only when the target lease is released; never report a run finished while restoration is pending.
 

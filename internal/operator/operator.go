@@ -101,7 +101,6 @@ type Site struct {
 type Review struct {
 	Owner             string `yaml:"owner" json:"owner"`
 	Repository        string `yaml:"repository" json:"repository"`
-	PublicBaseURL     string `yaml:"public_base_url" json:"public_base_url"`
 	BotLogin          string `yaml:"bot_login" json:"bot_login"`
 	DiscordWebhookEnv string `yaml:"discord_webhook_env" json:"discord_webhook_env"`
 }

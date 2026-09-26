@@ -1,8 +1,8 @@
-# llm-bench コントローラ実装設計書(v1.5)
+# llm-bench コントローラ実装設計書(v1.5.3)
 
 > この文書は `docs/design.md`(ドメイン要件)・`docs/usage.md`(機能仕様)・`AGENTS.md`(規約)を実装に落とすための設計 blueprint である。
 > ChatGPT 等の外部レビューに単体で渡せるよう、背景要件から実装方針までを自己完結して記述する。
-> ステータス: v1.5 — 外部レビュー 5 周目のブロッカー 2 件(依存循環の解消、Release 時のエラー意味論の一本化)+ 非ブロッカー 3 件を反映(§11)。確定後にマイルストーン 1 から実装開始。
+> ステータス: v1.5.3 — 設計レビュー(5 周)を経て、この設計に対する実装は完了し main にマージ済み。実装状況は §2.5、実装に伴う設計の確定事項は §11 を参照。
 
 ---
 
@@ -524,14 +524,16 @@ func (c Config) ValidateRecipe(e experiment.Config) error
 type ProcessHandle = string
 
 type SandboxClient interface { // 実装: internal/sandbox。argv を受け取る
-    EnsureSandboxClaim(ctx, runID, warmPool string) error
+    // Acquire は Ready になるまで完了しない(未Readyは ready=false)。
+    EnsureSandboxClaim(ctx, claimName, warmPool string) (ready bool, err error)
     // 長寿命プロセス管理。冪等: 生存していれば既存 handle を返す
     Start(ctx, runID string, argv []string, env map[string]string, cwd string) (ProcessHandle, error)
     Stop(ctx, runID string, h ProcessHandle) error // 冪等
     Exec(ctx, runID string, argv []string, env map[string]string, cwd string) (stdout, stderr []byte, err error)
     Put(ctx, runID string, r io.Reader, dest string) error
     Pull(ctx, runID, path string) ([]byte, error)
-    ReleaseSandboxClaim(ctx, runID string) error
+    // Foreground 削除後に claim の消滅(= Pod/GPU のカスケード完了)を待つ。
+    ReleaseSandboxClaim(ctx, claimName string) (released bool, err error)
 }
 // ExpectedFile は provenance パッケージで定義する(runner.Git が要求すると
 // provenance 実装が runner を import する必要が生じ循環するため。runner → provenance のみ許可)
@@ -608,13 +610,13 @@ type FingerprintInput struct {
     BenchmarkSchemaVersion string
     ContextSize            int
     RuntimeSignature       string // Runtime.Engine/Variant(比較条件に含む)
+    Generation             string // recipe の generation(temperature/seed 等)の canonical JSON
     TargetKind             string // local | sandbox
     ControllerVersion      string
 }
 func Fingerprint(in FingerprintInput) string // canonical JSON → sha256
-// milestone 5 までに: recipe に generation フィールド(temperature・seed 等の生成条件)を追加し、
-// canonical 化した上で FingerprintInput に含める。argv の中にしかない生成パラメータは
-// 条件の違う 2 run を比較可能にしてしまうため、明示フィールドへ移す
+// recipe の generation は実装済み: 未設定と明示 0 を区別するポインタ型で保持し、
+// canonical JSON を fingerprint に含める(サンプリング条件だけ違う run は比較不能)。
 ```
 
 - A/B/tie 投票の受理条件: **両 run の fingerprint 一致**。モデル digest は**記録値**であり一致条件ではない(モデル比較こそ本ベンチの目的)
@@ -661,13 +663,13 @@ llmbench validate <experiment.yaml>
 llmbench submit <experiment.yaml> [--commit <full-sha>]     # Engine.Drain で同期駆動
 llmbench status <run-id>
 llmbench serve --config server.yaml [--state .state] [--output runs]
-                [--retry-interval 30s] [--coordination-ns <ns>] [--lease-name <name>]
+                [--retry-interval 30s] [--coordination-namespace <ns>] [--lease-name <name>] [--kubeconfig <path>]
                 [--kubeconfig <path>]
 llmbench sandbox --namespace <ns> acquire <run-id> <warm-pool>
                 | run <claim> '<sh-command>' | pull <claim> <src> <dst> | release <run-id>
-llmbench review request <baseline-run-id> <candidate-run-id> --issue <n>
-        | vote <review-id> --choice A|B|tie|invalid [--notes ...]
-        | status <review-id>
+llmbench review request <baseline-run-id> <candidate-run-id> --issue <n> --config <operator.yaml>
+        | vote <review-id> --choice A|B|tie|invalid [--notes ...] --config <operator.yaml>
+        | status <review-id> --config <operator.yaml>
 ```
 
 環境変数: `LLMBENCH_API_TOKEN`、`LLMBENCH_GITHUB_TOKEN`、`LLMBENCH_DISCORD_WEBHOOK`。

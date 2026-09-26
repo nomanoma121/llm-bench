@@ -22,8 +22,10 @@ targets:
 site:
   owner: example-owner
   repository: llm-bench-site
-  branch: gh-pages
-  base_url: https://example-owner.github.io/llm-bench-site
+  branch: main
+  # A header-capable host (for example Cloudflare Pages) so the CSP in
+  # extra_files is actually served; GitHub Pages cannot send custom headers.
+  base_url: https://llm-bench-site.pages.dev
   extra_files:
     _headers: |
       /*
@@ -31,6 +33,5 @@ site:
 review:
   owner: example-owner
   repository: llm-bench
-  public_base_url: https://example-owner.github.io/llm-bench-site
   bot_login: bench-app[bot]
   discord_webhook_env: LLMBENCH_DISCORD_WEBHOOK

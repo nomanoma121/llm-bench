@@ -37,7 +37,7 @@ go run ./cmd/llmbench sandbox --namespace bench pull llmbench-0123456789abcdef01
 go run ./cmd/llmbench sandbox --namespace bench release 0123456789abcdef0123456789abcdef
 ```
 
-The `--kubeconfig` flag is available for out-of-cluster access; in a Pod, the SDK uses the ServiceAccount. `run` executes the supplied string via `/bin/sh -c`; it does not replay a command on transport failure. Claim creation is idempotent by run ID. `release` deletes the Claim, so save needed artifacts first.
+The `--kubeconfig` flag is available for out-of-cluster access and is used both by the Agent Sandbox client and by the coordination store/leader election; in a Pod, both use the ServiceAccount. `run` executes the supplied string via `/bin/sh -c`; it does not replay a command on transport failure. Claim creation is idempotent by run ID. `release` deletes the Claim, so save needed artifacts first.
 
 For an automatic Sandbox run, configure an operator target with `sandbox.namespace` and `sandbox.warm_pool` (see `../examples/server-sandbox.yaml`), start `serve` with that config, and submit an experiment targeting it with `--commit <full-SHA>`. The experiment config and prompt must match the given Git commit. The controller uploads that commit's `git archive`, executes `runtime.start` and `invoke` inside the Sandbox, downloads HTML and logs, and releases the Claim. `runtime.start.ready_timeout_seconds` defaults to 300 and readiness uses `curl` inside the development image; that image also needs `sh`, `tar`, `date`, `python3`, the runtime build tools, and access to the materialized model PVC. The runner hashes every regular file in `/models/<model-id>` before and after execution, records `output/model-identity.json` outside the Sandbox, and fails if the model changes. Symlinks and missing model files are rejected. The model files under ignored `models/` are **not** included in `git archive`; mount them separately. This path supports a single benchmark without an Agent; it does not retain one Claim over several optimization attempts.
 
@@ -45,23 +45,22 @@ For an automatic Sandbox run, configure an operator target with `sandbox.namespa
 
 ## Issue A/B review
 
-An optional operator-owned `review` block enables the Issue record. It needs `LLMBENCH_GITHUB_TOKEN` with Issue-comment permission, `owner`/`repository`, and **`bot_login`** (required: only comments from that login are interpreted as controller records, so another participant cannot forge a vote). `public_base_url` is the public prefix used when linking runs; the actual outputs live in the site repository configured under `site:`. Both runs of a review must already be published, and reviewers open the two published pages directly. Do not enable site publication or reviews for private benchmark artifacts.
+An optional operator-owned `review` block enables the Issue record. It needs `LLMBENCH_GITHUB_TOKEN` with Issue-comment permission, `owner`/`repository`, and **`bot_login`** (required: only comments from that login are interpreted as controller records, so another participant cannot forge a vote). Each run carries the `public_url` produced by site publication; the Issue comment links those pages directly. Both runs of a review must already be published, and reviewers open the two published pages. Do not enable site publication or reviews for private benchmark artifacts.
 
 ```yaml
 review:
   owner: example
   repository: llm-bench
-  public_base_url: https://bench.example.org
   bot_login: bench-app[bot]
   discord_webhook_env: LLMBENCH_DISCORD_WEBHOOK
 ```
 
-`bot_login` is optional for a personal token and required when the GitHub credential cannot call `GET /user` (for example, an installation token). Only comments from that login are interpreted as controller review/vote records, preventing another Issue participant from forging the machine-readable markers. The Discord setting is optional. If set, provide that environment variable in the controller (the Chart can read it from `harness.discordWebhookSecret`, key `webhook`). Discord receives only the Issue link. Once both visual runs have succeeded and restoration is complete, request and record a review:
+The Discord setting is optional; when set, provide that environment variable in the controller and Discord receives only the Issue link. Once both runs have succeeded, been published and finished restoration, request and record a review:
 
 ```sh
 go run ./cmd/llmbench review request <baseline-run-id> <candidate-run-id> --issue 42 --config examples/server-gitops.yaml
 go run ./cmd/llmbench review vote <review-id> --choice B --notes 'The geometry is cleaner' --config examples/server-gitops.yaml
-go run ./cmd/llmbench review status <review-id> --config examples/server-gitops.yaml --config examples/server-gitops.yaml
+go run ./cmd/llmbench review status <review-id> --config examples/server-gitops.yaml
 ```
 
-Both runs must be A/B comparable: the recorded BenchmarkFingerprint (prompt, context size, runtime engine/variant, generation conditions such as temperature/seed, target kind, controller version) must match. The recorded model tree digest is informational; when both runs use the same model ID it must be present and equal (guarding against a silent model swap), while cross-model comparisons are allowed. The Issue is the vote history and `review status` rebuilds the votes from its marker comments; a manual free-form reply is not parsed as a vote by the controller. The controller API token authorizes programmatic votes, so restrict it to trusted evaluators. Final experiment notes and PR summary are still written by an Agent, not generated by these commands.
+Both runs must be A/B comparable: the recorded BenchmarkFingerprint (prompt, context size, runtime engine/variant, generation conditions such as temperature/seed, target kind, controller version) must match. The recorded model tree digest is informational; when both runs use the same model ID it must be present and equal (guarding against a silent model swap), while cross-model comparisons are allowed. The Issue is the vote history and `review status` rebuilds the votes from its marker comments; a manual free-form reply is not parsed as a vote by the controller. Votes are recorded through the CLI (which posts the marker comment) or by any participant whose comment is authored by `bot_login`; the HTTP API has no vote route. Final experiment notes and PR summary are still written by an Agent, not generated by these commands.

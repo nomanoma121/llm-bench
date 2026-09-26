@@ -1,0 +1,7 @@
+targets:
+  local:
+    hooks:
+      - name: gpu-lease
+        acquire: ["./examples/hooks/gpu-lease.sh", "acquire"]
+        release: ["./examples/hooks/gpu-lease.sh", "release"]
+    allow_http_local: true

@@ -157,7 +157,22 @@ filestore ──▶ (標準ライブラリ)
 - `gitops → kube` は同一インテグレーション層内の参照として許容
 - `runner` は SDK を import しない。`SandboxClient` / `Git` / `Publisher` の interface を満たす実装を cmd が注入する
 
-### 2.5 採用しないもの
+### 2.5 実装状況
+
+この設計に対する実装は、設計書に続いて以下の単位で main に積み上げた:
+
+| 単位 | 内容 |
+|------|------|
+| run state machine | `experiment` / `operator` / `run`(write-ahead 状態機械+Engine)/ `runner`(local)/ `hook` / `filestore` / `provenance`(fingerprint)、CLI `validate`/`submit`/`status` |
+| serve + HTTP API | `httpapi`(認証・公開URL)/ dispatcher・graceful shutdown・loopback 制約・repository-relative path 強制・local target の HTTP 既定拒否 |
+| Sandbox runner | `sandbox`(決定論的 claim・Ready/削除の収束待ち・argv境界quote・detachプロセス)/ `runner.Sandbox`(commit照合・archive転送・readiness clamp・モデル digest pin) |
+| GitOps hook | `gitops`(状態+帰属の決定テーブル・同一revisionでのArgo収束・Pod消滅確認・rollback・drift拒否)/ `kube`(Argo CD・Deployment/Pod確認) |
+| 公開とレビュー | `pages`(非force・競合リトライで冪等公開)/ `runner.PublishFinalizer` / `issues`(bot_loginでfail-closed)/ `discord`(Issueリンクのみ)/ `review`(Issueが投票履歴の正、fingerprint検証) |
+| Kubernetes 協調 | `kube`(ConfigMap store=CAS、TargetLease=owner条件付き削除、Lease リーダー選出と喪失時の worker cancel、再選出) |
+
+未検証・未実装: 実クラスタでの e2e(Argo CD / Deployment / SandboxClaim の遷移)、マルチレプリカでの外部効果 fence の実証、Agent 最適化ループの接続、Git LFS の materialize。
+
+### 2.6 採用しないもの
 
 - DI コンテナ、wire コード生成、グローバルロガー
 - Argo CD 型付きクライアント(unstructured + 単一 source 限定)
@@ -718,6 +733,8 @@ llmbench review request <baseline-run-id> <candidate-run-id> --issue <n>
 
 ## 11. 変更履歴
 
+- v1.5.3: 実装完了に伴う更新 — 実装状況の表を追加。`generation`(temperature/seed 等)を recipe に追加し BenchmarkFingerprint に含める契約、review は Issue を投票履歴の正とし `bot_login` を必須とすること、GitOps は判定と Argo 収束を同一 revision で行うこと、Sandbox claim は Ready/削除完了まで収束待ちすることを明記
+- v1.5.2: 実装フィードバックの反映 — `internal/hook`(コマンドフック)を構成に追加、fsync の失敗は握り潰さず snapshot 書き込み自体を失敗させる、公開は静的サイト(専用 origin + CSP)で行いスクリーンショットは持たない
 - v1.5.1: OK 判定時に指摘された後続対応事項を設計に先折り込み — ProcessHandle を string に、ExpectedFile の所有を provenance へ、ErrVersionConflict 時の worker 動作(再 LoadRun・外部効果禁止)を明記、BuildHookPlan(t, runID)、Drain(ctx, runID)、旧 rollback 表現の削除
 - v1.5: 外部レビュー 5 周目の反映 — **blocker**: ① PlannedHook/GitOpsPlan/SandboxPlan を operator パッケージへ移動し operator.BuildHookPlan の戻り型との依存循環を解消(run → operator のみ)、② Release のエラー意味論を一本化(ErrPending 以外の error も released にせず・TargetLease を解放せず・terminal に進まない。ErrPending は UI 分類。ReleaseTargetLease も同様)、AcquireTargetLease の非 busy error は failure→releasing(冪等解放で回収)。**非 blocker**: SandboxClient の用語統一(EnsureSandboxClaim)、Git.VerifyCommit を期待 SHA256 明示型(expected []ExpectedFile)へ変更、テスト方針の旧 rollback 表現を修正
 - v1.4: 外部レビュー 4 周目の反映 — **blocker**: ① Acquire 失敗の rollback を専用経路から廃止し共通 releasing に合流(解放対象 = acquiring/acquired/releasing、not_started は解放しない)、② TargetLease 解放契約に「存在しない場合 = 成功(NotFound = success)」を明記し完全冪等化、③ invoking 復帰の制御フローを明示(continue で再 Execute を構造的に防止)+ completed+running の状態破損扱い。**非 blocker**: GitOps 決定テーブルに drift ケース(自 PR merged なのに manifest が逆方向 = 永続エラー)を追加、BuildHookPlan を順序決定の唯一の箇所として定義、Submit の snapshot 保存順を明示(temp → atomic rename → SaveRun、孤立 dir は GC)、用語を TargetLease / SandboxClaim に分離(ClaimState→LeaseState、ClaimStore→LeaseStore)、Fingerprint に RuntimeSignature を追加し milestone 5 で generation 条件フィールドを計画

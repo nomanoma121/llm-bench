@@ -2,7 +2,7 @@
 
 The Go module lives at the repository root. See [design.md](design.md) for the full workflow.
 
-The control plane validates an experiment, runs a command-backed benchmark locally or in an Agent Sandbox, exposes a chi HTTP API and a Cobra CLI, persists run state, and applies ordered acquire/release hooks. An optional visual output produces a fixed-viewport PNG preview and artifact hashes. The hooks are configured by the controller operator, not by experiment authors. An optional GitOps hook creates pause/restore GitHub PRs and checks the configured Argo CD Application and inference Deployment/Pods.
+The control plane validates an experiment, runs a command-backed benchmark locally or in an Agent Sandbox, exposes a chi HTTP API and a Cobra CLI, persists run state, and applies ordered acquire/release hooks. Outputs are published to a static site (one directory per run) with artifact hashes; there is no screenshot step, so the human A/B comparison uses the published HTML itself. The hooks are configured by the controller operator, not by experiment authors. An optional GitOps hook creates pause/restore GitHub PRs and checks the configured Argo CD Application and inference Deployment/Pods.
 
 From the repository root:
 
@@ -15,7 +15,7 @@ go run ./cmd/llmbench status <run-id>
 
 For Kubernetes-backed state and leader election, add `--coordination-namespace <namespace> --lease-name <name>` to `serve`. The ServiceAccount needs namespaced `get/create/update` on Leases and `get/list/create/update` on ConfigMaps. The Chart supplies these flags and RBAC. Do not start more than one replica yet: a Lease and versioned records do not alone fence an external GitHub operation or a command already running in a Sandbox after leadership loss.
 
-The HTTP API is bound to `127.0.0.1:8080` by default. Set `LLMBENCH_API_TOKEN` for a shared deployment and put TLS in front of it. `POST /v1/runs` accepts a repository-relative experiment path; `GET /v1/runs/{id}` returns its status; `GET /v1/runs/{id}/preview` returns an authenticated PNG after successful restoration. `serve` requires an operator config with explicit target names; see `../examples/server.yaml`. An experiment can only select one of those targets. For Sandbox execution, a full `input_commit` is required and checked against the recipe and prompt. The local runner does not check out the optional commit.
+The HTTP API is bound to `127.0.0.1:8080` by default and refuses a non-loopback address without `LLMBENCH_API_TOKEN`; put TLS in front of it for shared deployments. `POST /v1/runs` accepts a repository-relative experiment path (absolute paths outside the repository and `..` escapes are rejected); `GET /v1/runs/{id}` returns its status including `public_url` once the run has been published. There is no preview endpoint: publication writes the run HTML to the operator-configured site repository and the status returns its URL. Local targets are rejected over HTTP unless the operator sets `allow_http_local` on the target AND the API is authenticated. `serve` requires an operator config with explicit target names; see `../examples/server.yaml`. An experiment can only select one of those targets. For Sandbox execution, a full `input_commit` is required and checked against the recipe and prompt. The local runner does not check out the optional commit.
 
 A recipe may declare sampling conditions under `generation:` (for example `temperature`, `top_p`, `top_k`, `seed`, `max_tokens`). They are frozen into the run snapshot and participate in the BenchmarkFingerprint, so two runs that differ only in a generation parameter are not treated as A/B comparable.
 
@@ -45,7 +45,7 @@ For an automatic Sandbox run, configure an operator target with `sandbox.namespa
 
 ## Issue A/B review
 
-An optional operator-owned `review` block enables the Issue record. It needs `LLMBENCH_GITHUB_TOKEN` with Issue-comment permission and a public HTTPS base URL routed to this controller. `public_base_url` makes only hash-addressed PNGs and minimal run metadata public; it does not expose the raw HTML, commands, or full run record. Do not enable it for private benchmark artifacts. The base URL must actually be reachable by GitHub reviewers; a private cluster DNS name will not work. Configure TLS and ingress separately.
+An optional operator-owned `review` block enables the Issue record. It needs `LLMBENCH_GITHUB_TOKEN` with Issue-comment permission, `owner`/`repository`, and **`bot_login`** (required: only comments from that login are interpreted as controller records, so another participant cannot forge a vote). `public_base_url` is the public prefix used when linking runs; the actual outputs live in the site repository configured under `site:`. Both runs of a review must already be published, and reviewers open the two published pages directly. Do not enable site publication or reviews for private benchmark artifacts.
 
 ```yaml
 review:
@@ -59,9 +59,9 @@ review:
 `bot_login` is optional for a personal token and required when the GitHub credential cannot call `GET /user` (for example, an installation token). Only comments from that login are interpreted as controller review/vote records, preventing another Issue participant from forging the machine-readable markers. The Discord setting is optional. If set, provide that environment variable in the controller (the Chart can read it from `harness.discordWebhookSecret`, key `webhook`). Discord receives only the Issue link. Once both visual runs have succeeded and restoration is complete, request and record a review:
 
 ```sh
-go run ./cmd/llmbench review request <baseline-run-id> <candidate-run-id> --issue 42
-go run ./cmd/llmbench review vote <review-id> --choice B --notes 'The geometry is cleaner'
-go run ./cmd/llmbench review status <review-id> --config examples/server-gitops.yaml
+go run ./cmd/llmbench review request <baseline-run-id> <candidate-run-id> --issue 42 --config examples/server-gitops.yaml
+go run ./cmd/llmbench review vote <review-id> --choice B --notes 'The geometry is cleaner' --config examples/server-gitops.yaml
+go run ./cmd/llmbench review status <review-id> --config examples/server-gitops.yaml --config examples/server-gitops.yaml
 ```
 
-Both runs must belong to the same Issue and use the same prompt and render settings. For the same model, recorded weight digests must match. The Issue is the vote history; a manual free-form reply is not parsed as a vote by the controller. The controller API token authorizes programmatic votes, so restrict it to trusted evaluators. Final experiment notes and PR summary are still written by an Agent, not generated by these commands.
+Both runs must be A/B comparable: the recorded BenchmarkFingerprint (prompt, context size, runtime engine/variant, generation conditions such as temperature/seed, target kind, controller version) must match. The recorded model tree digest is informational; when both runs use the same model ID it must be present and equal (guarding against a silent model swap), while cross-model comparisons are allowed. The Issue is the vote history and `review status` rebuilds the votes from its marker comments; a manual free-form reply is not parsed as a vote by the controller. The controller API token authorizes programmatic votes, so restrict it to trusted evaluators. Final experiment notes and PR summary are still written by an Agent, not generated by these commands.

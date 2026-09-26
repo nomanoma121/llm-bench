@@ -66,7 +66,7 @@ cmd/llmbench/                      # Go コントローラ(本設計の実装対
 | F15 | 再起動リカバリ + 並列 dispatch: run 毎 worker、異なる target の並行実行、30 秒周期の dispatch tick | usage.md |
 | F16 | **実験 recipe・prompt の submit 時 snapshot**: run の再開は常に snapshot を使い、生きたリポジトリファイルに依存しない | 本設計 |
 | F17 | **operator 側の強制タイムアウト上限**: 実験者が引き上げられない ready/実行時間の上限を target 設定に持たせ、recipe 側 timeout はその範囲内でのみ許可 | 本設計 |
-| F18 | 採用と恒久公開: `adopt`(PV の artifact を git へ固定、`ArtifactDigest` 照合・`--into` confinement)・`manifest.json`・`adopted verify`・`site build`・main merge をトリガーとする CI 公開。**controller から site repo への書き込み経路を持たない** | 本設計で新設 |
+| F18 | 採用と恒久公開: `adopt`(PV の artifact を git へ固定、`ArtifactDigest` 照合・`--into` confinement・review 完了述語・single-file 契約)・`manifest.json`・`adopted verify`・`site build`・main merge をトリガーとする CI 公開。**controller から site repo への書き込み経路を持たない** | 本設計で新設 |
 
 ### 1.5 非機能要件
 
@@ -542,7 +542,8 @@ func (c Config) ValidateRecipe(target string, readyTimeoutSeconds int) error // 
   4. `Exec(ReadyArgv)` を timeout まで反復実行(0 終了で ready)。timeout 上限 = `min(ReadyTimeoutSeconds, MaxReadyDuration)`
   5. 実行前後でモデル tree digest を Sandbox 内計算し比較。不一致は失敗。operator pin と不一致なら invoke 前に中止
   6. `Exec(Invoke.Argv)`(context timeout = MaxExecutionDuration)、ログ収集
-  7. **Sandbox の `output/` ツリー全体**(`index.html` は必須。付随する JS/CSS/JSON も含む)+ ログ + `model-identity.json` を回収し、**Sandbox 外の `Artifacts.Dir` へ保存。sha256 はこの保存の瞬間に計算**する。この保存が release の前提条件。**payload は local/sandbox とも `output/` 配下の全 regular file で意味を同一**とし(`ArtifactDigest` の対象も同じ)、回収は tar 等で行い **absolute path・`..`・symlink を含む entry を拒否**する(回収側で path 検証を行い、Sandbox 由来の入力を信頼しない)
+  7. `output/index.html`・ログ・`model-identity.json` を回収し **Sandbox 外の `Artifacts.Dir` へ保存。sha256 はこの保存の瞬間に計算**する。この保存が release の前提条件
+- **artifact は self-contained な単一 `output/index.html` に固定する**(v1.6)。local/sandbox とも **`output/` に `index.html` 以外の regular file があれば seal に失敗**させる(§4.12 の予約名 `manifest.json` と同じ扱い)。理由: 付随する JS/CSS/JSON を payload に含めると、preview の CSP(`connect-src 'none'`)と公開サイトの `srcdoc` 埋め込みでは**表示できない**(相対 URL の解決先が存在せず、`script-src` も preview origin を許可しない)。multi-file を認める場合は bundle/inline の仕様を別途定義する(§10)。回収は**単一ファイルの取得**であり、Sandbox 由来の bytes を信頼しないため **per-file 8 MiB 上限**を適用する(超過は失敗。§4.9 の配信上限と同じ定数)
   8. プロセス停止は release フェーズで行う(`Stop`): SandboxClaim の release hook が `Stop` → `ReleaseSandboxClaim` の順に実行
 ```go
 // プロセスハンドルは不透明な文字列 ID(決定論的: "runtime-<runID>")。
@@ -652,6 +653,7 @@ func Fingerprint(in FingerprintInput) string // canonical JSON → sha256
 - review marker は `{baseline:{run_id,artifact_digest}, candidate:{run_id,artifact_digest}}` を含む canonical JSON として記録し、`adopt --review` はこれを Issue から読んで検証する(§4.12)
 - **preview URL は Run に永続化しない**。operator 設定 `preview.base_url` から導出する実装(`type PreviewURLResolver interface{ URL(runID string) string }`)を review 側へ注入する(listen address から Ingress の URL は導出できない)
 - 同一性の正は `run_id` + artifact digest。**URL が失効しても(Ingress 変更・PV 削除)、Issue 上のレビュー履歴は壊れない**
+- **review 完了 = 有効な vote marker が 1 件以上あり、最新の解決結果が対象 run を選んでいる**(`tie`/`invalid` は未解決)。`adopt --review` はこの述語を Issue 正本で検証する(§4.12)
 - レビューは従来どおり「GPU 解放・restore 完了後」を条件に含める(人間待ちで GPU を保持しない)。preview 自体は artifact 確定直後から見える
 - 社外レビュアに開かせる要件が出た場合はこの方式だけでは成立しない(Cloudflare Access 等の外部 ID 許可か一時 deployment が必要)。**内部 DNS 名を Issue に貼るのは避ける**
 
@@ -670,7 +672,7 @@ func Fingerprint(in FingerprintInput) string // canonical JSON → sha256
 - **control API とは別リスナ**(`serve --preview-addr`)。control API の bearer 認証は使わず、**上流(Ingress + クラスタ認証)での認証終端を前提**とする。非 loopback bind には「上流で認証する」ことを示す明示フラグを要求する(control API の loopback 規則と同型)
 - 外向け URL は operator 設定 `preview.base_url` から導出する。**Run に `preview_url` を永続化しない**(URL は導出値。同一性の正は run ID + artifact digest。§4.8)
 - **GET/HEAD のみ。CORS を有効化しない。directory listing 禁止。symlink 拒否。URL decode 後に path を検査**し、`..`・絶対パス・backslash・NUL を拒否する。root confinement は `os.OpenRoot` 系で行う(手書きの prefix 比較は使わない)
-- **file size 上限は実装定数(1 ファイル 8 MiB)**とし、v1.6 では operator 設定にしない。超過は 413
+- **file size 上限は実装定数(1 ファイル 8 MiB)**とし、v1.6 では operator 設定にしない。超過は 413。artifact は単一 `index.html` 契約(§4.3)なので、実質 payload 全体がこの上限に収まる
 - **レスポンスヘッダ(必須)**: `Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' <許可 CDN 固定>; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; form-action 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; worker-src 'none'`、`X-Content-Type-Options: nosniff`、`Cache-Control: private, no-store`、`Referrer-Policy: no-referrer`。**`allow-same-origin` は付けない**(opaque origin 化)
 - **脅威モデル(保証範囲を明示する)**: この構成で**保証する**のは「プログラム的通信と資格情報へのアクセスを遮断すること」= `fetch`/XHR/WebSocket/EventSource/`sendBeacon`(`connect-src 'none'`)、form 送信(`form-action 'none'`)、`object`/`frame`、worker、および opaque origin 化による cookie/localStorage 等へのアクセス拒否。**保証しない**のは「ブラウザが発する一切のネットワーク要求を止めること」で、**sandboxed frame 自身への navigation(`location.href = …`)は依然として HTTP 要求を発生させられる**(CSP `sandbox` の top-navigation 制約は standalone document では意味を持たず、`navigate-to` は現行ブラウザで信頼できない)。したがって:
   - **preview の origin には ambient credential を置かない**(認証 cookie を持たせない。認証は Ingress の OIDC で行い、preview origin 自体を資格情報のあるアプリと同一 origin にしない)
@@ -716,6 +718,7 @@ func Fingerprint(in FingerprintInput) string // canonical JSON → sha256
   - `--review` を渡した場合、**`--config <operator.yaml>` を必須**とし、**正である Issue から marker を読んで**検証する(`review status` と同じ経路。ローカル索引だけを信用しない)。検証内容は「marker が記録した **(run_id, artifact_digest) のペア**のうち baseline か candidate が adopt 対象 run と一致し、その digest が実際に adopt する payload の digest と一致すること」。**digest 一致だけでは通さない**(run-B の bytes が偶然 run-A と同じとき、人間がレビューしていない run を adopt できてしまうため)
   - **`--review` を省略できるのは、その model に adopt 済み artifact が 1 件も無い場合のみ**(`experiments/<model-id>/**/output/manifest.json` を走査して 0 件 = 未採用のモデル。この最初の採用が baseline であり、比較相手が原理的に存在しない)。省略時は manifest の `review` を `null` とし、`site build` は「未レビュー」として表示する
   - 上記以外の採用は `--review` 必須。無ければ**書き込み前に失敗**する。**述語は「新しい experiment-id を選べば常に省略できる」形にしてはならない**(destination 単位の判定は review 迂回になる)
+  - **「review 完了」の述語**(marker の存在だけでは不十分): Issue 正本に**有効な vote marker が 1 件以上**あり、**その最新の解決結果が adopt 対象 run を選んでいる**こと(`A` → baseline、`B` → candidate)。**`tie`/`invalid` は採用不可**として拒否する(未解決の比較から採用しない)。vote が 1 件も無い review は `request` 済みでも未完了として拒否する
   - **`manifest.json` が存在するが schema 検証に失敗する場合は hard error** とし、「manifest が無い」とは絶対に扱わない(fail-open 禁止)`site build` は review の無い採用を「未レビュー」として明示し、review 済みと区別して表示する
 
 **adopt**: `llmbench adopt <run-id> --into experiments/<model-id>/<experiment-id> [--review <review-id> --config <operator.yaml>] [--write]`
@@ -728,12 +731,23 @@ func Fingerprint(in FingerprintInput) string // canonical JSON → sha256
   - 有効な manifest があり digest は同一だが `run_id` が異なる → **provenance 更新として許可**する(payload は再検証して同一であることを確認し、manifest を新しい run の来歴で書き換える。CLI は「来歴を更新した」と明示する)
   - 有効な manifest があり digest が異なる → **拒否**(別の採用が既にある)
   - 有効な manifest が無い(未採用の placeholder `index.html` や空ディレクトリ)→ **置換してよい**(dry-run で差分を列挙してから `--write`)
-- **非空ディレクトリの置換手順**(`os.Rename` は空でないディレクトリを置換できないため、RemoveAll→Rename ではクラッシュ時に `output/` 消失状態が残る):
-  1. `<into>/.adopt-tmp-<runID>/` に新 payload + manifest を書いて fsync
-  2. 既存 `output/` があれば `<into>/.adopt-bak-<runID>/` へ rename(atomic)。
-  3. `.adopt-tmp-*` を `output/` へ rename(atomic)
-  4. 親ディレクトリを fsync して `.adopt-bak-*` を削除
-  - **クラッシュ時**: `output/` が無く `.adopt-bak-*` があれば、次回の adopt 実行がそれを `output/` へ戻してからやり直す(`.adopt-tmp-*` が完全な場合は swap を完了させる)。**`.adopt-*` は一時領域であり、`adopted verify`/`site build` は `output/manifest.json` だけを見るので公開物には現れない**。採用が成功するまで commit しない
+- **非空ディレクトリの置換手順**(`os.Rename` は空でないディレクトリを置換できないため、RemoveAll→Rename ではクラッシュ時に `output/` 消失状態が残る)。**各 rename の後に親ディレクトリを fsync** して durability を確保する:
+  1. `<into>/.adopt-tmp-<runID>/` に新 payload + manifest を書き、各ファイルと dir を fsync
+  2. 既存 `output/` があれば `<into>/.adopt-bak-<runID>/` へ rename → **親 dir fsync**(backup 名を durable にする)
+  3. `.adopt-tmp-*` を `output/` へ rename → **親 dir fsync**(新しい `output/` を durable にする)
+  4. `.adopt-bak-*` を削除 → **親 dir fsync**(cleanup も durable)
+- **クラッシュ復旧の決定表**(次回の adopt 実行が最初にこの表で状態を判定し、書き込み前に正規化する):
+
+  | 観測された `output/` | `.adopt-tmp-*` | `.adopt-bak-*` | 正とする状態と動作 |
+  |---|---|---|---|
+  | 有効な manifest あり | なし | なし | 採用済み。`run_id`+digest 一致なら no-op、異なれば拒否 |
+  | なし | あり | あり | 中断(step 2〜3 の間)。**tmp が完全なら swap を完了**(tmp→output、fsync)し、bak を削除 |
+  | なし | なし | あり | 中断(step 3 の直前)。**bak を output へ戻して**やり直す |
+  | あり | あり | あり/なし | 中断(step 4 前)。**bak/tmp を破棄**し、`output/` を正として採用判定に進む |
+  | なし | なし | なし | 未採用(初回)。新規作成 |
+  | あり | なし | あり | step 4 の途中。`output/` を正として **bak を破棄** |
+
+  - **`.adopt-*` は一時領域**であり、`adopted verify`/`site build` は `output/manifest.json` だけを見るため公開物には現れない。**採用が成功するまで commit しない**
 - 既定は dry-run(`--write` で実体化)
 - **`--into` の confinement**(ユーザー入力なので慣例に頼らない): リポジトリ root(`--root`)配下であること、`experiments/<model-id>/<experiment-id>` の 2 段の正確な形であること、`..`・絶対パス・backslash を拒否し、**symlink を経由した root 外への脱出を拒否**する。`<model-id>` は run の `model` と一致しなければならない。これらを満たさない場合は書き込まずに失敗する
 - **run と採用先 experiment の結び付き**: `filepath.Dir(run.Experiment) == <into>` を必須とする(run が記録した recipe のディレクトリ以外へ adopt できない)。これにより `<into>/config.yaml` と実際に実行された recipe が一致する。`adopted verify` も manifest の `model`/`experiment_id` が**実際のディレクトリ位置と一致**することを検証する
@@ -746,7 +760,8 @@ func Fingerprint(in FingerprintInput) string // canonical JSON → sha256
 
 - manifest にある → ファイルが存在し sha256 一致 / `output/` にある → manifest にも必ず存在(過不足なし。**例外は `manifest.json` 自身のみ**)
 - `artifact_digest` が payload から再計算した `ArtifactDigest` と一致する(§4.4 と同じ関数)
-- `index.html` 必須 / symlink 拒否 / `..`・絶対パス拒否 / schema 検証
+- **global invariant: `review: null`(review 無し採用)は 1 model につき最大 1 件**。並行 PR がそれぞれ「その branch 上では 0 件」と判定して 2 件目を入れるケースは、**main への merge 後に走る CI(`adopted verify`)が違反として失敗**させる(branch protection による最新 main への update 必須化と併用する)
+- `index.html` 必須 / symlink 拒否 / `..`・絶対パス拒否 / schema 検証 / **`index.html` 以外の payload ファイルが無いこと(単一ファイル契約。§4.3)**
 - **hash・inventory・path 安全性の検証は Go 側(`internal/provenance` を再利用)を正**とし、サイト側ツールチェーンに再実装しない
 
 **`llmbench site build --root experiments --out <dir>`**: `manifest.json` を持つ実験だけを対象に静的サイトを生成する(`output/` があるだけのプレースホルダは公開しない)。index は `adopted_at` 降順 → model 昇順 → experiment-id 昇順。review の無い採用は「未レビュー」として表示する。**ネットワーク不要・read-only**。controller と同じバイナリ・同じ検証を使うため CI と手元で結果が一致する
@@ -832,12 +847,14 @@ llmbench site build --root experiments --out _site  # CI(§4.12)
   - **AcquireTargetLease の非 busy error で failure→releasing となること(冪等解放で曖昧成功を回収)**
   - **preview: 認可規則(非 loopback bind の拒否)・path 脱出(`..`/絶対パス/symlink)拒否・CSP/nosniff ヘッダ・size 上限・output 外の非配信・SandboxClient 非依存・`ArtifactDigest` が空(= 未確定)なら 404**
 - **`ArtifactDigest` が local/sandbox 双方で同一規則であること(golden digest)。`manifest.json` を payload から除外し、`output/` の過不足検出が manifest 自身を誤検出しないこと**
+- **adopt のクラッシュ復旧決定表: `output`/tmp/bak の各組み合わせで正規化が一意に定まること(tmp 完了時は swap 完了、bak のみは復元、output 優先)**
 - **preview の seal 検証: 記録 digest と一致しない payload を配信しないこと(409)・`ArtifactDigest` 空で 404**
 - **runner が benchmark 生成の `output/manifest.json` を seal 時に拒否すること**
 - **seal 順序: 親 dir の fsync 前に `ArtifactDigest` が永続化されないこと/失敗時に digest が空のままであること**
-- **sandbox 回収: `output/` の複数ファイルが payload になり、`..`/絶対パス/symlink entry を拒否すること(local と同じ digest)**
+- **single-file 契約: `output/` に `index.html` 以外のファイルがある run が seal に失敗すること(local/sandbox 双方)・回収時の 8 MiB 超過が失敗すること**
 - **`site build`: srcdoc の escape(`"`・`<` を含む artifact を注入できないこと)と meta CSP が artifact 先頭に来ること・raw artifact へ直接到達する URL を出力しないこと**
-- **adopt: `--into` の confinement(root 外・`..`・symlink 脱出・model 不一致を拒否)、同一 run/digest の再実行が成功(no-op)・別 digest の既存採用を拒否・manifest の無い placeholder を置換できること(他ファイルは不変)・`--review` 省略述語(有効 manifest が既にあれば失敗)・`--review` の digest 照合失敗が書き込み前に失敗すること**
+- **adopt: `--into` の confinement(root 外・`..`・symlink 脱出・model 不一致・run の experiment ディレクトリ不一致を拒否)、同一 run/digest の再実行が成功(no-op)・別 digest の既存採用を拒否・manifest の無い placeholder を置換できること(他ファイルは不変)・`--review` 省略述語(model に採用 0 件のみ)・**review 完了述語(vote 0 件・tie・invalid の拒否、A/B が対象 run を選んでいること)**・digest 照合失敗が書き込み前に失敗すること**
+- **`adopted verify`: 同一 model に `review: null` が 2 件ある状態を違反として検出すること**
 - **pre-v1.6 record(`ControllerVersion`/`ArtifactDigest` 空)が preview(404)・adopt(拒否)の対象外であること**
   - **legacy record: `phase=finalizing` + `ExecutionResult=success` + `LeaseState=released` が succeeded へ移行すること**
   - クラッシュ再開(各 Phase 中断点から)、**recipe snapshot 使用の検証(submit 後に recipe を書き換えても影響しない)**、HookPlanDigest 検証
@@ -866,11 +883,12 @@ llmbench site build --root experiments --out _site  # CI(§4.12)
 3b. helper: `os.OpenRoot` による root confinement の Go バージョン要件と、`iframe sandbox` 表示での生成 HTML の動作。フェーズ 8/10 で確認
 4. (将来拡張)invoke を managed process(`invoke-<runID>`)+ completion receipt にして、`invoking` 割り込みからの再アタッチを可能にする。v1 は「interrupted = failure」で足りる
 5. (将来拡張)最適化ラウンドの multi-attempt: attempt 境界は「**artifact が PV へ immutable snapshot として確定した瞬間**」とし、`<output>/runs/<runID>/attempts/<attemptID>/output/` に置く。review/adopt の identity も `{run_id, attempt_id, artifact_digest}` へ拡張する。preview handler を SandboxClient に依存させないため、attempt 完了ごとに harness へ copy してから次 attempt を開始する。**v1.6 では状態機械を実装せず、現行の単発実行を「唯一の attempt 相当」として扱う**
-6. (将来拡張)プレビューの外部公開: Cloudflare Access での外部 ID 許可、または一時 deployment。社内 OIDC 限定で足りる間は実装しない
+6. (将来拡張)multi-file artifact: v1.6 は self-contained な単一 `index.html` に固定する(§4.3)。付随 JS/CSS/JSON を認める場合は、preview の CSP と公開サイトの `srcdoc` で相対 URL が解決できるよう **bundle/inline の仕様**(および `script-src`/`img-src` の見直し)を先に定義する
+7. (将来拡張)プレビューの外部公開: Cloudflare Access での外部 ID 許可、または一時 deployment。社内 OIDC 限定で足りる間は実装しない
 
 ## 11. 変更履歴
 
-- v1.6.0: **公開責務の分離**(ユーザー提案 + 外部レビュー)。不変条件を追加: `run success ≠ publication` / `preview ≠ public site` / review・adopt・publication の同一性は artifact digest / `adopt` は人間が認可した materialization / **`main merge` が唯一の恒久公開ゲート**。① controller の publication(旧 §4.9 pages、`Finalizer`/`FinalizeResult`/`finalizing` 新規遷移/`PublicURL`/`PublishError` の新規書き込み/operator `site:`)を削除し、CI(`adopted verify` + `site build` + GitHub Actions → Pages)へ移す(§4.12)。② `§4.9` を **preview**(別リスナ・上流認証・`output/` 限定・CSP `sandbox allow-scripts`・`os.OpenRoot` による confinement・SandboxClient 非依存)に置換。③ review の前提を「succeeded + artifact 存在」に変更し、preview URL は `preview.base_url` から導出(URL を Run に永続化せず、marker に run ID と artifact digest を残す)。④ `adopt`/`manifest.json`/`adopted verify`/`site build` を追加し、hash・inventory・path 検証は Go 側を正とする。⑤ 旧 record の `finalizing` は succeeded へ移行。⑥ 最適化ラウンドの attempt 境界は §10 に設計のみ記載(現行の単発実行を唯一の attempt 相当とする)。⑦ 公開ゲートは「main 上の存在」+ PR 必須の branch protection。⑧ 2 周目のレビュー指摘の反映: **サイト移行を段階化**(`site:` の削除とエラー化はフェーズ 11。8〜10 は `Site`/`Preview` 併存)、**seal を runner の atomic rename + 配信時 digest 再計算(不一致 409)の 2 段で保証**、**`output/manifest.json` を予約名として seal 時に拒否**、**`--review` 省略述語を「`<into>` に有効な manifest が無い場合のみ」と機械化**、**adopt の atomic rename 対象を `<into>/output/` に限定し placeholder 置換規則を明記**、**pre-v1.6 record は preview/adopt 対象外(backfill しない)**、§1.3/§4.6 の旧「公開サイト書き込み権限」記述を削除。⑨ 前段の反映: **artifact 同一性の定義を §4.4 の `ArtifactDigest(outputDir)` 1 箇所に固定**(preview/review/adopt/verify が同じ関数を使う)、**`manifest.json` を payload inventory から除外**して自己参照を排除、**preview は `ArtifactDigest` が非空の確定済み artifact のみ配信**、operator に `Preview` 型を追加(旧 `site:` はエラー)、file size 上限は実装定数(8 MiB)、`--review` の必須/任意を明確化(比較相手が無い baseline のみ任意)、公開サイトは **git 上の adopt 済み bytes だけ**を埋め込み preview URL を参照しない、公開ゲートは「main 上の存在」+ PR 必須の branch protection、`ControllerVersion` を Run に永続化、adopt の `--into` confinement を規定
+- v1.6.0: **公開責務の分離**(ユーザー提案 + 外部レビュー)。不変条件を追加: `run success ≠ publication` / `preview ≠ public site` / review・adopt・publication の同一性は artifact digest / `adopt` は人間が認可した materialization / **`main merge` が唯一の恒久公開ゲート**。① controller の publication(旧 §4.9 pages、`Finalizer`/`FinalizeResult`/`finalizing` 新規遷移/`PublicURL`/`PublishError` の新規書き込み/operator `site:`)を削除し、CI(`adopted verify` + `site build` + GitHub Actions → Pages)へ移す(§4.12)。② `§4.9` を **preview**(別リスナ・上流認証・`output/` 限定・CSP `sandbox allow-scripts`・`os.OpenRoot` による confinement・SandboxClient 非依存)に置換。③ review の前提を「succeeded + artifact 存在」に変更し、preview URL は `preview.base_url` から導出(URL を Run に永続化せず、marker に run ID と artifact digest を残す)。④ `adopt`/`manifest.json`/`adopted verify`/`site build` を追加し、hash・inventory・path 検証は Go 側を正とする。⑤ 旧 record の `finalizing` は succeeded へ移行。⑥ 最適化ラウンドの attempt 境界は §10 に設計のみ記載(現行の単発実行を唯一の attempt 相当とする)。⑦ 公開ゲートは「main 上の存在」+ PR 必須の branch protection。⑧ 2 周目のレビュー指摘の反映: **サイト移行を段階化**(`site:` の削除とエラー化はフェーズ 11。8〜10 は `Site`/`Preview` 併存)、**seal を runner の atomic rename + 配信時 digest 再計算(不一致 409)の 2 段で保証**、**`output/manifest.json` を予約名として seal 時に拒否**、**`--review` 省略述語を「`<into>` に有効な manifest が無い場合のみ」と機械化**、**adopt の atomic rename 対象を `<into>/output/` に限定し placeholder 置換規則を明記**、**pre-v1.6 record は preview/adopt 対象外(backfill しない)**、§1.3/§4.6 の旧「公開サイト書き込み権限」記述を削除。⑩ 4 周目のレビュー指摘の反映: **「review 完了」の述語を固定**(Issue 正本に有効な vote が 1 件以上あり、最新の解決結果が adopt 対象 run を選ぶ。`tie`/`invalid` は拒否)、**`adopted verify` に「`review: null` は 1 model 最大 1 件」の global invariant を追加**、**artifact を self-contained な単一 `index.html` に固定**(multi-file は preview の CSP と公開サイトの `srcdoc` で表示できないため。bundle/inline は §10)、**adopt の two-phase rename に各段の親 dir fsync とクラッシュ復旧決定表を追加**、**Sandbox 回収の per-file 上限を明記**。⑨ 前段の反映: **artifact 同一性の定義を §4.4 の `ArtifactDigest(outputDir)` 1 箇所に固定**(preview/review/adopt/verify が同じ関数を使う)、**`manifest.json` を payload inventory から除外**して自己参照を排除、**preview は `ArtifactDigest` が非空の確定済み artifact のみ配信**、operator に `Preview` 型を追加(旧 `site:` はエラー)、file size 上限は実装定数(8 MiB)、`--review` の必須/任意を明確化(比較相手が無い baseline のみ任意)、公開サイトは **git 上の adopt 済み bytes だけ**を埋め込み preview URL を参照しない、公開ゲートは「main 上の存在」+ PR 必須の branch protection、`ControllerVersion` を Run に永続化、adopt の `--into` confinement を規定
 
 - v1.5.3: 実装完了に伴う更新 — 実装状況の表を追加。`generation`(temperature/seed 等)を recipe に追加し BenchmarkFingerprint に含める契約、review は Issue を投票履歴の正とし `bot_login` を必須とすること、GitOps は判定と Argo 収束を同一 revision で行うこと、Sandbox claim は Ready/削除完了まで収束待ちすることを明記
 - v1.5.2: 実装フィードバックの反映 — `internal/hook`(コマンドフック)を構成に追加、fsync の失敗は握り潰さず snapshot 書き込み自体を失敗させる、公開は静的サイト(専用 origin + CSP)で行いスクリーンショットは持たない

@@ -19,17 +19,14 @@ targets:
       namespace: bench
       warm_pool: demo-llmbench
 
-site:
-  owner: example-owner
-  repository: llm-bench-site
-  branch: main
-  # A header-capable host (for example Cloudflare Pages) so the CSP in
-  # extra_files is actually served; GitHub Pages cannot send custom headers.
-  base_url: https://llm-bench-site.pages.dev
-  extra_files:
-    _headers: |
-      /*
-        Content-Security-Policy: default-src 'none'; script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'
+# Candidate previews. The controller serves a run's output/ directory on a
+# separate listener (serve --preview-addr) and only derives the URLs that the
+# Issue links to from base_url; it never publishes to a public host. Put an
+# Ingress that terminates cluster authentication (OIDC) in front of the
+# listener and bind it with --preview-public.
+preview:
+  base_url: https://llmbench-preview.example.internal
+
 review:
   owner: example-owner
   repository: llm-bench

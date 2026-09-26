@@ -5,14 +5,14 @@
 ## Intended values
 
 - `harness.image.*`, `harness.repositoryPVC`, `harness.dataPVC`, `harness.apiTokenSecret` (a Secret with key `token`), `harness.port`, `harness.retryInterval`: the single-replica harness Pod, its repository/data volumes and the API token. Multi-replica operation requires external-effect fencing that is still unproven end-to-end, so future templates must keep one replica.
-- `harness.githubTokenSecret` (key `token`): needed when an operator target configures `gitops`, `site` publication, or `operatorConfig.review`. The token belongs to the harness only; it must never reach the Sandbox or any browser/rendering container.
+- `harness.githubTokenSecret` (key `token`): needed when an operator target configures `gitops` or `operatorConfig.review`. It is **not** needed for publication: the controller never writes to a publication host. The token belongs to the harness only; it must never reach the Sandbox or any browser/rendering container.
 - `operatorConfig.targets.*`: the operator configuration that is mounted into the harness. Local executor targets must be rejected in a cluster deployment so untrusted experiment commands never run inside the credentialed harness Pod.
 - `sandbox.*`: the Agent Sandbox development image, sandboxd image, GPU ResourceClaimTemplate, workspace storage class and optional model/cache PVCs. Keep the WarmPool at zero idle replicas; a claim is acquired only for an explicit run.
 
 ## Operational requirements for future templates
 
 - The harness ServiceAccount needs namespaced read access to the configured Argo CD Application and inference Deployment/Pods, and — when coordination is enabled — `get/create/update` on Leases plus `get/list/create/update/delete` on ConfigMaps.
-- Reviewed output is served from the operator's static site (dedicated origin), not from the harness Pod. Keep generated HTML away from harness credentials and enforce a CSP with a fixed script allowlist and no outbound connections (see `docs/architecture.md` section 4.9).
+- Candidates are served from the harness Pod on a separate listener that has no bearer auth of its own, so it must sit behind an Ingress that terminates cluster authentication; generated HTML keeps a sandbox CSP (see `docs/architecture.md` section 4.9). Permanent publication is CI/CD: only artifacts adopted into `experiments/**/output/` and merged to `main` are built into the static site (section 4.12).
 - Pod-to-Pod access to sandboxd goes through Kubernetes port-forward; do not expose sandboxd through a Service.
 - A Git archive omits submodule contents (the controller rejects commits with gitlinks) and does not materialize Git LFS objects.
 - The GitOps and cluster checks (pause PR merge, Argo CD synced revision, Deployment/Pods stopped or restored) and the SandboxClaim lifecycle still need a real-cluster end-to-end test.

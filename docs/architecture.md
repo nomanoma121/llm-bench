@@ -1,8 +1,8 @@
-# llm-bench コントローラ実装設計書(v1.5.3)
+# llm-bench コントローラ実装設計書(v1.6.0)
 
 > この文書は `docs/design.md`(ドメイン要件)・`docs/usage.md`(機能仕様)・`AGENTS.md`(規約)を実装に落とすための設計 blueprint である。
 > ChatGPT 等の外部レビューに単体で渡せるよう、背景要件から実装方針までを自己完結して記述する。
-> ステータス: v1.5.3 — 設計レビュー(5 周)を経て、この設計に対する実装は完了し main にマージ済み。実装状況は §2.5、実装に伴う設計の確定事項は §11 を参照。
+> ステータス: v1.6.0 — v1.5.3 の実装(main マージ済み)に対し、**公開責務を分離**した。恒久公開は「人間が採用した artifact を main にマージしたこと」だけをトリガーに CI が行い、controller は認証付き候補プレビュー(§4.9)のみを提供する。controller 側 publication(旧 pages / `finalizing` フェーズ)は §4.12 の CD に置き換えて削除する。実装状況は §2.5、v1.6 の変更は §11。
 
 ---
 
@@ -19,9 +19,11 @@ LLM に HTML で 3D シーンを作らせる visual benchmark の実行を管理
 ```
 benchmarks/visual/prompt.md        # 共有ベンチマーク課題
 models/models.yaml                 # モデルカタログ(models/<id>/ 本体は Git 管理外)
-experiments/<model-id>/<exp-id>/   # config.yaml(実験recipe) + README.md(仮説・考察) + output/
-charts/llmbench/                   # 実験的 Helm Chart(単一replica)
+experiments/<model-id>/<exp-id>/   # config.yaml(recipe) + README.md(仮説・考察)
+                                   #   + output/(採用した index.html と manifest.json。§4.12)
+charts/llmbench/                   # 実験的 Helm Chart(values-only scaffold)
 cmd/llmbench/                      # Go コントローラ(本設計の実装対象)
+.github/workflows/pages.yml        # main マージで experiments/ から静的サイトをビルドし Pages へ deploy(§4.12)
 ```
 
 ### 1.2 実行ワークフロー(要件の核心)
@@ -31,8 +33,9 @@ cmd/llmbench/                      # Go コントローラ(本設計の実装対
 3. GPU 実行は Agent Sandbox(k8s CRD + Pod port-forward の sandboxd)内で行う。Claim 名は run ID から決定論的に導出される
 4. **取得順の設計不変条件: 推論 Pod の停止確認(GitOps pause 完了)→ GPU Sandbox claim 取得。解放は厳密に逆順: Sandbox プロセス停止+claim 解放 → GitOps restore → …。この順序は operator 設定に対する検証ルールとして機械的に強制する**(§4.2, §4.6)
 5. 実行後は成果物を Sandbox 外へ保存し、Claim を解放し、**復帰 PR** を作る。**復元は実行が失敗しても必ず行う**。target claim の解放が完了するまで run を terminal にしない
-6. 公開サイトへ HTML を冪等公開し、Issue に baseline/candidate を投稿、人間が A/B/tie/invalid で投票。Discord は Issue へのリンク通知のみ
+6. 成果物は Sandbox 外へ保存し hash を記録する。**run の成功は公開を意味しない**。controller は認証付き候補プレビュー(§4.9)を提供し、Issue に baseline/candidate を投稿、人間が A/B/tie/invalid で投票。Discord は Issue へのリンク通知のみ
 7. 1 target で同時実行は不可(**submit は可能。後続 run は claim 解放待ちとして待機**)。**異なる target は並行実行可**
+8. **恒久公開の唯一のゲートは「人間が採用した artifact を `experiments/.../output/` に固定して main にマージしたこと」**(§4.12)。controller は公開先への書き込み権限を持たない
 
 ### 1.3 コントローラ境界(権限分離)
 
@@ -47,7 +50,7 @@ cmd/llmbench/                      # Go コントローラ(本設計の実装対
 | # | 要件 | 出典 |
 |---|------|------|
 | F1 | 実験 recipe のパース・バリデーション | usage.md |
-| F2 | オペレータ設定(target allowlist / hooks / gitops / sandbox / site / review / **limits**)のパース・バリデーション。**hook 順序不変条件の検証を含む** | usage.md |
+| F2 | オペレータ設定(target allowlist / hooks / gitops / sandbox / preview / review / **limits**)のパース・バリデーション。**hook 順序不変条件の検証を含む** | usage.md |
 | F3 | run 状態機械 + 順序付き acquire/release hook + 冪等リカバリ(**claim・実行状態を含む全外部効果の write-ahead**) | design.md |
 | F4 | コマンドフック: 引数配列を shell なしで実行、**exit 75 = acquisition pending** | usage.md |
 | F5 | ローカル実行ランナー(argv 実行、`LLMBENCH_*` 環境変数は allowlist 型で注入、認証情報は継承しない) | usage.md |
@@ -56,18 +59,20 @@ cmd/llmbench/                      # Go コントローラ(本設計の実装対
 | F8 | 1 target 1 実行の atomic claim。**取得・解放とも write-ahead で、解放は owner 条件付き削除。解放完了前に terminal にしない** | design.md |
 | F9 | 永続化: ローカル file store(単プロセス)/ k8s ConfigMap store(**不透明な Version 文字列による CAS**)+ Lease リーダー選出 | usage.md |
 | F10 | HTTP API: run 投稿・状態参照・bearer 認証(**token 未設定時は loopback bind のみ**) | usage.md |
-| F11 | CLI: validate / submit / status / serve / sandbox / review | usage.md |
+| F11 | CLI: validate / submit / status / serve / sandbox / review / adopt / adopted verify / site build | usage.md |
 | F12 | GitOps hook: 状態と帰属を考慮した冪等な pause/restore PR + Argo CD `Synced` 確認 + Deployment/Pod 状態確認(§4.6) | usage.md |
-| F13 | Pages 公開: 冪等公開。**GPU 解放後に行い、成功実行のみ公開する。公開が成功するまで finalizing に留まりリトライ(公開失敗で failed にしない)** | 本設計で新設 |
-| F14 | Issue A/B レビュー: marker 付きコメントの機械解釈(bot_login 制限)、投票履歴の正は Issue。比較条件は BenchmarkFingerprint、**同モデル比較時のみモデル digest 一致を追加要求** | usage.md |
+| F13 | Artifact プレビュー: control API とは**別リスナ**で GET/HEAD のみ配信。**配信 root は output/ に限定**し、CSP sandbox・nosniff・path confinement(`os.OpenRoot`)を強制。**run 成功 ≠ 公開** | 本設計で新設 |
+| F14 | Issue A/B レビュー: marker 付きコメントの機械解釈(bot_login 制限)、投票履歴の正は Issue。前提は「両 run が succeeded + artifact 存在」。marker には **run ID と artifact digest** を残す。比較条件は BenchmarkFingerprint、**同モデル比較時のみモデル digest 一致を追加要求** | usage.md |
 | F15 | 再起動リカバリ + 並列 dispatch: run 毎 worker、異なる target の並行実行、30 秒周期の dispatch tick | usage.md |
 | F16 | **実験 recipe・prompt の submit 時 snapshot**: run の再開は常に snapshot を使い、生きたリポジトリファイルに依存しない | 本設計 |
 | F17 | **operator 側の強制タイムアウト上限**: 実験者が引き上げられない ready/実行時間の上限を target 設定に持たせ、recipe 側 timeout はその範囲内でのみ許可 | 本設計 |
+| F18 | 採用と恒久公開: `adopt`(PV の artifact を git へ固定、digest 照合)・`manifest.json`・`adopted verify`・`site build`・main merge をトリガーとする CI 公開。**controller から site repo への書き込み経路を持たない** | 本設計で新設 |
 
 ### 1.5 非機能要件
 
 - `go test -race ./...` と `go vet ./...` が常時緑。ポリシーロジックは外部 SDK なしでテスト可能
 - 外部効果はすべて冪等。プロセスが任意の時点で死んでも再起動後に収束する(**外部呼び出し前に意図と進行状態を永続化する write-ahead 原則** — claim・hook・実行・プロセスのすべてに適用)。**結果の再現が不可能な処理(ベンチ実行本体)は、write-ahead からの復帰時に自動再実行せず失敗扱いにする**
+- **run の成功条件に公開を含めない**。恒久公開の唯一のゲートは「人間が採用し main にマージしたこと」であり、controller は公開の成否を知らない
 - 実験 YAML を変えずにオペレータ設定だけで実行先を差し替え可能
 - 依存は go.mod 固定分のみ。新規依存の追加は避ける
 
@@ -77,6 +82,7 @@ cmd/llmbench/                      # Go コントローラ(本設計の実装対
 - モデルダウンロード(models.yaml の解釈はコントローラ外)
 - invoke プロセスへの再アタッチ+completion receipt による実行再開(v1 は「interrupted = failure」を採用。将来拡張として §10 に記載)
 - リアルクラスタでの e2e 検証、マルチレプリカ fence、Helm Chart の本格整備
+- プレビューの外部公開(Cloudflare Access / Workers 等)と SSG(Astro 等)の本格導入。v1.6 は「Ingress + クラスタ認証のプレビュー」と「Go の `site build` + Actions の最小公開サイト」で開始する(§4.12)
 
 ---
 
@@ -92,7 +98,7 @@ cmd/llmbench/                      # Go コントローラ(本設計の実装対
 ### 2.2 設計原則
 
 1. **依存は一方向・循環禁止**: `cmd → {httpapi, 機能パッケージ}`、`httpapi → run(ポリシー)`、機能パッケージ同士は縦方向のみ
-2. **interface は消費者側で宣言**: `run` が `Hook`/`HookSource`/`Executor`/`Finalizer`/`RunStore`/`LeaseStore` を、`review` が `Issues`/`Notifier` を、`runner` が `SandboxClient`/`Publisher`/`Git` を宣言する。実装パッケージはそれらを**暗黙に満たす**(抽象を import しない)
+2. **interface は消費者側で宣言**: `run` が `Hook`/`HookSource`/`Executor`/`RunStore`/`LeaseStore` を、`review` が `Issues`/`Notifier`/`PreviewURLResolver` を、`runner` が `SandboxClient`/`Git` を、`httpapi` が preview 用の `ArtifactStore` を宣言する。実装パッケージはそれらを**暗黙に満たす**(抽象を import しない)
 3. **SDK を import してよいパッケージを制限**: `sandbox` / `gitops` / `kube` / `issues` / `pages` / `discord` / `httpapi` / `cmd` のみ。`run` / `runner` / `review` / `experiment` / `operator` / `provenance` / `filestore` は SDK なし
 4. **write-ahead + 冪等**: すべての外部効果(TargetLease、hook、実行、長寿命プロセス、PR、公開)は、呼び出し**前に**意図と進行状態を永続化し、決定論的名前で再実行可能にする。ただし**ベンチ実行本体は再実行不能なため、割り込みは失敗として扱う**
 5. **グローバル状態なし**: ロガーは注入(logr)、時刻は `Clock` を注入、ID 生成は注入可能に
@@ -110,15 +116,17 @@ cmd/llmbench/
   serve.go             # llmbench serve --config ... [--state --output --retry-interval --coordination-*]
   sandbox.go           # llmbench sandbox acquire|run|pull|release(手動操作)
   review.go            # llmbench review request|vote|status
+  adopt.go             # llmbench adopt --into experiments/<model>/<exp>
+  site.go              # llmbench adopted verify / site build(CI と共有)
   wire.go              # ★配線: 実装の構築と注入(HookSource 含む)を集約
 
 internal/
   experiment/          # 実験 recipe。型・パース・バリデーション・canonical serialization(純粋)
   operator/            # オペレータ設定。型・パース・バリデーション(順序不変条件・limits 検証を含む)
   run/                 # ★中核: Run 型・状態遷移・Engine(Dispatcher+worker)。
-                       #   Hook/HookSource/Executor/Finalizer/RunStore/LeaseStore をここで定義
-  runner/              # ベンチ実行の具体化。local.go / sandbox.go / finalize.go
-                       #   SandboxClient/Publisher/Git interface をここで定義
+                       #   Hook/HookSource/Executor/RunStore/LeaseStore をここで定義
+  runner/              # ベンチ実行の具体化。local.go / sandbox.go
+                       #   SandboxClient/Git interface をここで定義
   provenance/          # 来歴: sha256・BenchmarkFingerprint・モデル tree digest・
                        #   model-identity.json・git スナップショット検証(git バイナリを exec)
   sandbox/             # agent-sandbox SDK の薄いクライアント(SDK import 可)
@@ -126,11 +134,13 @@ internal/
   kube/                # k8s 全般: ConfigMap store・TargetLease store・Lease・Argo CD/Deployment/Pod 確認
   issues/              # GitHub Issue コメント操作(review.Issues を実装)
   review/              # A/B レビューのポリシー(marker 検証・投票・記録)
-  pages/               # 静的サイト公開(runner.Publisher を実装、_headers 生成を含む)
   discord/             # webhook 通知(review.Notifier を実装)
   hook/                # コマンドフック(operator計画→run.Hook、exit 75→ErrPending)
-  filestore/           # ローカル file 実装(RunStore/ReviewStore/LeaseStore)
+  filestore/           # ローカル file 実装(RunStore/ReviewStore/LeaseStore/ArtifactStore)
+  adopt/               # 採用: PV の artifact を git working tree へ固定、manifest 生成/検証(§4.12)
+  sitebuild/           # 静的サイト生成(manifest を持つ実験のみ。ネットワーク不要。§4.12)
   httpapi/             # chi HTTP サーバ(薄い)。認証・デコード → run の Service へ委譲
+                       #   preview(§4.9)は別リスナの別ハンドラ
 ```
 
 ### 2.4 依存方向
@@ -155,7 +165,7 @@ filestore ──▶ (標準ライブラリ)
 
 - **実装 → ポリシーの import は存在しない**(暗黙的型満足のため不要)
 - `gitops → kube` は同一インテグレーション層内の参照として許容
-- `runner` は SDK を import しない。`SandboxClient` / `Git` / `Publisher` の interface を満たす実装を cmd が注入する
+- `runner` は SDK を import しない。`SandboxClient` / `Git` の interface を満たす実装を cmd が注入する。preview(§4.9)は `httpapi` が artifact ディレクトリだけを受け取る(read-only)
 
 ### 2.5 実装状況
 
@@ -167,10 +177,13 @@ filestore ──▶ (標準ライブラリ)
 | serve + HTTP API | `httpapi`(認証・公開URL)/ dispatcher・graceful shutdown・loopback 制約・repository-relative path 強制・local target の HTTP 既定拒否 |
 | Sandbox runner | `sandbox`(決定論的 claim・Ready/削除の収束待ち・argv境界quote・detachプロセス)/ `runner.Sandbox`(commit照合・archive転送・readiness clamp・モデル digest pin) |
 | GitOps hook | `gitops`(状態+帰属の決定テーブル・同一revisionでのArgo収束・Pod消滅確認・rollback・drift拒否)/ `kube`(Argo CD・Deployment/Pod確認) |
-| 公開とレビュー | `pages`(非force・競合リトライで冪等公開)/ `runner.PublishFinalizer` / `issues`(bot_loginでfail-closed)/ `discord`(Issueリンクのみ)/ `review`(Issueが投票履歴の正、fingerprint検証) |
+| レビュー | `issues`(bot_loginでfail-closed)/ `discord`(Issueリンクのみ)/ `review`(Issueが投票履歴の正、fingerprint検証) |
+| 旧 publication(v1.5) | `pages`(非force・競合リトライで冪等公開)/ `runner.PublishFinalizer` / `finalizing` フェーズ。**v1.6 で削除**(§4.12 の CD へ移行) |
 | Kubernetes 協調 | `kube`(ConfigMap store=CAS、TargetLease=owner条件付き削除、Lease リーダー選出と喪失時の worker cancel、再選出) |
 
-未検証・未実装: 実クラスタでの e2e(Argo CD / Deployment / SandboxClaim の遷移)、マルチレプリカでの外部効果 fence の実証、Agent 最適化ループの接続、Git LFS の materialize。
+v1.6 で追加する単位(§6 のフェーズ 8〜11): preview API(§4.9)、adopt + manifest + verify、`site build` + Actions(§4.12)、旧 publication の削除(`finalizing` の legacy 移行を含む)。
+
+未検証・未実装: 実クラスタでの e2e(Argo CD / Deployment / SandboxClaim の遷移)、Ingress + クラスタ認証でのプレビュー配信、マルチレプリカでの外部効果 fence の実証、Agent 最適化ループの接続(attempt 境界は §4.12 と §10 に設計のみ)、Git LFS の materialize。
 
 ### 2.6 採用しないもの
 
@@ -189,18 +202,19 @@ filestore ──▶ (標準ライブラリ)
 **Phase(run 全体)、HookState(hook 毎)、LeaseState(TargetLease)、ExecutionState(実行)を分けて持ち、run を terminal にするのは最後の最後。**
 
 ```
-Phase:  pending ──▶ acquiring ──▶ running ──▶ releasing ──▶ finalizing ──▶ succeeded
-              claim取得+          │ ExecutionState       │                      or failed
-              hook順次acquire     │  write-ahead         │ release失敗
-                          │       │                      │ → releasing に留まり
-                          │ ErrPending /                 │   worker が interval リトライ
+Phase:  pending ──▶ acquiring ──▶ running ──▶ releasing ──▶ succeeded or failed
+              claim取得+          │ ExecutionState       │ release失敗
+              hook順次acquire     │  write-ahead         │ → releasing に留まり
+                          │       │                      │   worker が interval リトライ
+                          │ ErrPending /                 │
                           │ claim busy は同 phase         │
                           │ で interval リトライ          │
                           ▼                              ▼
                  (クラッシュ時は保存済み状態から冪等に再開)
 ```
 
-- `Phase = pending | acquiring | running | releasing | finalizing | succeeded | failed`
+- `Phase = pending | acquiring | running | releasing | succeeded | failed`
+- **`finalizing` は v1.6 で廃止**した(公開は run の成功条件ではない)。v1.5.x の record が `finalizing` で停留している場合のみ、worker が `succeeded` へ移行する(legacy 移行。§3.3)
 - `ExecutionResult = none | success | failure`
 - `ExecutionState = not_started | invoking | completed` — **実行本体の write-ahead**。`invoking` を保存してから Execute を呼ぶ。復帰時に `invoking` だった場合は**自動再実行しない**(実行の再現性がないため `ExecutionResult=failure`(interrupted)として releasing へ進む。§10.1 の将来拡張を除く)
 - `HookState = not_started | acquiring | acquired | releasing | released` (+ `WaitReason`, `Error`)
@@ -216,14 +230,13 @@ Phase:  pending ──▶ acquiring ──▶ running ──▶ releasing ──
 - release は厳密逆順。hook i を解放するには i+1..n が `released` であること
 - **TargetLease の解放は releasing フェーズの最後のステップ**(`LeaseState=releasing` を保存 → `ReleaseTargetLease`(NotFound=成功)→ `released` を保存)。terminal 書き込みは lease 解放保存の後でのみ行う
 - releasing が完了する前に terminal にしない
-- **releasing 完了後の分岐は ExecutionResult で決定**: `failure → failed`(公開処理は行わない。index.html が存在しないため)。`success → finalizing`
-- `finalizing` は公開が成功するまで terminal に進まない(公開失敗は `PublishError` を記録して interval リトライ)。GPU は解放済みのため停留の実害はない
+- **releasing 完了後の分岐は ExecutionResult で決定**: `failure → failed`、`success → succeeded`。**公開の成否は run の終了条件に含めない**(§1.5, §4.12)
 - 1 target の同時実行は LeaseStore が排除する。submit 自体は常に可能で、後続 run は `acquiring` で待機する
 
 ### 3.2 主要な型と interface(run パッケージで定義)
 
 ```go
-type Phase string // pending | acquiring | running | releasing | finalizing | succeeded | failed
+type Phase string // pending | acquiring | running | releasing | succeeded | failed (+ legacy: finalizing)
 type ExecutionResult string // none | success | failure
 type ExecutionState string // not_started | invoking | completed
 type HookPhase string // not_started | acquiring | acquired | releasing | released
@@ -272,9 +285,9 @@ type Run struct {
     HookPlan        []operator.PlannedHook
     HookPlanDigest  string
     WaitReason      string
-    PublishError    string          // finalizing の最終エラー記録
+    PublishError    string          // legacy(v1.5): 読取のみ。新規 run では書かない
     Artifacts       Artifacts
-    PublicURL       string
+    PublicURL       string          // legacy(v1.5): 読取のみ。恒久公開 URL は CD が決める(§4.12)
     StoreVersion    string          // 不透明な CAS トークン。ConfigMap: resourceVersion、filestore: "N"
     CreatedAt, UpdatedAt time.Time
 }
@@ -299,11 +312,6 @@ type Executor interface {
     // 戻り時点で成果物は Artifacts.Dir へ確定保存+ハッシュ済みであること
     Execute(ctx context.Context, r Run) (Artifacts, error)
 }
-type FinalizeResult struct{ PublicURL string }
-type Finalizer interface { // GPU 解放後、ExecutionResult=success の run に対してのみ実行
-    Finalize(ctx context.Context, r Run, a Artifacts) (FinalizeResult, error)
-}
-
 // TargetLease の store。実装: filestore / kube
 // 用語注意: SandboxClaim(Sandbox 側 GPU claim)は扱わない。そちらは sandbox.Hook が管理する
 type RunStore interface { // file / ConfigMap 双方が実装
@@ -329,7 +337,7 @@ type LeaseStore interface {
 
 type Clock func() time.Time
 
-type Engine struct { /* RunStore, LeaseStore, HookSource, Executor, Finalizer, Logger, Clock, RetryInterval */ }
+type Engine struct { /* RunStore, LeaseStore, HookSource, Executor, Logger, Clock, RetryInterval */ }
 func (e *Engine) Submit(ctx context.Context, r Run) error
 // Submit の snapshot 保存順(厳密):
 //   1. <output>/runs/<runID>/input/ を temp dir に書く
@@ -389,19 +397,19 @@ loop:
     save(LeaseState=releasing) → err := leases.ReleaseTargetLease(...)
     - nil   → save(LeaseState=released)
     - error → LeaseState=releasing のまま interval 再試行(NotFound は成功扱いの契約)
-    # lease released の保存後のみ分岐する:
-    - ExecutionResult == failure → **failed**(finalizing を経由しない)
-    - ExecutionResult == success  → finalizing
-  case finalizing:
-    res, err := finalizer.Finalize(ctx, r, r.Artifacts)  # Artifacts.Dir から読み公開
-    - 失敗 → save(PublishError)、interval 再試行(terminal に進まない)
-    - 成功 → save(PublicURL=res.PublicURL) → succeeded
+    # lease released の保存後のみ分岐する(公開の成否は run の終了条件ではない):
+    - ExecutionResult == failure → **failed**
+    - ExecutionResult == success  → **succeeded**
+  case finalizing:  # 旧 record の移行専用。新規 run はこの phase に入らない
+    # v1.5.x の publication 待ち record のみ到達する。LeaseState=released かつ
+    # ExecutionResult=success なので published 済みか否かに関わらず succeeded とする
+    save(Phase=succeeded)
   case succeeded, failed: return
 ```
 
 - **1 ステップ 1 保存**。任意の時点で死んでも、保存済み Phase/HookState/LeaseState/ExecutionState から同一ステップを冪等に再開する
 - **SaveRun が ErrVersionConflict を返した場合**: ローカルの Run を破棄して LoadRun し直し、保存済み状態から再判定する。**競合した SaveRun に対応する外部効果は実行してはならない**(write-ahead の保存が完了する前に外部効果を起こさない原則の帰結)
-- `ListUnfinished` は non-terminal を返すため、finalizing で停留中の run も dispatch 対象に残る
+- `ListUnfinished` は non-terminal を返す。旧 record の `finalizing` 停留 run は worker が `succeeded` へ移行する(外部効果を伴わないため write-ahead 不要)
 
 ### 3.4 Dispatcher(並列とリカバリ)
 
@@ -515,8 +523,6 @@ func (c Config) ValidateRecipe(target string, readyTimeoutSeconds int) error // 
   6. `Exec(Invoke.Argv)`(context timeout = MaxExecutionDuration)、ログ収集
   7. `output/index.html`・ログ・`model-identity.json` を Pull し **Sandbox 外の `Artifacts.Dir` へ保存。sha256 はこの保存の瞬間に計算**する。この保存が release の前提条件
   8. プロセス停止は release フェーズで行う(`Stop`): SandboxClaim の release hook が `Stop` → `ReleaseSandboxClaim` の順に実行
-- `finalize.go`: `Artifacts.Dir` から読み、公開 → `FinalizeResult{PublicURL}`
-
 ```go
 // プロセスハンドルは不透明な文字列 ID(決定論的: "runtime-<runID>")。
 // 構造体を runner で定義すると sandbox 実装が runner を import する必要が生じ
@@ -541,9 +547,6 @@ type ExpectedFile struct{ Path, SHA256 string } // snapshot 由来の期待値
 type Git interface { // 実装: internal/provenance
     VerifyCommit(ctx, commit string, expected []ExpectedFile) error
     Archive(ctx, commit string) ([]byte, error) // tar ストリーム
-}
-type Publisher interface { // 実装: internal/pages
-    Publish(ctx context.Context, runID string, html []byte) (publicURL string, err error)
 }
 ```
 
@@ -622,21 +625,30 @@ func Fingerprint(in FingerprintInput) string // canonical JSON → sha256
 - A/B/tie 投票の受理条件: **両 run の fingerprint 一致**。モデル digest は**記録値**であり一致条件ではない(モデル比較こそ本ベンチの目的)
 - ただし **baseline と candidate が同一モデル ID の場合は両 run のモデル tree digest 一致を追加要求**(比較期間中の無音のモデル差し替え検出)
 
-フロー: `review request` は両 run が succeeded + `public_url` 持ち + fingerprint 条件を検証してから、Issue へ marker 付きコメント(`<!-- llmbench:review:<id> -->` + URL ペア)。投票は marker コメントとして記録され、**正は Issue**、filestore は索引。`bot_login` 以外のコメントは解釈しない。`Issues` / `Notifier` interface をここで宣言。
+フロー: `review request` は両 run が succeeded + **artifact が存在** + fingerprint 条件を検証してから、Issue へ marker 付きコメント(`<!-- llmbench:review:<id> -->` + preview URL ペア + **run ID と artifact digest**)を投稿する。投票は marker コメントとして記録され、**正は Issue**、filestore は索引。`bot_login` 以外のコメントは解釈しない。`Issues` / `Notifier` interface をここで宣言。
+
+- **preview URL は Run に永続化しない**。operator 設定 `preview.base_url` から導出する実装(`type PreviewURLResolver interface{ URL(runID string) string }`)を review 側へ注入する(listen address から Ingress の URL は導出できない)
+- 同一性の正は `run_id` + artifact digest。**URL が失効しても(Ingress 変更・PV 削除)、Issue 上のレビュー履歴は壊れない**
+- レビューは従来どおり「GPU 解放・restore 完了後」を条件に含める(人間待ちで GPU を保持しない)。preview 自体は artifact 確定直後から見える
+- 社外レビュアに開かせる要件が出た場合はこの方式だけでは成立しない(Cloudflare Access 等の外部 ID 許可か一時 deployment が必要)。**内部 DNS 名を Issue に貼るのは避ける**
 
 - `issues`: go-github で `review.Issues` を実装
 - `discord`: webhook へ Issue リンク 1 行 POST(`review.Notifier` を実装)
 
-### 4.9 pages
+### 4.9 preview(候補 artifact の配信)
 
-`runner.Publisher` を実装。site repo の指定ブランチへ `runs/<run-id>/index.html` を commit(決定論的パスで冪等)。`ExtraFiles`(例: `_headers`)も同一 commit に含める。
+**責務**: controller は「候補を生成し immutable artifact として保存し、安全な一時プレビューを提供する」までを担う。**恒久公開は行わない**(§4.12)。
 
-**デプロイ要件(オペレータ責務として文書化)**:
+- 経路: `GET|HEAD /v1/runs/{id}/artifacts/{path...}`。実体は `<output>/runs/<runID>/output/` 配下のみ。`input/`(recipe snapshot)や output 外のログは配信しない
+- **control API とは別リスナ**(`serve --preview-addr`)。control API の bearer 認証は使わず、**上流(Ingress + クラスタ認証)での認証終端を前提**とする。非 loopback bind には「上流で認証する」ことを示す明示フラグを要求する(control API の loopback 規則と同型)
+- 外向け URL は operator 設定 `preview.base_url` から導出する。**Run に `preview_url` を永続化しない**(URL は導出値。同一性の正は run ID + artifact digest。§4.8)
+- **GET/HEAD のみ。CORS を有効化しない。directory listing 禁止。symlink 拒否。file size 上限。URL decode 後に path を検査**し、`..`・絶対パス・backslash・NUL を拒否する。root confinement は `os.OpenRoot` 系で行う(手書きの prefix 比較は使わない)
+- **レスポンスヘッダ(必須)**: `Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' <許可 CDN 固定>; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; form-action 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; worker-src 'none'`、`X-Content-Type-Options: nosniff`、`Cache-Control: private, no-store`、`Referrer-Policy: no-referrer`。**`allow-same-origin` は付けない**(opaque origin 化)
+- 理由: OIDC は「誰が閲覧できるか」を守るだけで、**閲覧者のブラウザを生成 HTML から守らない**。生成 HTML の JS は preview host の別 endpoint・社内サービス・localhost・プライベート IP へ通信を試せる
+- preview handler は **SandboxClient に依存しない**。`RunStore` + artifact ディレクトリだけを見る(**Sandbox が消えていても配信できる**)
+- プレビューは恒久公開ではない。artifact が確定した直後から見えてよい
 
-- LLM 生成 HTML は任意 JS を含むため、**ベンチ専用の origin** で公開し、認証 cookie 等を一切置かない
-- CSP: LLM 生成 HTML は inline `<script type="module">` を含むのが普通であり hash 列挙は現実的でないため、**専用 origin + 資格情報なし**を前提に `script-src 'self' <許可 CDN 固定> 'unsafe-inline'` と `connect-src 'none'` 相当を許容する構成とする
-- GitHub Pages はカスタムレスポンスヘッダを持たないため、CSP を要するなら Cloudflare Pages 等ヘッダ可のホストを選択する(Publisher 実装自体はホスト非依存: git commit のみ)
-- **k8s モードでは `<output>`(Artifacts.Dir の親)を永続ボリュームに置くこと**。ConfigMap RunStore だけでは artifact は Pod 再作成で失われ、finalizing からの復旧が不能になる
+**k8s モードでは `<output>`(Artifacts.Dir の親)を永続ボリュームに置くこと**。ConfigMap RunStore だけでは artifact は Pod 再作成で失われ、プレビューも adopt(§4.12)も不能になる
 
 ### 4.10 filestore
 
@@ -649,10 +661,48 @@ func Fingerprint(in FingerprintInput) string // canonical JSON → sha256
 ### 4.11 httpapi(chi)
 
 - `POST /v1/runs` `{experiment, input_commit?}` → 202 `{run_id}`。実験が allowlist target を選んでいるかは operator 設定で検証
+- `GET|HEAD /v1/runs/{id}/artifacts/{path...}` は **control API ではなく別リスナ**(§4.9)。ここには bearer 認証を掛けず、Ingress 側で認証する
 - **local target への HTTP 経由 submit は、operator が `AllowHTTPLocal: true` を明示した場合のみ許可(既定拒否)**。`LLMBENCH_API_TOKEN` 未設定時は loopback bind のみとし、local target は常に拒否
-- `GET /v1/runs/{id}` → Run 全体(Phase/HookState/LeaseState/ExecutionState/Artifacts/PublicURL)
+- `GET /v1/runs/{id}` → Run 全体(Phase/HookState/LeaseState/ExecutionState/Artifacts)。**公開 URL は返さない**(恒久公開は controller の責務外。preview URL は `preview.base_url` から導出する)
 - bearer 認証: `LLMBENCH_API_TOKEN` 設定時のみ要求
 - handler はデコード → `run.Service`(Submit/Status interface をここで宣言)呼び出しのみ
+
+### 4.12 adoption と CD(恒久公開)
+
+**不変条件**:
+
+- `run success ≠ publication`。run の終了条件に公開を含めない
+- `preview ≠ public site`。プレビューは認証付きの一時配信、公開サイトは main に存在する採用成果物のみ
+- review / adopt / publication の同一性は **URL ではなく artifact digest** で結ぶ
+- `adopt` は**人間が認可した materialization**。コマンドは採否を判断しない
+- **`main merge` が唯一の恒久公開ゲート**
+
+フロー(順序厳守): `review 完了 → adopt → output/manifest.json を含む PR → 人間が merge → CI → GitHub Pages`
+
+**adopt**: `llmbench adopt <run-id> --into experiments/<model-id>/<experiment-id> [--review <review-id>] [--write]`
+
+- 対象は `<output>/runs/<runID>/output/` の全ファイル。symlink は拒否。run の provenance(run ID・fingerprint・prompt sha256・input_commit・model digest・controller version)を manifest に写す
+- **レビューした artifact と adopt する artifact が同一であることを digest で検証**する(`--review` 指定時)
+- 書き込みは temp dir → copy → hash → manifest → fsync → atomic rename。**同一 run・同一 digest への再実行は成功、異なる内容が既に存在すれば拒否**
+- 既定は dry-run(`--write` で実体化)
+- `manifest.json`(`schema_version: 1`): `run_id` / `experiment_id` / `model` / `benchmark_fingerprint` / `prompt_sha256` / `input_commit` / `model_tree_digest` / `controller_version` / `adopted_at` / `review{review_id,issue_url}` / `artifacts[{path,sha256,size}]`。**artifacts は列挙ではなく完全な inventory** として扱う
+- experiment-id に日付プレフィックスを強制しない。時系列は `adopted_at` が持つ(表示順を identity に持ち込まない)
+
+**`llmbench adopted verify --root experiments`**(CI が実行):
+
+- manifest にある → ファイルが存在し sha256 一致 / `output/` にある → manifest にも必ず存在(過不足なし)
+- `index.html` 必須 / symlink 拒否 / `..`・絶対パス拒否 / schema 検証
+- **hash・inventory・path 安全性の検証は Go 側(`internal/provenance` を再利用)を正**とし、サイト側ツールチェーンに再実装しない
+
+**`llmbench site build --root experiments --out <dir>`**: `manifest.json` を持つ実験だけを対象に静的サイトを生成する(`output/` があるだけのプレースホルダは公開しない)。index は `adopted_at` 降順 → model 昇順 → experiment-id 昇順。**ネットワーク不要・read-only**。controller と同じバイナリ・同じ検証を使うため CI と手元で結果が一致する
+
+**公開サイトの隔離**: raw な生成 HTML をトップレベルで公開せず、**trusted なページが `iframe sandbox="allow-scripts"`(`srcdoc` または preview URL)で表示する**構造を既定とする。GitHub Pages はカスタムレスポンスヘッダを持たないため、ヘッダに依存せず隔離できるこの構造が必要
+
+**CI(`.github/workflows/pages.yml`)**: PR では `adopted verify` + `site build` のみ。main push で build artifact を `upload-pages-artifact` → `deploy-pages`(`pages: write` / `id-token: write`)。**ホスト差し替え(Cloudflare Pages 等)は workflow の責務**であり controller は無変更
+
+**現段階の簡易実装(差し替え前提)**: 静的サイトは Go の `site build` が生成する最小構成から始める。SSG を導入する場合は workflow の build ステップだけを差し替える。プレビューの外部公開(Cloudflare Access/Workers 等)と最適化ラウンドの multi-attempt は今回のスコープ外(§10)
+
+**削除対象(v1.5 からの差分)**: `internal/pages`、`runner.PublishFinalizer`、`run.Finalizer`/`FinalizeResult`、`PhaseFinalizing` への新規遷移、`PublishError`/`PublicURL` の新規書き込み、operator の `site:` ブロック。既存 record は legacy として decode し、`finalizing` 停留 run は succeeded へ移行する(§3.1)。旧 `site:` 設定は黙って無視せず**明示エラーで fail** させる
 
 ---
 
@@ -664,14 +714,18 @@ llmbench submit <experiment.yaml> [--commit <full-sha>]     # Engine.Drain で�
 llmbench status <run-id>
 llmbench serve --config server.yaml [--state .state] [--output runs]
                 [--retry-interval 30s] [--coordination-namespace <ns>] [--lease-name <name>] [--kubeconfig <path>]
+                [--preview-addr 127.0.0.1:8081] [--preview-public]   # §4.9(preview 専用リスナ)
 llmbench sandbox --namespace <ns> acquire <run-id> <warm-pool>
                 | run <claim> '<sh-command>' | pull <claim> <src> <dst> | release <run-id>
 llmbench review request <baseline-run-id> <candidate-run-id> --issue <n> --config <operator.yaml>
         | vote <review-id> --choice A|B|tie|invalid [--notes ...] --config <operator.yaml>
         | status <review-id> --config <operator.yaml>
+llmbench adopt <run-id> --into experiments/<model-id>/<experiment-id> [--review <review-id>] [--write]
+llmbench adopted verify --root experiments          # CI(§4.12)
+llmbench site build --root experiments --out _site  # CI(§4.12)
 ```
 
-環境変数: `LLMBENCH_API_TOKEN`、`LLMBENCH_GITHUB_TOKEN`、`LLMBENCH_DISCORD_WEBHOOK`。
+環境変数: `LLMBENCH_API_TOKEN`、`LLMBENCH_GITHUB_TOKEN`、`LLMBENCH_DISCORD_WEBHOOK`。`LLMBENCH_GITHUB_TOKEN` は Issue 記録と GitOps PR のみに使う(**site repo への書き込み権限は不要**)。preview は Ingress + クラスタ認証で守る(§4.9)。
 
 ## 6. 実装フェーズと完了条件
 
@@ -681,18 +735,22 @@ llmbench review request <baseline-run-id> <candidate-run-id> --issue <n> --confi
 | 2 | serve | httpapi(local target 既定拒否を含む)+ 並列 dispatch + Recover + provenance 記録 |
 | 3 | Sandbox 経路 | sandbox クライアント(Start/Stop 冪等、quote テスト)+ git 検証(snapshot vs commit)+ モデル digest + pin + claim hook + 成果物確定保存 |
 | 4 | GitOps hook | §4.6 決定テーブルの全分岐 + 「マージ直後クラッシュ」再開(fake clientset + go-github fake) |
-| 5 | pages + review | 冪等公開・`_headers`・fingerprint 検証・marker 投票・discord |
+| 5 | pages + review(v1.5。公開部分は v1.6 で CD へ移行) | 冪等公開・`_headers`・fingerprint 検証・marker 投票・discord |
 | 6 | kube 永続化 | ConfigMap store(不透明 StoreVersion)・条件付き claim 削除・Lease(喪失時 worker cancel) |
 | 7 | 仕上げ | AGENTS.md / README / usage.md 更新、chromedp 除去、全テスト緑 |
+| 8 | preview API(§4.9) | 別リスナ + 認可規則 + path confinement/CSP/nosniff + artifact root 限定。review の前提を「succeeded + artifact 存在」へ変更し、preview URL は `preview.base_url` から導出。旧 publication はまだ残す |
+| 9 | adopt + verify(§4.12) | `adopt`(digest 照合・atomic・冪等)・`manifest.json`・`adopted verify`。不一致・symlink・path 脱出・過不足のテスト |
+| 10 | 公開サイト | `site build`(manifest がある実験のみ・決定性テスト)+ `.github/workflows/pages.yml`(PR は verify/build、main で deploy)+ サンドボックス iframe 表示 |
+| 11 | 旧 publication 削除 | `pages`/`PublishFinalizer`/`Finalizer`/`finalizing` 新規遷移/`public_url` 新規書き込み/operator `site:` を削除。旧 record の legacy 移行テスト。CD が動作してから実施 |
 
 各フェーズで `go test -race ./...` と `go vet ./...`。実データで実験プレースホルダを書き換えない。
 
 ## 7. 既存 docs からの意図的な変更点
 
-1. **PNG preview 廃止**: chromedp・preview エンドポイント・browser sidecar を廃止し、Pages 公開で生 HTML を直接比較する。`review request` の前提は「両 run の succeeded + 公開済み」
+1. **PNG preview 廃止**: chromedp と browser sidecar を使わず、生 HTML を人間が比較する。v1.5 は「公開サイトを直接見る」構成だったが、v1.6 では controller が認証付き preview API(§4.9)を提供し、`review request` の前提を「両 run の succeeded + artifact 存在」に変更した。恒久公開は採用成果物の main マージのみをトリガーとする(§4.12)
 2. **visual ブロック廃止**。同一条件は BenchmarkFingerprint で担保
 3. **同一モデル digest 要求の限定**(§4.8): cross-model 比較を許すため「無条件の一致要求」から「同モデル時のみ」へ
-4. **Finalize の後ろ倒し**(§3.1): 公開は GPU 解放後。**失敗 run は finalizing を経由せず failed**
+4. **Finalize / finalizing の廃止**(§3.1): 公開を controller の責務から外したため、`releasing` 完了後は `success → succeeded` / `failure → failed` の二択になった。旧 record の `finalizing` は succeeded へ移行する
 5. **local target の位置づけ明確化**(§1.3, §4.11): 隔離境界ではない。HTTP 経由 local 実行は既定拒否
 6. `docs/usage.md` / `README.md` / `AGENTS.md` の該当記述はフェーズ 7 で更新
 
@@ -704,9 +762,10 @@ llmbench review request <baseline-run-id> <candidate-run-id> --issue <n> --confi
   - **Acquire 失敗後の共通 releasing で acquiring hook も解放されること(not_started は解放しない)**
   - **Release の任意 error で released にせず・TargetLease を解放せず・terminal に進まないこと(ErrPending は待機分類)**
   - **ExecutionState: invoking からの復帰が再実行せず failure になること・completed+running は状態破損扱い**
-  - **Execute 失敗 run が finalizing を経由せず failed になること**
+  - **Execute 失敗 run が failed になり、公開処理を一切行わないこと**
   - **AcquireTargetLease の非 busy error で failure→releasing となること(冪等解放で曖昧成功を回収)**
-  - finalizing: 公開失敗で停留→成功で succeeded
+  - **preview: 認可規則(非 loopback bind の拒否)・path 脱出(`..`/絶対パス/symlink)拒否・CSP/nosniff ヘッダ・output 外の非配信・SandboxClient 非依存**
+  - **legacy record: `phase=finalizing` + `ExecutionResult=success` + `LeaseState=released` が succeeded へ移行すること**
   - クラッシュ再開(各 Phase 中断点から)、**recipe snapshot 使用の検証(submit 後に recipe を書き換えても影響しない)**、HookPlanDigest 検証
   - 同一 target 排他・異 target 並行(`-race`)
   - **limits: MaxExecutionDuration での Execute 打ち切り**
@@ -721,7 +780,7 @@ llmbench review request <baseline-run-id> <candidate-run-id> --issue <n> --confi
 - エラーは sentinel(`run.ErrPending` / `run.ErrLeaseBusy` / `run.ErrVersionConflict`)+ `%w`。分岐は `errors.Is`
 - context 第一引数。`Clock` 注入。ID 生成は注入可能
 - 設定は yaml KnownFields で未知フィールド拒否。canonical JSON はソートキーで決定論化
-- 決定論的外部名: Claim `llmbench-<runID>`、プロセス handle `runtime-<runID>`、ブランチ `llmbench/{pause,restore}-<runID>`、公開 `runs/<runID>/`、成果物 `<output>/runs/<runID>/`(input snapshot はその下 `input/`)
+- 決定論的外部名: Claim `llmbench-<runID>`、プロセス handle `runtime-<runID>`、ブランチ `llmbench/{pause,restore}-<runID>`、成果物 `<output>/runs/<runID>/`(input snapshot はその下 `input/`、配信・adopt 対象は `output/`)、採用先 `experiments/<model-id>/<experiment-id>/output/`
 - パッケージコメント必須。パッケージ名は提供物を語る
 - ログは logr 構造化フィールド
 
@@ -729,10 +788,15 @@ llmbench review request <baseline-run-id> <candidate-run-id> --issue <n> --confi
 
 1. agent-sandbox SDK v1.0.4 の sandboxd が argv exec を直接受けられるか、長寿命プロセス primitive を扱えるか。不可なら §4.3 の quote 境界実装+決定論的タグによるバックグラウンド起動。マイルストーン 3 冒頭で確認
 2. `git archive` の出力形式と Sandbox 側展開(tar)の整合。マイルストーン 3 でスモーク
-3. Cloudflare Pages `_headers` での CSP 構成の挙動。マイルストーン 5 で確認
+3. Ingress(クラスタ認証)+ 別リスナで配信した preview の挙動と、生成 HTML の JS が sandbox 内でどこまで動くか。フェーズ 8 で確認
+3b. helper: `os.OpenRoot` による root confinement の Go バージョン要件と、`iframe sandbox` 表示での生成 HTML の動作。フェーズ 8/10 で確認
 4. (将来拡張)invoke を managed process(`invoke-<runID>`)+ completion receipt にして、`invoking` 割り込みからの再アタッチを可能にする。v1 は「interrupted = failure」で足りる
+5. (将来拡張)最適化ラウンドの multi-attempt: attempt 境界は「**artifact が PV へ immutable snapshot として確定した瞬間**」とし、`<output>/runs/<runID>/attempts/<attemptID>/output/` に置く。review/adopt の identity も `{run_id, attempt_id, artifact_digest}` へ拡張する。preview handler を SandboxClient に依存させないため、attempt 完了ごとに harness へ copy してから次 attempt を開始する。**v1.6 では状態機械を実装せず、現行の単発実行を「唯一の attempt 相当」として扱う**
+6. (将来拡張)プレビューの外部公開: Cloudflare Access での外部 ID 許可、または一時 deployment。社内 OIDC 限定で足りる間は実装しない
 
 ## 11. 変更履歴
+
+- v1.6.0: **公開責務の分離**(ユーザー提案 + 外部レビュー)。不変条件を追加: `run success ≠ publication` / `preview ≠ public site` / review・adopt・publication の同一性は artifact digest / `adopt` は人間が認可した materialization / **`main merge` が唯一の恒久公開ゲート**。① controller の publication(旧 §4.9 pages、`Finalizer`/`FinalizeResult`/`finalizing` 新規遷移/`PublicURL`/`PublishError` の新規書き込み/operator `site:`)を削除し、CI(`adopted verify` + `site build` + GitHub Actions → Pages)へ移す(§4.12)。② `§4.9` を **preview**(別リスナ・上流認証・`output/` 限定・CSP `sandbox allow-scripts`・`os.OpenRoot` による confinement・SandboxClient 非依存)に置換。③ review の前提を「succeeded + artifact 存在」に変更し、preview URL は `preview.base_url` から導出(URL を Run に永続化せず、marker に run ID と artifact digest を残す)。④ `adopt`/`manifest.json`/`adopted verify`/`site build` を追加し、hash・inventory・path 検証は Go 側を正とする。⑤ 旧 record の `finalizing` は succeeded へ移行。⑥ 最適化ラウンドの attempt 境界は §10 に設計のみ記載(現行の単発実行を唯一の attempt 相当とする)
 
 - v1.5.3: 実装完了に伴う更新 — 実装状況の表を追加。`generation`(temperature/seed 等)を recipe に追加し BenchmarkFingerprint に含める契約、review は Issue を投票履歴の正とし `bot_login` を必須とすること、GitOps は判定と Argo 収束を同一 revision で行うこと、Sandbox claim は Ready/削除完了まで収束待ちすることを明記
 - v1.5.2: 実装フィードバックの反映 — `internal/hook`(コマンドフック)を構成に追加、fsync の失敗は握り潰さず snapshot 書き込み自体を失敗させる、公開は静的サイト(専用 origin + CSP)で行いスクリーンショットは持たない

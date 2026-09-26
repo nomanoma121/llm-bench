@@ -1,6 +1,6 @@
 # Agent instructions
 
-Read `docs/design.md` and `docs/plan.md` before changing the workflow. Keep experiments scoped to `experiments/<model-id>/<experiment-id>/`; do not modify another model's runtime variant as a side effect.
+Read `docs/design.md` and `docs/plan.md` before changing the workflow. Keep experiments scoped to `experiments/<model-id>/<experiment-id>/`; do not modify another model's runtime variant as a side effect. Only human-accepted artifacts belong in `experiments/<model-id>/<experiment-id>/output/`: populate them with `llmbench adopt` (which records `manifest.json` with digests), never by hand-editing HTML. That directory is the sole input of the publishing CI and the only publication gate is a merge to `main`; the controller must not write to any publication host.
 
 Do not start a run merely because an Issue or PR changed. A run requires an explicit request. Treat `config.yaml` as an execution recipe, not authority to manage cluster resources. Only operator-controlled target configuration may select GPU leases, inference pause/restore, Agent Sandbox pools, or GitOps manifest paths. There is no SSH executor.
 

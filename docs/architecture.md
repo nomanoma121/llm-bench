@@ -632,8 +632,11 @@ type MeasurementProtocol struct {
     // baseline/candidate で must-equal になってしまい runtime 最適化が比較不能になるため、
     // RuntimeSpecDigest / RuntimeBuildDigest だけが持つ
 }
-// Validate は参照整合を fail-closed で検査する: OptimizationProfile の Protocol/Policy が
-// それぞれ MeasurementProtocols/PromotionPolicies に存在しない場合は設定エラー。
+// Validate は参照整合と MVP 制約を fail-closed で検査する(設定エラーにする):
+//   OptimizationProfile の Protocol/Policy/Sampling の参照先が存在すること
+//   SamplingPolicy.InitialPairs == MaxPairs(MVP は adaptive なし)
+//   PromotionPolicy.GrayZone.Action == "inconclusive"(MVP)
+//   OptimizationProfile.Kind が "visual" | "measurement"
 type PromotionPolicy struct {
     SchemaVersion int
     PrimaryMetric string   // 例: decode_step_ms
@@ -650,8 +653,8 @@ type PromotionPolicy struct {
     // 判定不能域の扱い(operator が変更できるため typed field として digest 対象)
     // MVP は adaptive sampling を行わないため GrayZone は inconclusive 固定。
     // adaptive を導入するときに need_more_samples(+ 追加 pair 数)を正式に追加する
+    // 反復数は SamplingPolicy が持つ(PromotionPolicy には置かない)
     GrayZone    struct{ Action string } // "inconclusive"(MVP)
-    MaxRepetitions int                  // 参考値。MVP では SamplingPolicy.InitialPairs を使う
 }
 // SamplingPolicy は複数 Run の編成(operator 所有)。MVP は adaptive sampling を行わない。
 // 「各 Run は fresh runtime」が不変条件なので runtime reset は設定項目にしない
@@ -661,6 +664,15 @@ type SamplingPolicy struct {
     OrderRule      string // "balanced-randomized-pairs"(実際の順序と seed は evidence に記録)
     MaxPairs       int    // adaptive 導入までの上限(MVP は InitialPairs と同値)
     SeedPolicy     string // "per-session-random" | "fixed:<n>"
+}
+
+// SamplingPlan は SamplingPolicy から Session が生成した実体。evidence には
+// {policy_digest, seed, pair_index, position} を記録する
+type SamplingPlan struct {
+    PolicyID     string
+    PolicyDigest string
+    Seed         int64
+    Pairs        []struct{ Index int; First, Second string }
 }
 
 type OptimizationProfile struct {

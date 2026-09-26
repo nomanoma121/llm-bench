@@ -73,6 +73,7 @@ const (
 ```
 
 - `Kind` と protocol の付与は**独立**する。`Kind` は operator の profile / 明示リクエストが決め、submit 時に snapshot として固定する。**recipe は protocol 名も Kind も指定できない**(experiment.Config に selector を足さない)
+- `Validate()` は **参照整合と MVP 制約を fail-closed で検査**する: `OptimizationProfile.Protocol/Policy/Sampling` の参照先が存在すること、`SamplingPolicy.InitialPairs == MaxPairs`(MVP は adaptive なし)、`PromotionPolicy.GrayZone.Action == "inconclusive"`、`Kind` が `visual|measurement` であること
 - `MeasurementProtocol` は `visual` にも `measurement` にも付与できる(visual run に所要時間・VRAM の evidence を付けるのは自由。review marker v2 はその両方を扱う)
 - 実行実装は分けるが**状態機械は共通**: `ExecutorRouter{visual: VisualExecutor, measurement: MeasurementExecutor}`
 - `measurement` は `output/` を作らない(single-file 契約の対象外)。`visual` は従来どおり `output/index.html` 必須
@@ -344,9 +345,9 @@ PromotionPolicy(採否の決め方):
   gray-zone action(inconclusive), allowed metric sources
 ```
 
-**MVP は adaptive sampling をしない**: `initial_pairs = 3`(= A/B 交互で 6 Run)で判定し、`Decide` は `accept | reject | inconclusive` の 3 値のみ。追加測定(`need_more_samples`)は adaptive を導入するときに正式に追加する。**各 Run は fresh runtime**(SandboxClaim/runtime プロセスは Run 所有で毎 Run 作り直す)を不変条件とし、runtime reset は設定項目にしない。
+**MVP は adaptive sampling をしない**: `initial_pairs = 3`(= A/B 交互で 6 Run)で判定し、`Decide` は `accept | reject | inconclusive` の 3 値のみ。追加測定(`need_more_samples`)は adaptive を導入するときに正式に追加する。**各 Run は fresh runtime**(SandboxClaim/runtime プロセスは Run 所有で毎 Run 作り直す)を不変条件とし、runtime reset は設定項目にしない。**反復数の責務は `SamplingPolicy` だけが持つ**(`PromotionPolicy` に反復数のフィールドを置かない)。
 
-保存先: `Run` に `MeasurementProtocolID / MeasurementProtocolJSON / MeasurementProtocolDigest`(submit 時 snapshot)。`PromotionPolicyID / PromotionPolicyJSON / PromotionPolicyDigest` は **D で型と canonical snapshot を定義**し、**永続化(session への束縛)は E** で行う。
+保存先: `Run` に `MeasurementProtocolID / MeasurementProtocolJSON / MeasurementProtocolDigest`(submit 時 snapshot)。`PromotionPolicyID / PromotionPolicyJSON / PromotionPolicyDigest` は **D で型と canonical snapshot を定義**し、**永続化(session への束縛)は E** で行う。**`SamplingPolicy` も同じ扱い**(D が型と canonical snapshot/digest、E が `OptimizationSession` への束縛と永続化)。3 つは snapshot・digest・保存先が揃って初めて `decide` が再現可能になる(§6.2 の `DecisionInput` に入る)。
 
 **選択入力は submit 時のみ**で、recipe からは指定できない:
 
@@ -468,7 +469,7 @@ required_improvement = max(absolute_floor, relative_floor * baseline_median)
 
 - 既存 `BenchmarkFingerprint` は visual A/B 用として据え置き(変更しない)
 - **`WorkloadDigest`** を新設する。**MVP では workload の部分選択を許さず**、`WorkloadDigest` = 「その run が実行した workload matrix 全体」の canonical digest(protocol の matrix をそのまま実行する)。したがって `SubmitOptions` と `RequestDigest` に workload selector は入れない。部分選択を導入する場合は `WorkloadSelector` と `WorkloadCase` の canonical schema を先に定義してから追加する
-- **`MeasurementProtocolDigest` は canonical snapshot 全体の SHA-256** と定義する(内訳を列挙しない)。内訳を列挙すると typed field を足したときに digest 対象から漏れる事故が起きるため。snapshot に含まれるのは schema 版、driver(ExecutionSpec: content digest・ExecMode・OutputMode・argv)、workload matrix(`WorkloadCase` の canonical 形)、warmup、KV 充填、反復数、実行順序の規則、runtime reset、required sources、collector(ExecutionSpec + interval)、validity 規則。**objective は含めない**(`PromotionPolicy` の所属)。**runtime identity(commit 等)も含めない**(§10)
+- **`MeasurementProtocolDigest` は canonical snapshot 全体の SHA-256** と定義する(内訳を列挙しない)。内訳を列挙すると typed field を足したときに digest 対象から漏れる事故が起きるため。snapshot に含まれるのは **1 Run 分の測定方法だけ**: schema 版、driver(ExecutionSpec: content digest・ExecMode・OutputMode・argv)、workload matrix(`WorkloadCase` の canonical 形)、warmup、KV 充填、within-run sampling、required sources、collector(ExecutionSpec + interval)、validity 規則。**objective は含めない**(`PromotionPolicy` の所属)、**runtime identity も含めない**(§10)、**pair 数・実行順・seed も含めない**(`SamplingPolicy` の所属。§6.1)
 - driver と collector は同じ `ExecutionSpec`(content digest / ExecMode / OutputMode)を使う
 - balanced randomization は「規則」が protocol、「実際の AB/BA 順と seed」が evidence と session 台帳に属する
 
@@ -483,6 +484,19 @@ OptimizationSession
 ```
 
 - **1 attempt = 1 Run**。`Round` = 1 候補変更 + build + 1..N run + 採否。`Session` = Issue から最終 PR まで
+- **`SamplingPlan`** = `SamplingPolicy` から Session が実際に生成した編成(実体)。台帳と evidence は「この Run が plan のどこに位置したか」を記録する:
+
+```go
+type SamplingPlan struct {           // Session が生成し、台帳に永続化する
+    PolicyID     string
+    PolicyDigest string
+    Seed         int64                // OrderRule の乱数 seed(再現用)
+    Pairs        []Pair               // 実行順に並ぶ
+}
+type Pair struct{ Index int; First, Second string } // Run ID。First/Second の順が AB/BA を表す
+```
+
+- evidence 側には `sampling: {policy_digest, seed, pair_index, position: "first"|"second"}` を記録する(1 Run の測定方法と、複数 Run の編成を混同しない)
 - 台帳は機械可読(round 表の正本)とし、人間向け round 表はここから生成できる
 - budget は operator 所有。Agent/Issue 側は**下げることだけ可能**:
 

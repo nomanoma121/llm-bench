@@ -35,6 +35,9 @@ func newRootCmd() *cobra.Command {
 		newServeCmd(&g),
 		newSandboxCmd(&g),
 		newReviewCmd(&g),
+		newAdoptCmd(&g),
+		newAdoptedCmd(&g),
+		newSiteCmd(&g),
 	)
 	return cmd
 }

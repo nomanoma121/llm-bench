@@ -12,6 +12,7 @@ import (
 	"github.com/nomanoma121/llm-bench/internal/adopt"
 	"github.com/nomanoma121/llm-bench/internal/operator"
 	"github.com/nomanoma121/llm-bench/internal/review"
+	"github.com/nomanoma121/llm-bench/internal/sitebuild"
 )
 
 func newAdoptCmd(g *globalFlags) *cobra.Command {
@@ -106,5 +107,35 @@ func newAdoptedVerifyCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&root, "root", "experiments", "experiments tree to verify")
+	return cmd
+}
+
+func newSiteCmd(g *globalFlags) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "site",
+		Short: "Static publication site operations (used by CI)",
+	}
+	cmd.AddCommand(newSiteBuildCmd())
+	return cmd
+}
+
+func newSiteBuildCmd() *cobra.Command {
+	var root, out string
+	cmd := &cobra.Command{
+		Use:   "build",
+		Short: "Generate the static site from adopted artifacts",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := sitebuild.Build(sitebuild.BuildOptions{ExperimentsRoot: root, Out: out}); err != nil {
+				return err
+			}
+			if err := sitebuild.VerifyOutput(out); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "site built from %s into %s\n", root, out)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&root, "root", "experiments", "experiments tree to publish")
+	cmd.Flags().StringVar(&out, "out", "_site", "output directory")
 	return cmd
 }

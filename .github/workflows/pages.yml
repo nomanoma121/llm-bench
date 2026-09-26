@@ -1,0 +1,70 @@
+name: pages
+
+# Permanent publication is a merge decision: pull requests verify and build,
+# and only pushes to main deploy (docs/architecture.md §4.12). The digest and
+# path checks live in Go, so the site toolchain never re-implements hashing.
+
+on:
+  pull_request:
+    paths:
+      - "experiments/**"
+      - "internal/**"
+      - "cmd/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/pages.yml"
+  push:
+    branches: [main]
+    paths:
+      - "experiments/**"
+      - "internal/**"
+      - "cmd/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Verify adopted artifacts
+        run: go run ./cmd/llmbench adopted verify --root experiments
+      - name: Build the site
+        run: go run ./cmd/llmbench site build --root experiments --out _site
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: _site
+          if-no-files-found: error
+
+  deploy:
+    needs: verify
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build the site
+        run: go run ./cmd/llmbench site build --root experiments --out _site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4

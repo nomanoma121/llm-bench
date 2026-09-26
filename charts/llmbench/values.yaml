@@ -14,16 +14,6 @@ harness:
   port: 8080
   retryInterval: 30s
 
-  browser:
-    image: ""
-    binary: /usr/bin/chromium
-    extraArgs: []
-    resources:
-      requests:
-        cpu: 100m
-        memory: 256Mi
-      limits:
-        memory: 1Gi
   resources:
     requests:
       cpu: 100m

@@ -1,8 +1,8 @@
-# llm-bench コントローラ実装設計書(v1.5)
+# llm-bench コントローラ実装設計書(v1.5.3)
 
 > この文書は `docs/design.md`(ドメイン要件)・`docs/usage.md`(機能仕様)・`AGENTS.md`(規約)を実装に落とすための設計 blueprint である。
 > ChatGPT 等の外部レビューに単体で渡せるよう、背景要件から実装方針までを自己完結して記述する。
-> ステータス: v1.5 — 外部レビュー 5 周目のブロッカー 2 件(依存循環の解消、Release 時のエラー意味論の一本化)+ 非ブロッカー 3 件を反映(§11)。確定後にマイルストーン 1 から実装開始。
+> ステータス: v1.5.3 — 設計レビュー(5 周)を経て、この設計に対する実装は完了し main にマージ済み。実装状況は §2.5、実装に伴う設計の確定事項は §11 を参照。
 
 ---
 
@@ -157,7 +157,22 @@ filestore ──▶ (標準ライブラリ)
 - `gitops → kube` は同一インテグレーション層内の参照として許容
 - `runner` は SDK を import しない。`SandboxClient` / `Git` / `Publisher` の interface を満たす実装を cmd が注入する
 
-### 2.5 採用しないもの
+### 2.5 実装状況
+
+この設計に対する実装は、設計書に続いて以下の単位で main に積み上げた:
+
+| 単位 | 内容 |
+|------|------|
+| run state machine | `experiment` / `operator` / `run`(write-ahead 状態機械+Engine)/ `runner`(local)/ `hook` / `filestore` / `provenance`(fingerprint)、CLI `validate`/`submit`/`status` |
+| serve + HTTP API | `httpapi`(認証・公開URL)/ dispatcher・graceful shutdown・loopback 制約・repository-relative path 強制・local target の HTTP 既定拒否 |
+| Sandbox runner | `sandbox`(決定論的 claim・Ready/削除の収束待ち・argv境界quote・detachプロセス)/ `runner.Sandbox`(commit照合・archive転送・readiness clamp・モデル digest pin) |
+| GitOps hook | `gitops`(状態+帰属の決定テーブル・同一revisionでのArgo収束・Pod消滅確認・rollback・drift拒否)/ `kube`(Argo CD・Deployment/Pod確認) |
+| 公開とレビュー | `pages`(非force・競合リトライで冪等公開)/ `runner.PublishFinalizer` / `issues`(bot_loginでfail-closed)/ `discord`(Issueリンクのみ)/ `review`(Issueが投票履歴の正、fingerprint検証) |
+| Kubernetes 協調 | `kube`(ConfigMap store=CAS、TargetLease=owner条件付き削除、Lease リーダー選出と喪失時の worker cancel、再選出) |
+
+未検証・未実装: 実クラスタでの e2e(Argo CD / Deployment / SandboxClaim の遷移)、マルチレプリカでの外部効果 fence の実証、Agent 最適化ループの接続、Git LFS の materialize。
+
+### 2.6 採用しないもの
 
 - DI コンテナ、wire コード生成、グローバルロガー
 - Argo CD 型付きクライアント(unstructured + 単一 source 限定)
@@ -484,7 +499,7 @@ func Load(path string) (Config, error)
 // - hook 順序不変条件(§4.6): BuildHookPlan の出力に対して、
 //   gitops が sandbox-claim より先に来ることを強制(違反は設定エラー)
 // - limits の正の値チェック
-func (c Config) ValidateRecipe(e experiment.Config) error
+func (c Config) ValidateRecipe(target string, readyTimeoutSeconds int) error // operator は experiment を import しない
 // - target allowlist 含有、Start.ReadyTimeoutSeconds ≤ MaxReadyDuration など recipe 側上限検証
 ```
 
@@ -509,21 +524,23 @@ func (c Config) ValidateRecipe(e experiment.Config) error
 type ProcessHandle = string
 
 type SandboxClient interface { // 実装: internal/sandbox。argv を受け取る
-    EnsureSandboxClaim(ctx, runID, warmPool string) error
+    // Acquire は Ready になるまで完了しない(未Readyは ready=false)。
+    EnsureSandboxClaim(ctx, claimName, warmPool string) (ready bool, err error)
     // 長寿命プロセス管理。冪等: 生存していれば既存 handle を返す
-    Start(ctx, runID string, argv []string, env map[string]string, cwd string) (ProcessHandle, error)
-    Stop(ctx, runID string, h ProcessHandle) error // 冪等
-    Exec(ctx, runID string, argv []string, env map[string]string, cwd string) (stdout, stderr []byte, err error)
-    Put(ctx, runID string, r io.Reader, dest string) error
-    Pull(ctx, runID, path string) ([]byte, error)
-    ReleaseSandboxClaim(ctx, runID string) error
+    Start(ctx, runID, claimName string, argv []string, env map[string]string, cwd string) (handle string, err error)
+    Stop(ctx, claimName, handle string) error // 冪等
+    Exec(ctx, claimName string, argv []string, env map[string]string, cwd string) (stdout, stderr []byte, exitCode int, err error)
+    Put(ctx, claimName string, r io.Reader, dest string) error
+    Pull(ctx, claimName, path string) ([]byte, error)
+    // Foreground 削除後に claim の消滅(= Pod/GPU のカスケード完了)を待つ。
+    ReleaseSandboxClaim(ctx, claimName string) (released bool, err error)
 }
 // ExpectedFile は provenance パッケージで定義する(runner.Git が要求すると
 // provenance 実装が runner を import する必要が生じ循環するため。runner → provenance のみ許可)
 type ExpectedFile struct{ Path, SHA256 string } // snapshot 由来の期待値
 type Git interface { // 実装: internal/provenance
     VerifyCommit(ctx, commit string, expected []ExpectedFile) error
-    Archive(ctx, commit string) (io.Reader, error)
+    Archive(ctx, commit string) ([]byte, error) // tar ストリーム
 }
 type Publisher interface { // 実装: internal/pages
     Publish(ctx context.Context, runID string, html []byte) (publicURL string, err error)
@@ -576,7 +593,7 @@ rollback(pause PR が未 merge のとき):
 
 - PR は head ブランチ名(`llmbench/pause-<runID>` / `llmbench/restore-<runID>`)で検索して再利用 → リトライで PR 重複なし
 - クラッシュしても決定テーブルが同一の動作に収束する(「マージ直後に死んだ」ケースも merged 判定で継続)
-- Argo CD は unstructured で単一 source のみ。`Synced` at base ブランチ rev、Deployment/Pod の停止/`active_replicas` 到達を `kube` の関数で確認
+- Argo CD は unstructured で単一 source のみ。**判定で manifest を読んだのと同じ snapshot revision(base SHA)** で `Synced` であること、Deployment/Pod の停止/`active_replicas` 到達を `kube` の関数で確認
 - **順序不変条件**: gitops hook は sandbox-claim hook より先に acquire されることを operator.Load が検証(§4.2)。release は engine が厳密逆順で実行するため「GPU claim → 停止確認 → GPU 解放 → 復帰確認」が構造的に保証される
 
 ### 4.7 kube(client-go)
@@ -593,13 +610,13 @@ type FingerprintInput struct {
     BenchmarkSchemaVersion string
     ContextSize            int
     RuntimeSignature       string // Runtime.Engine/Variant(比較条件に含む)
+    Generation             string // recipe の generation(temperature/seed 等)の canonical JSON
     TargetKind             string // local | sandbox
     ControllerVersion      string
 }
 func Fingerprint(in FingerprintInput) string // canonical JSON → sha256
-// milestone 5 までに: recipe に generation フィールド(temperature・seed 等の生成条件)を追加し、
-// canonical 化した上で FingerprintInput に含める。argv の中にしかない生成パラメータは
-// 条件の違う 2 run を比較可能にしてしまうため、明示フィールドへ移す
+// recipe の generation は実装済み: 未設定と明示 0 を区別するポインタ型で保持し、
+// canonical JSON を fingerprint に含める(サンプリング条件だけ違う run は比較不能)。
 ```
 
 - A/B/tie 投票の受理条件: **両 run の fingerprint 一致**。モデル digest は**記録値**であり一致条件ではない(モデル比較こそ本ベンチの目的)
@@ -646,13 +663,12 @@ llmbench validate <experiment.yaml>
 llmbench submit <experiment.yaml> [--commit <full-sha>]     # Engine.Drain で同期駆動
 llmbench status <run-id>
 llmbench serve --config server.yaml [--state .state] [--output runs]
-                [--retry-interval 30s] [--coordination-ns <ns>] [--lease-name <name>]
-                [--kubeconfig <path>]
+                [--retry-interval 30s] [--coordination-namespace <ns>] [--lease-name <name>] [--kubeconfig <path>]
 llmbench sandbox --namespace <ns> acquire <run-id> <warm-pool>
                 | run <claim> '<sh-command>' | pull <claim> <src> <dst> | release <run-id>
-llmbench review request <baseline-run-id> <candidate-run-id> --issue <n>
-        | vote <review-id> --choice A|B|tie|invalid [--notes ...]
-        | status <review-id>
+llmbench review request <baseline-run-id> <candidate-run-id> --issue <n> --config <operator.yaml>
+        | vote <review-id> --choice A|B|tie|invalid [--notes ...] --config <operator.yaml>
+        | status <review-id> --config <operator.yaml>
 ```
 
 環境変数: `LLMBENCH_API_TOKEN`、`LLMBENCH_GITHUB_TOKEN`、`LLMBENCH_DISCORD_WEBHOOK`。
@@ -718,6 +734,8 @@ llmbench review request <baseline-run-id> <candidate-run-id> --issue <n>
 
 ## 11. 変更履歴
 
+- v1.5.3: 実装完了に伴う更新 — 実装状況の表を追加。`generation`(temperature/seed 等)を recipe に追加し BenchmarkFingerprint に含める契約、review は Issue を投票履歴の正とし `bot_login` を必須とすること、GitOps は判定と Argo 収束を同一 revision で行うこと、Sandbox claim は Ready/削除完了まで収束待ちすることを明記
+- v1.5.2: 実装フィードバックの反映 — `internal/hook`(コマンドフック)を構成に追加、fsync の失敗は握り潰さず snapshot 書き込み自体を失敗させる、公開は静的サイト(専用 origin + CSP)で行いスクリーンショットは持たない
 - v1.5.1: OK 判定時に指摘された後続対応事項を設計に先折り込み — ProcessHandle を string に、ExpectedFile の所有を provenance へ、ErrVersionConflict 時の worker 動作(再 LoadRun・外部効果禁止)を明記、BuildHookPlan(t, runID)、Drain(ctx, runID)、旧 rollback 表現の削除
 - v1.5: 外部レビュー 5 周目の反映 — **blocker**: ① PlannedHook/GitOpsPlan/SandboxPlan を operator パッケージへ移動し operator.BuildHookPlan の戻り型との依存循環を解消(run → operator のみ)、② Release のエラー意味論を一本化(ErrPending 以外の error も released にせず・TargetLease を解放せず・terminal に進まない。ErrPending は UI 分類。ReleaseTargetLease も同様)、AcquireTargetLease の非 busy error は failure→releasing(冪等解放で回収)。**非 blocker**: SandboxClient の用語統一(EnsureSandboxClaim)、Git.VerifyCommit を期待 SHA256 明示型(expected []ExpectedFile)へ変更、テスト方針の旧 rollback 表現を修正
 - v1.4: 外部レビュー 4 周目の反映 — **blocker**: ① Acquire 失敗の rollback を専用経路から廃止し共通 releasing に合流(解放対象 = acquiring/acquired/releasing、not_started は解放しない)、② TargetLease 解放契約に「存在しない場合 = 成功(NotFound = success)」を明記し完全冪等化、③ invoking 復帰の制御フローを明示(continue で再 Execute を構造的に防止)+ completed+running の状態破損扱い。**非 blocker**: GitOps 決定テーブルに drift ケース(自 PR merged なのに manifest が逆方向 = 永続エラー)を追加、BuildHookPlan を順序決定の唯一の箇所として定義、Submit の snapshot 保存順を明示(temp → atomic rename → SaveRun、孤立 dir は GC)、用語を TargetLease / SandboxClaim に分離(ClaimState→LeaseState、ClaimStore→LeaseStore)、Fingerprint に RuntimeSignature を追加し milestone 5 で generation 条件フィールドを計画

@@ -18,6 +18,20 @@ targets:
     sandbox:
       namespace: bench
       warm_pool: demo-llmbench
-visual:
-  width: 1280
-  height: 720
+
+site:
+  owner: example-owner
+  repository: llm-bench-site
+  branch: main
+  # A header-capable host (for example Cloudflare Pages) so the CSP in
+  # extra_files is actually served; GitHub Pages cannot send custom headers.
+  base_url: https://llm-bench-site.pages.dev
+  extra_files:
+    _headers: |
+      /*
+        Content-Security-Policy: default-src 'none'; script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'
+review:
+  owner: example-owner
+  repository: llm-bench
+  bot_login: bench-app[bot]
+  discord_webhook_env: LLMBENCH_DISCORD_WEBHOOK

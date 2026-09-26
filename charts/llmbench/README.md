@@ -4,7 +4,7 @@
 
 ## Intended values
 
-- `harness.image.*`, `harness.repositoryPVC`, `harness.dataPVC`, `harness.apiTokenSecret` (a Secret with key `token`), `harness.port`, `harness.retryInterval`: the single-replica harness Pod, its repository/data volumes and the API token. Installing with more than one replica requires leader-election fencing that is still unproven end-to-end, so templates should keep `replicas: 1`.
+- `harness.image.*`, `harness.repositoryPVC`, `harness.dataPVC`, `harness.apiTokenSecret` (a Secret with key `token`), `harness.port`, `harness.retryInterval`: the single-replica harness Pod, its repository/data volumes and the API token. Multi-replica operation requires external-effect fencing that is still unproven end-to-end, so future templates must keep one replica.
 - `harness.githubTokenSecret` (key `token`): needed when an operator target configures `gitops`, `site` publication, or `operatorConfig.review`. The token belongs to the harness only; it must never reach the Sandbox or any browser/rendering container.
 - `operatorConfig.targets.*`: the operator configuration that is mounted into the harness. Local executor targets must be rejected in a cluster deployment so untrusted experiment commands never run inside the credentialed harness Pod.
 - `sandbox.*`: the Agent Sandbox development image, sandboxd image, GPU ResourceClaimTemplate, workspace storage class and optional model/cache PVCs. Keep the WarmPool at zero idle replicas; a claim is acquired only for an explicit run.

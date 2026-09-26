@@ -499,7 +499,7 @@ func Load(path string) (Config, error)
 // - hook 順序不変条件(§4.6): BuildHookPlan の出力に対して、
 //   gitops が sandbox-claim より先に来ることを強制(違反は設定エラー)
 // - limits の正の値チェック
-func (c Config) ValidateRecipe(e experiment.Config) error
+func (c Config) ValidateRecipe(target string, readyTimeoutSeconds int) error // operator は experiment を import しない
 // - target allowlist 含有、Start.ReadyTimeoutSeconds ≤ MaxReadyDuration など recipe 側上限検証
 ```
 
@@ -527,11 +527,11 @@ type SandboxClient interface { // 実装: internal/sandbox。argv を受け取�
     // Acquire は Ready になるまで完了しない(未Readyは ready=false)。
     EnsureSandboxClaim(ctx, claimName, warmPool string) (ready bool, err error)
     // 長寿命プロセス管理。冪等: 生存していれば既存 handle を返す
-    Start(ctx, runID string, argv []string, env map[string]string, cwd string) (ProcessHandle, error)
-    Stop(ctx, runID string, h ProcessHandle) error // 冪等
-    Exec(ctx, runID string, argv []string, env map[string]string, cwd string) (stdout, stderr []byte, err error)
-    Put(ctx, runID string, r io.Reader, dest string) error
-    Pull(ctx, runID, path string) ([]byte, error)
+    Start(ctx, runID, claimName string, argv []string, env map[string]string, cwd string) (handle string, err error)
+    Stop(ctx, claimName, handle string) error // 冪等
+    Exec(ctx, claimName string, argv []string, env map[string]string, cwd string) (stdout, stderr []byte, exitCode int, err error)
+    Put(ctx, claimName string, r io.Reader, dest string) error
+    Pull(ctx, claimName, path string) ([]byte, error)
     // Foreground 削除後に claim の消滅(= Pod/GPU のカスケード完了)を待つ。
     ReleaseSandboxClaim(ctx, claimName string) (released bool, err error)
 }

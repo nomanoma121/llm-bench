@@ -20,14 +20,14 @@
 
 - [x] Resolve target IDs through operator configuration; permit only named targets.
 - [x] Create and reconcile GitHub manifest pause/restore PRs through an operator-configured YAML scalar path; wait for merge. Cluster convergence still needs verification.
-- [x] Gate GitOps hook completion on the configured single-source Argo CD Application's synced revision and the inference Deployment/Pods stopped or ready state. Verify with a real cluster before production use.
+- [x] Gate GitOps hook completion on the configured single-source Argo CD Application being Synced at the same manifest revision the decision read (snapshot-pinned), and on the inference Deployment/Pods being fully stopped or ready. Verify with a real cluster before production use.
 - [x] Add a single-run Agent Sandbox executor using an operator-owned SandboxTemplate and GPU ResourceClaim; send a Git commit snapshot, invoke build/runtime commands in the Sandbox, and collect HTML/logs.
 - [x] Add the official Go SDK access layer for named SandboxClaims, port-forwarded sandboxd commands, file transfer, and explicit release; expose manual operations in the CLI.
 - [ ] Keep the Agent session outside the Sandbox; reattach to its Claim after backing Pod replacement and avoid replaying non-idempotent commands.
 - [ ] Support multiple attempts within an optimization round; release GPU before human review. Keep the SandboxWarmPool at zero idle replicas.
-- [ ] Keep coordination leases as injected acquire/release hooks. Do not add SSH execution.
-- [ ] Persist cluster run/session state durably and enforce one active run per target across harness replicas. Kubernetes ConfigMap run records and atomic target claims are implemented for the benchmark workflow; durable Agent conversation and external-effect fencing are not.
-- [ ] Add leader election and failover tests; spread harness replicas across nodes with Pod anti-affinity. Lease election and fake-client tests exist; the Chart still fixes one replica because failover is not proven safe end-to-end.
+- [x] Keep GPU claims and inference pause/restore as operator-injected hooks; the target lease is engine-managed (acquired write-ahead, released as the final step of `releasing`). Do not add SSH execution.
+- [ ] Persist cluster run/session state durably and enforce one active run per target across harness replicas. Kubernetes ConfigMap run records, atomic target leases and leader election (with worker cancellation on lease loss) are implemented; durable Agent conversation and proven external-effect fencing are not.
+- [ ] Add failover tests and spread harness replicas across nodes with Pod anti-affinity. Lease election (including re-election after loss) has fake-client tests; multi-replica stays disabled because external-effect fencing is not proven safe end-to-end, and the chart has no templates yet.
 - [ ] Package the harness, RBAC, configuration, and SandboxTemplate/WarmPool integration as a Helm Chart.
 - [x] Add an experimental Helm Chart values scaffold for those resources (values-only scaffold: no `templates/` yet, so it installs nothing). The HTTP path can select a Sandbox target; multi-replica deployment remains disabled until coordination and recovery are implemented.
 - [ ] Isolate generated HTML from the credentialed harness across a network boundary. Publication now writes run output to a separate static site (dedicated origin, CSP required); a hostile-HTML review workload should still not share the harness network.

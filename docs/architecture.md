@@ -593,7 +593,7 @@ rollback(pause PR が未 merge のとき):
 
 - PR は head ブランチ名(`llmbench/pause-<runID>` / `llmbench/restore-<runID>`)で検索して再利用 → リトライで PR 重複なし
 - クラッシュしても決定テーブルが同一の動作に収束する(「マージ直後に死んだ」ケースも merged 判定で継続)
-- Argo CD は unstructured で単一 source のみ。`Synced` at base ブランチ rev、Deployment/Pod の停止/`active_replicas` 到達を `kube` の関数で確認
+- Argo CD は unstructured で単一 source のみ。**判定で manifest を読んだのと同じ snapshot revision(base SHA)** で `Synced` であること、Deployment/Pod の停止/`active_replicas` 到達を `kube` の関数で確認
 - **順序不変条件**: gitops hook は sandbox-claim hook より先に acquire されることを operator.Load が検証(§4.2)。release は engine が厳密逆順で実行するため「GPU claim → 停止確認 → GPU 解放 → 復帰確認」が構造的に保証される
 
 ### 4.7 kube(client-go)
@@ -664,7 +664,6 @@ llmbench submit <experiment.yaml> [--commit <full-sha>]     # Engine.Drain で�
 llmbench status <run-id>
 llmbench serve --config server.yaml [--state .state] [--output runs]
                 [--retry-interval 30s] [--coordination-namespace <ns>] [--lease-name <name>] [--kubeconfig <path>]
-                [--kubeconfig <path>]
 llmbench sandbox --namespace <ns> acquire <run-id> <warm-pool>
                 | run <claim> '<sh-command>' | pull <claim> <src> <dst> | release <run-id>
 llmbench review request <baseline-run-id> <candidate-run-id> --issue <n> --config <operator.yaml>

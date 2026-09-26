@@ -8,10 +8,12 @@
 package adopt
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -186,8 +188,9 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 
 	// Authorization runs under the lock on the write path: two runs with
 	// identical bytes must not trade places after both passed the baseline
-	// check.
-	reviewRef, err := authorize(ctx, opts, r, digest, model)
+	// check. A dry run evaluates the same predicate against the projected
+	// state instead of the filesystem it must not touch.
+	reviewRef, err := authorize(ctx, opts, intoAbs, current, r, digest, model)
 	if err != nil {
 		return Result{}, err
 	}
@@ -210,7 +213,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if !opts.Write {
 		return res, nil
 	}
-	if err := writeStaged(intoAbs, r.ID, sourceDir, manifest); err != nil {
+	if err := writeStaged(intoAbs, r.ID, sourceDir, manifest, model, experimentID); err != nil {
 		return Result{}, err
 	}
 	return res, nil
@@ -248,7 +251,7 @@ func projectRecovery(intoAbs, model, experimentID string) (*Manifest, error) {
 	return nil, nil
 }
 
-func authorize(ctx context.Context, opts Options, r run.Run, digest, model string) (*ReviewRef, error) {
+func authorize(ctx context.Context, opts Options, intoAbs string, projected *Manifest, r run.Run, digest, model string) (*ReviewRef, error) {
 	if opts.ReviewID != "" {
 		if opts.Decision == nil {
 			return nil, errors.New("adopt: --review requires the operator configuration to read the Issue")
@@ -276,7 +279,7 @@ func authorize(ctx context.Context, opts Options, r run.Run, digest, model strin
 	// No review: allowed only when the model has no adopted artifact yet. The
 	// predicate is per model, not per destination, so picking a fresh
 	// experiment ID cannot bypass review.
-	adopted, err := adoptedForModel(opts.Root, model)
+	adopted, err := adoptedForModel(opts.Root, intoAbs, projected, model)
 	if err != nil {
 		return nil, err
 	}
@@ -289,7 +292,7 @@ func authorize(ctx context.Context, opts Options, r run.Run, digest, model strin
 // adoptedForModel counts valid manifests under experiments/<model>. An
 // unreadable or invalid manifest is a hard error: it must never be mistaken
 // for "no adoption yet".
-func adoptedForModel(root, model string) (int, error) {
+func adoptedForModel(root, intoAbs string, projected *Manifest, model string) (int, error) {
 	base := filepath.Join(root, "experiments", model)
 	entries, err := os.ReadDir(base)
 	if errors.Is(err, os.ErrNotExist) {
@@ -306,7 +309,20 @@ func adoptedForModel(root, model string) (int, error) {
 		if !e.IsDir() {
 			continue
 		}
-		m, err := readManifestDir(filepath.Join(base, e.Name(), "output"), model, e.Name())
+		dir := filepath.Join(base, e.Name())
+		if dir == intoAbs {
+			// Count the state the caller is evaluating rather than what is on
+			// disk: a dry run projects a completed swap, a write runs after
+			// recovery.
+			if projected != nil {
+				count++
+			}
+			continue
+		}
+		// Project the recovery table for every destination, not just the one
+		// being adopted: a completed-but-unswapped staging directory already
+		// means the model has an adoption, and both modes must agree.
+		m, err := projectRecovery(dir, model, e.Name())
 		if err != nil {
 			return 0, err
 		}
@@ -551,10 +567,15 @@ func readManifestFile(path string) (*Manifest, error) {
 		return nil, err
 	}
 	var m Manifest
-	dec := json.NewDecoder(strings.NewReader(string(b)))
+	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&m); err != nil {
 		return nil, fmt.Errorf("%w: %v", errInvalidManifest, err)
+	}
+	// A second value after the first must be rejected: trailing data means the
+	// file is not the manifest we validated.
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%w: trailing data after the manifest", errInvalidManifest)
 	}
 	return &m, nil
 }
@@ -661,7 +682,7 @@ func safeRel(rel string) bool {
 
 // writeStaged writes the payload and manifest to a staging directory, then
 // swaps it into place with a backup so an interrupted run stays recoverable.
-func writeStaged(intoAbs, runID, sourceDir string, m Manifest) error {
+func writeStaged(intoAbs, runID, sourceDir string, m Manifest, model, experimentID string) error {
 	tmp := filepath.Join(intoAbs, ".adopt-tmp-"+runID)
 	bak := filepath.Join(intoAbs, ".adopt-bak-"+runID)
 	if err := os.RemoveAll(tmp); err != nil {
@@ -693,6 +714,16 @@ func writeStaged(intoAbs, runID, sourceDir string, m Manifest) error {
 	}
 	if err := syncTree(tmp); err != nil {
 		return err
+	}
+	// The staging directory must satisfy the same completeness predicate CI
+	// uses before it replaces anything: schema, placement, inventory, digest
+	// and the single-file contract. A failure leaves the old adoption intact.
+	complete, err := tmpComplete(tmp, model, experimentID)
+	if err != nil {
+		return err
+	}
+	if !complete {
+		return fmt.Errorf("adopt: staged manifest for run %s did not validate; refusing to swap", runID)
 	}
 	outputDir := filepath.Join(intoAbs, "output")
 	if _, err := os.Lstat(outputDir); err == nil {

@@ -692,3 +692,131 @@ func TestDryRunProjectsTheRecoveryTable(t *testing.T) {
 		t.Fatal("expected ambiguous staging directories to fail closed in dry-run too")
 	}
 }
+
+func TestManifestWithTrailingDataIsRejected(t *testing.T) {
+	opts, root := fixture(t, "<html/>")
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "experiments", model, "exp-1", "output", ManifestName)
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(body, []byte("\n{\"extra\":true}\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Verify(filepath.Join(root, "experiments")); err == nil {
+		t.Fatal("expected trailing data to be rejected")
+	}
+	if _, err := Run(context.Background(), opts); err == nil {
+		t.Fatal("adopt must not treat a manifest with trailing data as valid")
+	}
+}
+
+func TestAdoptRefusesAManifestCIWouldReject(t *testing.T) {
+	// An incomplete run record cannot produce a valid manifest; the swap must
+	// not happen, and an existing adoption must stay intact.
+	first, root := fixture(t, "<html/>")
+	if _, err := Run(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := os.ReadFile(filepath.Join(root, "experiments", model, "exp-1", "output", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second, _ := fixture(t, "<html/>")
+	second.Root = first.Root
+	second.Into = "experiments/example-model/exp-2"
+	store := second.Store.(*fakeStore)
+	r := store.runs[runID]
+	r.Experiment = "experiments/example-model/exp-2/config.yaml"
+	r.Fingerprint = ""
+	store.runs[runID] = r
+	if _, err := Run(context.Background(), second); err == nil {
+		t.Fatal("expected the missing fingerprint to be refused")
+	}
+	if _, err := os.Stat(filepath.Join(root, "experiments", model, "exp-2", "output")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("no payload may be written for an invalid manifest: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "experiments", model, "exp-1", "output", "index.html")); string(got) != string(payload) {
+		t.Fatal("the existing adoption must stay intact")
+	}
+}
+
+func TestDryRunAndWriteAgreeOnProjectedRecovery(t *testing.T) {
+	// A completed staging directory from run A means the model already has an
+	// adoption: both dry-run and write must require --review for a different
+	// run with identical bytes.
+	opts, root := fixture(t, "<html/>")
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	expDir := filepath.Join(root, "experiments", model, "exp-1")
+	if err := os.Rename(filepath.Join(expDir, "output"), filepath.Join(expDir, ".adopt-tmp-"+runID)); err != nil {
+		t.Fatal(err)
+	}
+	dr := opts
+	dr.Write = false
+	dry, err := Run(context.Background(), dr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dry.NoOp {
+		t.Fatalf("dry run must project the completed swap: %+v", dry)
+	}
+	written, err := Run(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !written.NoOp {
+		t.Fatalf("write must reach the same conclusion: %+v", written)
+	}
+}
+
+func TestDryRunAuthorizationUsesTheProjectedState(t *testing.T) {
+	// Run A is complete but still in staging; adopting a *different* run B with
+	// identical bytes must require a review in both modes, because the
+	// projection shows the model already has an adoption.
+	opts, root := fixture(t, "<html/>")
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	expDir := filepath.Join(root, "experiments", model, "exp-1")
+	payload, err := os.ReadFile(filepath.Join(expDir, "output", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(expDir, "output"), filepath.Join(expDir, ".adopt-tmp-"+runID)); err != nil {
+		t.Fatal(err)
+	}
+	// A second run with the same bytes and the same model but another
+	// experiment directory.
+	const runB = "fedcba9876543210fedcba9876543210"
+	other, _ := fixture(t, string(payload))
+	other.Root = root
+	other.RunID = runB
+	other.Into = "experiments/example-model/exp-2"
+	store := other.Store.(*fakeStore)
+	rb := store.runs[runID]
+	rb.ID = runB
+	rb.Experiment = "experiments/example-model/exp-2/config.yaml"
+	store.runs = map[string]run.Run{runB: rb}
+	store.dirs = map[string]string{runB: store.dirs[runID]}
+	// Recompute the recorded digest for the copied payload.
+	digest, err := provenance.ArtifactDigest(filepath.Join(store.dirs[runB], "output"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rb.Artifacts.ArtifactDigest = digest
+	store.runs[runB] = rb
+
+	other.Write = false
+	if _, err := Run(context.Background(), other); err == nil {
+		t.Fatal("dry run must require a review once the projection shows an adoption")
+	}
+	if _, err := Run(context.Background(), other); err == nil {
+		t.Fatal("write must require a review in the same state")
+	}
+}

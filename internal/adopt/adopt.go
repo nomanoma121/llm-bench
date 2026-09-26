@@ -140,13 +140,32 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		return Result{}, fmt.Errorf("adopt: artifact changed after sealing (%s != %s)", digest, r.Artifacts.ArtifactDigest)
 	}
 
-	// Decide the destination state and the review evidence. A dry run must
-	// not touch the filesystem at all (no lock file, no recovery of an
-	// interrupted swap): it only reports what a write would do.
-	current, err := readManifest(intoAbs)
+	// Decide the destination state and the review evidence.
+	var current *Manifest
+	var release func()
+	if opts.Write {
+		// The write path serializes the destination: recovery, the manifest
+		// decision, authorization, staging, swap and cleanup all run under the
+		// lock, so a concurrent adoption cannot slip between the checks.
+		release, err = lockDestination(intoAbs)
+		if err != nil {
+			return Result{}, err
+		}
+		defer release()
+		if err := recoverDestination(intoAbs, model, experimentID); err != nil {
+			return Result{}, err
+		}
+		current, err = readManifestDir(filepath.Join(intoAbs, "output"), model, experimentID)
+	} else {
+		// A dry run must not touch the filesystem, but it must still report the
+		// state a write would produce: project the same recovery decision table
+		// read-only instead of looking only at output/.
+		current, err = projectRecovery(intoAbs, model, experimentID)
+	}
 	if err != nil {
 		return Result{}, err
 	}
+
 	res := Result{Destination: intoAbs}
 	switch {
 	case current != nil && current.RunID == r.ID && current.ArtifactDigest == digest:
@@ -165,6 +184,9 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		res.Replaced = true
 	}
 
+	// Authorization runs under the lock on the write path: two runs with
+	// identical bytes must not trade places after both passed the baseline
+	// check.
 	reviewRef, err := authorize(ctx, opts, r, digest, model)
 	if err != nil {
 		return Result{}, err
@@ -188,41 +210,44 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if !opts.Write {
 		return res, nil
 	}
-
-	// The write path serializes the destination: recovery, the checks above,
-	// staging, swap and cleanup all happen while the lock is held.
-	unlock, err := lockDestination(intoAbs)
-	if err != nil {
-		return Result{}, err
-	}
-	defer unlock()
-	if err := recoverDestination(intoAbs); err != nil {
-		return Result{}, err
-	}
-	// Re-read under the lock: another process may have adopted meanwhile.
-	locked, err := readManifest(intoAbs)
-	if err != nil {
-		return Result{}, err
-	}
-	if locked != nil {
-		if locked.RunID == r.ID && locked.ArtifactDigest == digest {
-			res.Manifest = *locked
-			res.NoOp = true
-			return res, nil
-		}
-		if locked.ArtifactDigest != digest {
-			return Result{}, fmt.Errorf("adopt: %s already holds a different artifact (run %s)", opts.Into, locked.RunID)
-		}
-	}
 	if err := writeStaged(intoAbs, r.ID, sourceDir, manifest); err != nil {
 		return Result{}, err
 	}
 	return res, nil
 }
 
-// authorize enforces the review predicate: an A/B decision naming this run and
-// digest, or, only for a model that has no adopted artifact at all, an explicit
-// review-less baseline.
+// projectRecovery applies the recovery decision table without changing
+// anything, so a dry run reports the same outcome a write would produce.
+func projectRecovery(intoAbs, model, experimentID string) (*Manifest, error) {
+	state, err := inspect(intoAbs)
+	if err != nil {
+		return nil, err
+	}
+	from := func(dir string) (*Manifest, error) {
+		return readManifestDir(dir, model, experimentID)
+	}
+	switch {
+	case state.output:
+		// output/ stays authoritative regardless of leftovers.
+		return from(filepath.Join(intoAbs, "output"))
+	case state.tmp != "":
+		complete, err := tmpComplete(state.tmp, model, experimentID)
+		if err != nil {
+			return nil, err
+		}
+		if complete {
+			return from(state.tmp)
+		}
+		if state.bak != "" {
+			return from(state.bak)
+		}
+		return nil, nil
+	case state.bak != "":
+		return from(state.bak)
+	}
+	return nil, nil
+}
+
 func authorize(ctx context.Context, opts Options, r run.Run, digest, model string) (*ReviewRef, error) {
 	if opts.ReviewID != "" {
 		if opts.Decision == nil {
@@ -275,10 +300,13 @@ func adoptedForModel(root, model string) (int, error) {
 	}
 	count := 0
 	for _, e := range entries {
+		if err := checkDirEntry(base, e); err != nil {
+			return 0, err
+		}
 		if !e.IsDir() {
 			continue
 		}
-		m, err := readManifest(filepath.Join(base, e.Name()))
+		m, err := readManifestDir(filepath.Join(base, e.Name(), "output"), model, e.Name())
 		if err != nil {
 			return 0, err
 		}
@@ -355,14 +383,14 @@ type recoveryEntry struct {
 
 // recoverDestination brings a destination left behind by an interrupted
 // adoption back to a state the decision table can interpret.
-func recoverDestination(intoAbs string) error {
+func recoverDestination(intoAbs, model, experimentID string) error {
 	state, err := inspect(intoAbs)
 	if err != nil {
 		return err
 	}
 	switch {
 	case state.tmp != "" && state.bak != "":
-		complete, err := tmpComplete(state.tmp)
+		complete, err := tmpComplete(state.tmp, model, experimentID)
 		if err != nil {
 			return err
 		}
@@ -385,7 +413,7 @@ func recoverDestination(intoAbs string) error {
 		}
 		return syncDir(intoAbs)
 	case state.tmp != "" && !state.output:
-		complete, err := tmpComplete(state.tmp)
+		complete, err := tmpComplete(state.tmp, model, experimentID)
 		if err != nil {
 			return err
 		}
@@ -401,7 +429,9 @@ func recoverDestination(intoAbs string) error {
 			return err
 		}
 		return syncDir(intoAbs)
-	case state.bak != "" && state.output:
+	case state.bak != "" && state.output, state.tmp != "" && state.output:
+		// The completed adoption in output/ is authoritative; leftovers are
+		// garbage from an interrupted swap.
 		return cleanup(intoAbs, state)
 	}
 	return nil
@@ -462,7 +492,7 @@ func cleanup(intoAbs string, e recoveryEntry) error {
 
 // tmpComplete reports whether a staging directory holds a complete, valid
 // adoption. Anything short of that is discarded (fail closed).
-func tmpComplete(dir string) (bool, error) {
+func tmpComplete(dir, model, experimentID string) (bool, error) {
 	m, err := readManifestFile(filepath.Join(dir, ManifestName))
 	if err != nil {
 		// A missing or invalid manifest means the staging directory is
@@ -475,6 +505,9 @@ func tmpComplete(dir string) (bool, error) {
 	if err := validateManifestAgainst(dir, m); err != nil {
 		return false, nil
 	}
+	if err := validatePlacement(m, model, experimentID); err != nil {
+		return false, nil
+	}
 	return true, nil
 }
 
@@ -484,8 +517,7 @@ var errInvalidManifest = errors.New("adopt: invalid manifest")
 // nil when the destination holds no manifest (an unadopted placeholder or
 // empty directory). A manifest that exists but does not validate is a hard
 // error: treating it as "no adoption yet" would be fail-open.
-func readManifest(intoAbs string) (*Manifest, error) {
-	dir := filepath.Join(intoAbs, "output")
+func readManifestDir(dir, model, experimentID string) (*Manifest, error) {
 	m, err := readManifestFile(filepath.Join(dir, ManifestName))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -496,7 +528,21 @@ func readManifest(intoAbs string) (*Manifest, error) {
 	if err := validateManifestAgainst(dir, m); err != nil {
 		return nil, err
 	}
+	if err := validatePlacement(m, model, experimentID); err != nil {
+		return nil, err
+	}
 	return m, nil
+}
+
+// validatePlacement checks that a manifest describes the directory holding it.
+func validatePlacement(m *Manifest, model, experimentID string) error {
+	if m.Model != model {
+		return fmt.Errorf("%w: manifest model %q does not match directory %q", errInvalidManifest, m.Model, model)
+	}
+	if m.ExperimentID != experimentID {
+		return fmt.Errorf("%w: manifest experiment_id %q does not match directory %q", errInvalidManifest, m.ExperimentID, experimentID)
+	}
+	return nil
 }
 
 func readManifestFile(path string) (*Manifest, error) {

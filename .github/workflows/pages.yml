@@ -5,14 +5,9 @@ name: pages
 # path checks live in Go, so the site toolchain never re-implements hashing.
 
 on:
+  # Every pull request runs the verification so it can be a required check;
+  # pushes are restricted because only experiment changes need a redeploy.
   pull_request:
-    paths:
-      - "experiments/**"
-      - "internal/**"
-      - "cmd/**"
-      - "go.mod"
-      - "go.sum"
-      - ".github/workflows/pages.yml"
   push:
     branches: [main]
     paths:
@@ -29,6 +24,7 @@ permissions:
 
 jobs:
   verify:
+    name: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,6 +42,7 @@ jobs:
           if-no-files-found: error
 
   deploy:
+    name: deploy
     needs: verify
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest

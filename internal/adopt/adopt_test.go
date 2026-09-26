@@ -550,13 +550,15 @@ func TestDryRunTouchesNothing(t *testing.T) {
 	if err := os.Rename(filepath.Join(expDir2, "output"), tmp); err != nil {
 		t.Fatal(err)
 	}
+	// The dry run projects the recovery table: a complete staging directory
+	// means the swap would finish, so the same adoption is reported as no-op.
 	opts2.Write = false
 	res, err := Run(context.Background(), opts2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.NoOp || !res.Replaced {
-		t.Fatalf("dry run should report a fresh adoption of the interrupted destination: %+v", res)
+	if !res.NoOp {
+		t.Fatalf("dry run should project the completed swap: %+v", res)
 	}
 	if _, err := os.Stat(tmp); err != nil {
 		t.Fatalf("dry run must not recover the staging directory: %v", err)
@@ -631,5 +633,62 @@ func TestManifestRequiresProvenanceFields(t *testing.T) {
 		if err := validateManifest(m); err == nil {
 			t.Fatalf("%s: expected validation to fail", name)
 		}
+	}
+}
+
+func TestVerifyRejectsSymlinkedExperimentsRoot(t *testing.T) {
+	opts, root := fixture(t, "<html/>")
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	expRoot := filepath.Join(root, "experiments")
+	moved := filepath.Join(root, "moved-experiments")
+	if err := os.Rename(expRoot, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(moved, expRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := Verify(expRoot); err == nil {
+		t.Fatal("expected a symlinked experiments root to be rejected")
+	}
+	if _, err := Find(expRoot); err == nil {
+		t.Fatal("expected the site finder to reject a symlinked experiments root")
+	}
+}
+
+func TestDryRunProjectsTheRecoveryTable(t *testing.T) {
+	// output + broken staging: output wins and the staging is ignored, so the
+	// dry run reports the same no-op a write would produce.
+	opts, root := fixture(t, "<html/>")
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	expDir := filepath.Join(root, "experiments", model, "exp-1")
+	broken := filepath.Join(expDir, ".adopt-tmp-"+runID)
+	if err := os.MkdirAll(broken, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	opts.Write = false
+	res, err := Run(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.NoOp {
+		t.Fatalf("output stays authoritative: %+v", res)
+	}
+	if _, err := os.Stat(broken); err != nil {
+		t.Fatal("a dry run must not clean up")
+	}
+
+	// Multiple staging directories fail closed the same way in both modes.
+	if err := os.MkdirAll(filepath.Join(expDir, ".adopt-tmp-x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if os.Rename(filepath.Join(expDir, "output"), filepath.Join(expDir, ".adopt-bak-"+runID)) != nil {
+		t.Fatal("setup")
+	}
+	if _, err := Run(context.Background(), opts); err == nil {
+		t.Fatal("expected ambiguous staging directories to fail closed in dry-run too")
 	}
 }

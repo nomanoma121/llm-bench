@@ -16,6 +16,9 @@ import (
 //
 // The check lives in Go so the site toolchain never re-implements hashing.
 func Verify(root string) error {
+	if err := checkRoot(root); err != nil {
+		return err
+	}
 	entries, err := os.ReadDir(root)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -75,16 +78,14 @@ func Verify(root string) error {
 	return errors.Join(problems...)
 }
 
-// verifyOne validates a manifest against the directory that holds it.
+// verifyOne validates a manifest against the directory that holds it, with the
+// same predicate adoption uses before it writes.
 func verifyOne(dir, model, experimentID string, m *Manifest) error {
 	if err := validateManifestAgainst(dir, m); err != nil {
 		return err
 	}
-	if m.Model != model {
-		return fmt.Errorf("%w: manifest model %q does not match directory %q", errInvalidManifest, m.Model, model)
-	}
-	if m.ExperimentID != experimentID {
-		return fmt.Errorf("%w: manifest experiment_id %q does not match directory %q", errInvalidManifest, m.ExperimentID, experimentID)
+	if err := validatePlacement(m, model, experimentID); err != nil {
+		return err
 	}
 	// Symlinks anywhere in the payload are rejected by ArtifactPayload, but a
 	// symlinked manifest would bypass the inventory check.
@@ -114,6 +115,9 @@ func Load(dir string) (*Manifest, error) {
 // (newest first), then model, then experiment ID. This ordering is what the
 // generated index uses.
 func Find(root string) ([]Adopted, error) {
+	if err := checkRoot(root); err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(root)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -200,4 +204,23 @@ func checkDirEntry(parent string, e os.DirEntry) error {
 		return nil
 	}
 	return fmt.Errorf("%s is a symlink; the experiments tree must contain only real directories", filepath.Join(parent, e.Name()))
+}
+
+// checkRoot requires the experiments tree itself to be a real directory: a
+// symlinked root would let CI publish a tree from outside the repository.
+func checkRoot(root string) error {
+	info, err := os.Lstat(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink; the experiments tree must be a real directory", root)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", root)
+	}
+	return nil
 }

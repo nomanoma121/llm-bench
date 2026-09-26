@@ -35,37 +35,37 @@ func NewLocal(modelsRoot string) *Local {
 // Execute implements run.Executor. The invocation's stdout/stderr are stored
 // in the artifact directory; a successful execution must have produced
 // <output>/index.html, whose sha256 is recorded at persistence time.
-func (l *Local) Execute(ctx context.Context, r run.Run) (run.Artifacts, error) {
+func (l *Local) Execute(ctx context.Context, r run.Run) (run.ExecutionOutputs, error) {
 	if r.Artifacts.Dir == "" {
-		return run.Artifacts{}, errors.New("runner: run has no artifact directory")
+		return run.ExecutionOutputs{}, errors.New("runner: run has no artifact directory")
 	}
 	var cfg experiment.Config
 	if err := json.Unmarshal([]byte(r.RecipeJSON), &cfg); err != nil {
-		return run.Artifacts{}, fmt.Errorf("runner: decode recipe snapshot: %w", err)
+		return run.ExecutionOutputs{}, fmt.Errorf("runner: decode recipe snapshot: %w", err)
 	}
 	if len(cfg.Invoke.Argv) == 0 {
-		return run.Artifacts{}, errors.New("runner: recipe snapshot has empty invoke argv")
+		return run.ExecutionOutputs{}, errors.New("runner: recipe snapshot has empty invoke argv")
 	}
 	// Absolute paths are mandatory: cmd.Dir is relative to the controller's
 	// working directory, so a relative artifact dir would double up inside
 	// the child process.
 	artifactDir, err := filepath.Abs(r.Artifacts.Dir)
 	if err != nil {
-		return run.Artifacts{}, err
+		return run.ExecutionOutputs{}, err
 	}
 	modelsRoot, err := filepath.Abs(l.ModelsRoot)
 	if err != nil {
-		return run.Artifacts{}, err
+		return run.ExecutionOutputs{}, err
 	}
 	promptPath := filepath.Join(artifactDir, "input", "prompt.md")
 	// The benchmark writes into a staging directory; sealOutput validates the
 	// single-file contract, fsyncs it and atomically renames it into place.
 	outputDir := stagingOutput(artifactDir)
 	if err := os.RemoveAll(outputDir); err != nil {
-		return run.Artifacts{}, err
+		return run.ExecutionOutputs{}, err
 	}
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
-		return run.Artifacts{}, err
+		return run.ExecutionOutputs{}, err
 	}
 
 	cmd := exec.CommandContext(ctx, cfg.Invoke.Argv[0], cfg.Invoke.Argv[1:]...)
@@ -75,7 +75,7 @@ func (l *Local) Execute(ctx context.Context, r run.Run) (run.Artifacts, error) {
 	logPath := filepath.Join(artifactDir, "invoke.log")
 	logFile, err := os.Create(logPath)
 	if err != nil {
-		return run.Artifacts{}, err
+		return run.ExecutionOutputs{}, err
 	}
 	defer logFile.Close()
 	cmd.Stdout = logFile
@@ -86,34 +86,34 @@ func (l *Local) Execute(ctx context.Context, r run.Run) (run.Artifacts, error) {
 	fmt.Fprintf(logFile, "[exit: %v]\n", runErr)
 
 	if ctx.Err() != nil {
-		return run.Artifacts{}, fmt.Errorf("runner: execution interrupted: %w", ctx.Err())
+		return run.ExecutionOutputs{}, fmt.Errorf("runner: execution interrupted: %w", ctx.Err())
 	}
 	if runErr != nil {
-		return run.Artifacts{}, fmt.Errorf("runner: invoke failed: %w", runErr)
+		return run.ExecutionOutputs{}, fmt.Errorf("runner: invoke failed: %w", runErr)
 	}
 
 	indexPath := filepath.Join(outputDir, "index.html")
 	info, err := os.Stat(indexPath)
 	if err != nil {
-		return run.Artifacts{}, fmt.Errorf("runner: invoke did not produce output/index.html: %w", err)
+		return run.ExecutionOutputs{}, fmt.Errorf("runner: invoke did not produce output/index.html: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return run.Artifacts{}, errors.New("runner: output/index.html is not a regular file")
+		return run.ExecutionOutputs{}, errors.New("runner: output/index.html is not a regular file")
 	}
 	digest, payload, err := sealOutput(artifactDir, outputDir)
 	if err != nil {
-		return run.Artifacts{}, err
+		return run.ExecutionOutputs{}, err
 	}
 	logSum, err := hashFile(logPath)
 	if err != nil {
-		return run.Artifacts{}, err
+		return run.ExecutionOutputs{}, err
 	}
-	return run.Artifacts{
+	return run.ExecutionOutputs{Artifacts: run.Artifacts{
 		Dir:            artifactDir,
 		IndexSHA256:    payload[0].SHA256,
 		LogSHA256:      logSum,
 		ArtifactDigest: digest,
-	}, nil
+	}}, nil
 }
 
 // envFor builds the child environment from an allowlist: LLMBENCH_* variables

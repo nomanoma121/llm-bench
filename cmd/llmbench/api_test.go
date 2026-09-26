@@ -357,3 +357,74 @@ func TestExecutorRoutingUsesFrozenPlan(t *testing.T) {
 		t.Fatal("unknown local target must be refused")
 	}
 }
+
+// measurementFixture builds a repository root with one local experiment and
+// returns a global flag set plus an operator config that allowlists a
+// measurement protocol on the local target.
+func measurementFixture(t *testing.T) (*globalFlags, operator.Config, string) {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "examples"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "examples", "prompt.md"), []byte("p"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exPath := filepath.Join(root, "exp.yaml")
+	recipe := "model: m\nbenchmark: examples/prompt.md\ntarget: local\nruntime:\n  engine: e\n  context_size: 8\ninvoke:\n  argv: [\"/bin/sh\",\"-c\",\"printf x > \\\"$LLMBENCH_OUTPUT_DIR/index.html\\\"\"]\n"
+	if err := os.WriteFile(exPath, []byte(recipe), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := &globalFlags{root: root, state: t.TempDir(), output: t.TempDir()}
+	opCfg := operator.Config{
+		Targets: map[string]operator.Target{
+			"local": {Hooks: []operator.CommandHook{}, AllowHTTPLocal: true, MeasurementProtocols: []string{"longctx"}},
+		},
+		MeasurementProtocols: map[string]operator.MeasurementProtocol{"longctx": {
+			SchemaVersion:   1,
+			Driver:          operator.ExecutionSpec{ContentDigest: "sha256:d", ExecMode: "sandbox-exec", OutputMode: "stdout-transport"},
+			DriverArgv:      []string{"/bin/true"},
+			Workload:        operator.MeasurementWorkload{Matrix: []operator.WorkloadCase{{Name: "decode", DecodeSteps: 10}}},
+			RequiredSources: []string{"driver"},
+		}},
+	}
+	return g, opCfg, exPath
+}
+
+// TestPrepareRunFreezesMeasurementIdentity pins the v1.7 submit contract: the
+// operator allowlist decides the measurement identity and the run stores the
+// frozen snapshot plus its digest (docs/optimization.md §6).
+func TestPrepareRunFreezesMeasurementIdentity(t *testing.T) {
+	g, opCfg, exPath := measurementFixture(t)
+	r, _, err := prepareRunWithOptions(g, opCfg, exPath, "", SubmissionOptions{Kind: operator.KindMeasurement, Protocol: "longctx"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Kind != run.RunKindMeasurement {
+		t.Fatalf("kind = %q", r.Kind)
+	}
+	if r.MeasurementProtocolID != "longctx" || r.MeasurementProtocolJSON == "" || r.MeasurementProtocolDigest == "" {
+		t.Fatalf("protocol snapshot not frozen: %+v", r)
+	}
+	if r.WorkloadDigest == "" {
+		t.Fatal("workload digest must be recorded")
+	}
+
+	// A plain visual submission stays visual and needs no protocol.
+	visual, _, err := prepareRun(g, opCfg, exPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if visual.Kind != run.RunKindVisual || visual.MeasurementProtocolDigest != "" {
+		t.Fatalf("visual run = %+v", visual)
+	}
+
+	// Measurement without a protocol is a caller error.
+	if _, _, err := prepareRunWithOptions(g, opCfg, exPath, "", SubmissionOptions{Kind: operator.KindMeasurement}); err == nil {
+		t.Fatal("expected measurement without a protocol to be refused")
+	}
+	// A protocol outside the target allowlist is refused too.
+	if _, _, err := prepareRunWithOptions(g, opCfg, exPath, "", SubmissionOptions{Kind: operator.KindMeasurement, Protocol: "other"}); err == nil {
+		t.Fatal("expected a non-allowlisted protocol to be refused")
+	}
+}

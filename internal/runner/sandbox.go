@@ -79,62 +79,62 @@ const (
 
 // Execute implements run.Executor. The caller (engine) has already persisted
 // ExecutionState=invoking and applied the execution time limit on ctx.
-func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.Artifacts, error) {
+func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.ExecutionOutputs, error) {
 	if r.InputCommit == "" {
-		return run.Artifacts{}, errors.New("runner: sandbox execution requires an input commit")
+		return run.ExecutionOutputs{}, errors.New("runner: sandbox execution requires an input commit")
 	}
 	if s.Claim == "" {
-		return run.Artifacts{}, errors.New("runner: sandbox execution requires the claim name from the run's hook plan")
+		return run.ExecutionOutputs{}, errors.New("runner: sandbox execution requires the claim name from the run's hook plan")
 	}
 	if r.Artifacts.Dir == "" {
-		return run.Artifacts{}, errors.New("runner: run has no artifact directory")
+		return run.ExecutionOutputs{}, errors.New("runner: run has no artifact directory")
 	}
 	var cfg experiment.Config
 	if err := json.Unmarshal([]byte(r.RecipeJSON), &cfg); err != nil {
-		return run.Artifacts{}, fmt.Errorf("runner: decode recipe snapshot: %w", err)
+		return run.ExecutionOutputs{}, fmt.Errorf("runner: decode recipe snapshot: %w", err)
 	}
 
 	// 1. Verify the commit against the frozen snapshot (double defense: the
 	// snapshot was already validated at submit time).
 	inputConfig, err := os.ReadFile(filepath.Join(r.Artifacts.Dir, "input", "config.yaml"))
 	if err != nil {
-		return run.Artifacts{}, fmt.Errorf("runner: recipe snapshot missing: %w", err)
+		return run.ExecutionOutputs{}, fmt.Errorf("runner: recipe snapshot missing: %w", err)
 	}
 	inputPrompt, err := os.ReadFile(filepath.Join(r.Artifacts.Dir, "input", "prompt.md"))
 	if err != nil {
-		return run.Artifacts{}, fmt.Errorf("runner: prompt snapshot missing: %w", err)
+		return run.ExecutionOutputs{}, fmt.Errorf("runner: prompt snapshot missing: %w", err)
 	}
 	expected := []provenance.ExpectedFile{
 		{Path: r.Experiment, SHA256: sha256Hex(inputConfig)},
 		{Path: cfg.Benchmark, SHA256: sha256Hex(inputPrompt)},
 	}
 	if err := s.Git.VerifyCommit(ctx, r.InputCommit, expected); err != nil {
-		return run.Artifacts{}, fmt.Errorf("runner: commit verification failed: %w", err)
+		return run.ExecutionOutputs{}, fmt.Errorf("runner: commit verification failed: %w", err)
 	}
 
 	// 2. Prepare the workspace and upload the source snapshot. Every command
 	// is a plain argv: the runner never builds shell programs (quoting and the
 	// shell boundary live in the sandbox adapter).
 	if _, stderr, code, err := s.Client.Exec(ctx, s.Claim, []string{"mkdir", "-p", sandboxSrc, sandboxInput, sandboxOutput}, nil, "/"); err != nil || code != 0 {
-		return run.Artifacts{}, fmt.Errorf("runner: prepare workspace: %v exit=%d: %s", err, code, truncate(string(stderr), 256))
+		return run.ExecutionOutputs{}, fmt.Errorf("runner: prepare workspace: %v exit=%d: %s", err, code, truncate(string(stderr), 256))
 	}
 	tar, err := s.Git.Archive(ctx, r.InputCommit)
 	if err != nil {
-		return run.Artifacts{}, err
+		return run.ExecutionOutputs{}, err
 	}
 	if err := s.Client.Put(ctx, s.Claim, bytes.NewReader(tar), sandboxTar); err != nil {
-		return run.Artifacts{}, err
+		return run.ExecutionOutputs{}, err
 	}
 	if _, stderr, code, err := s.Client.Exec(ctx, s.Claim, []string{"tar", "-xf", sandboxTar, "-C", sandboxSrc}, nil, "/"); err != nil || code != 0 {
-		return run.Artifacts{}, fmt.Errorf("runner: unpack source: %v exit=%d: %s", err, code, truncate(string(stderr), 256))
+		return run.ExecutionOutputs{}, fmt.Errorf("runner: unpack source: %v exit=%d: %s", err, code, truncate(string(stderr), 256))
 	}
 	// The frozen snapshot is the contract for prompt and recipe: upload it so
 	// the environment variables point at existing files.
 	if err := s.Client.Put(ctx, s.Claim, bytes.NewReader(inputPrompt), sandboxInput+"/prompt.md"); err != nil {
-		return run.Artifacts{}, err
+		return run.ExecutionOutputs{}, err
 	}
 	if err := s.Client.Put(ctx, s.Claim, bytes.NewReader(inputConfig), sandboxInput+"/config.yaml"); err != nil {
-		return run.Artifacts{}, err
+		return run.ExecutionOutputs{}, err
 	}
 
 	env := sandboxEnv(r, cfg)
@@ -148,19 +148,19 @@ func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.Artifacts, error)
 	}
 	pre, err := s.modelDigest(ctx, modelDir)
 	if err != nil {
-		return run.Artifacts{}, err
+		return run.ExecutionOutputs{}, err
 	}
 	if pin != "" && pre.TreeDigest != pin {
-		return run.Artifacts{}, fmt.Errorf("runner: model digest %s does not match the pinned digest %s", pre.TreeDigest, pin)
+		return run.ExecutionOutputs{}, fmt.Errorf("runner: model digest %s does not match the pinned digest %s", pre.TreeDigest, pin)
 	}
 
 	// 4. Runtime start (optional) + readiness.
 	if cfg.Runtime.Start != nil {
 		if _, err := s.Client.Start(ctx, r.ID, s.Claim, cfg.Runtime.Start.Argv, env, sandboxSrc); err != nil {
-			return run.Artifacts{}, fmt.Errorf("runner: start runtime: %w", err)
+			return run.ExecutionOutputs{}, fmt.Errorf("runner: start runtime: %w", err)
 		}
 		if err := s.waitReady(ctx, r, cfg); err != nil {
-			return run.Artifacts{}, err
+			return run.ExecutionOutputs{}, err
 		}
 	}
 
@@ -170,67 +170,67 @@ func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.Artifacts, error)
 	logBody := formatInvokeLog(cfg.Invoke.Argv, stdout, stderr, code, execErr)
 	logPath := filepath.Join(r.Artifacts.Dir, "invoke.log")
 	if err := os.WriteFile(logPath, logBody, 0o644); err != nil {
-		return run.Artifacts{}, err
+		return run.ExecutionOutputs{}, err
 	}
 	if execErr != nil {
-		return run.Artifacts{}, fmt.Errorf("runner: invoke transport: %v: %s", execErr, truncate(string(stderr), 512))
+		return run.ExecutionOutputs{}, fmt.Errorf("runner: invoke transport: %v: %s", execErr, truncate(string(stderr), 512))
 	}
 	if code != 0 {
-		return run.Artifacts{}, fmt.Errorf("runner: invoke failed with exit %d: %s", code, truncate(string(stderr), 512))
+		return run.ExecutionOutputs{}, fmt.Errorf("runner: invoke failed with exit %d: %s", code, truncate(string(stderr), 512))
 	}
 
 	// 6. Model identity after invocation: must not have changed.
 	post, err := s.modelDigest(ctx, modelDir)
 	if err != nil {
-		return run.Artifacts{}, err
+		return run.ExecutionOutputs{}, err
 	}
 	if post.TreeDigest != pre.TreeDigest {
-		return run.Artifacts{}, fmt.Errorf("runner: model changed during execution (%s -> %s)", pre.TreeDigest, post.TreeDigest)
+		return run.ExecutionOutputs{}, fmt.Errorf("runner: model changed during execution (%s -> %s)", pre.TreeDigest, post.TreeDigest)
 	}
 
 	// 7. Persist artifacts outside the sandbox. The payload is defined as the
 	// single file index.html, so a benchmark that produced anything else in
 	// /workspace/output fails here instead of silently losing those files.
 	if _, stderr, code, err := s.Client.Exec(ctx, s.Claim, []string{"python3", "-c", verifySingleOutputScript(sandboxOutput)}, nil, "/"); err != nil || code != 0 {
-		return run.Artifacts{}, fmt.Errorf("runner: verify sandbox output: %v exit=%d: %s", err, code, truncate(string(stderr), 256))
+		return run.ExecutionOutputs{}, fmt.Errorf("runner: verify sandbox output: %v exit=%d: %s", err, code, truncate(string(stderr), 256))
 	}
 	staging := stagingOutput(r.Artifacts.Dir)
 	if err := os.RemoveAll(staging); err != nil {
-		return run.Artifacts{}, err
+		return run.ExecutionOutputs{}, err
 	}
 	if err := os.MkdirAll(staging, 0o755); err != nil {
-		return run.Artifacts{}, err
+		return run.ExecutionOutputs{}, err
 	}
 	// Bounded transfer: untrusted sandbox bytes must not be able to make the
 	// harness allocate an unbounded buffer.
 	index, err := s.Client.PullLimited(ctx, s.Claim, sandboxOutput+"/index.html", maxArtifactBytes)
 	if err != nil {
-		return run.Artifacts{}, fmt.Errorf("runner: pull index.html: %w", err)
+		return run.ExecutionOutputs{}, fmt.Errorf("runner: pull index.html: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(staging, "index.html"), index, 0o644); err != nil {
-		return run.Artifacts{}, err
+		return run.ExecutionOutputs{}, err
 	}
 	digest, payload, err := sealOutput(r.Artifacts.Dir, staging)
 	if err != nil {
-		return run.Artifacts{}, err
+		return run.ExecutionOutputs{}, err
 	}
 	identityPath := filepath.Join(r.Artifacts.Dir, "model-identity.json")
 	identityJSON, err := json.MarshalIndent(pre, "", "  ")
 	if err != nil {
-		return run.Artifacts{}, err
+		return run.ExecutionOutputs{}, err
 	}
 	if err := os.WriteFile(identityPath, identityJSON, 0o644); err != nil {
-		return run.Artifacts{}, err
+		return run.ExecutionOutputs{}, err
 	}
 
-	return run.Artifacts{
+	return run.ExecutionOutputs{Artifacts: run.Artifacts{
 		Dir:               r.Artifacts.Dir,
 		IndexSHA256:       payload[0].SHA256,
 		LogSHA256:         sha256Hex(logBody),
 		ModelTreeDigest:   pre.TreeDigest,
 		ModelIdentityPath: identityPath,
 		ArtifactDigest:    digest,
-	}, nil
+	}}, nil
 }
 
 // verifySingleOutputScript returns the python3 program that fails unless the

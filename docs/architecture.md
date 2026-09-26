@@ -196,7 +196,7 @@ adopt, sitebuild ──▶ provenance(検証は 1 箇所)
 
 v1.6 で追加した単位(§6 のフェーズ 8〜11): `provenance.ArtifactDigest` と Run への digest/`ControllerVersion` 記録、preview API(§4.9)、adopt + manifest + verify、`site build` + Actions(§4.12)、旧 publication の削除(`finalizing` の legacy 移行を含む)。すべて実装済みで、`go test -race ./...` と `go vet ./...` が緑。未検証は「GitHub Pages への実デプロイ」と「実クラスタでのプレビュー配信(Ingress + クラスタ認証)」
 
-**v1.7(測定・最適化)は設計のみで未実装**。`docs/optimization.md` が設計の正であり、実装は §6 のフェーズ 12〜19。利用者向け docs と `examples/` は各実装フェーズで更新する。
+**v1.7(測定・最適化)は設計済みで、フェーズ A(measurement identity)のみ実装済み**: Run の測定 identity(`Kind` / `MeasurementProtocol*` / `WorkloadDigest` / `RuntimeSpecDigest` / `RuntimeBuildDigest` / `EnvironmentDigest` / `MetricsDigest`)、`ExecutionOutputs`、Engine による kind 別成功条件の検証、operator の測定設定(protocol/promotion/sampling/profile)と allowlist 検証。**B 以降(sealed evidence、Window、promotion、session、runtime 供給網、公開 metrics)は未実装**。`docs/optimization.md` が設計の正であり、実装は §6 のフェーズ 12〜19。
 
 未検証・未実装: 実クラスタでの e2e(Argo CD / Deployment / SandboxClaim の遷移)、Ingress + クラスタ認証でのプレビュー配信、マルチレプリカでの外部効果 fence の実証、Agent 最適化ループの接続(attempt 境界は §4.12 と §10 に設計のみ)、Git LFS の materialize。
 

@@ -63,8 +63,8 @@ func TestLocalExecuteWritesIndexAndHashes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if artifacts.Dir != dir {
-		t.Fatalf("dir = %q", artifacts.Dir)
+	if artifacts.Artifacts.Dir != dir {
+		t.Fatalf("dir = %q", artifacts.Artifacts.Dir)
 	}
 	index := filepath.Join(dir, "output", "index.html")
 	b, err := os.ReadFile(index)
@@ -72,10 +72,10 @@ func TestLocalExecuteWritesIndexAndHashes(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum := sha256HexOf(b)
-	if artifacts.IndexSHA256 != sum {
-		t.Fatalf("index hash mismatch: %s vs %s", artifacts.IndexSHA256, sum)
+	if artifacts.Artifacts.IndexSHA256 != sum {
+		t.Fatalf("index hash mismatch: %s vs %s", artifacts.Artifacts.IndexSHA256, sum)
 	}
-	if artifacts.LogSHA256 == "" {
+	if artifacts.Artifacts.LogSHA256 == "" {
 		t.Fatal("log hash missing")
 	}
 
@@ -148,8 +148,8 @@ func TestLocalExecuteAbsolutizesRelativeDirs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !filepath.IsAbs(artifacts.Dir) {
-		t.Fatalf("artifact dir not absolute: %q", artifacts.Dir)
+	if !filepath.IsAbs(artifacts.Artifacts.Dir) {
+		t.Fatalf("artifact dir not absolute: %q", artifacts.Artifacts.Dir)
 	}
 	pwd, _ := os.ReadFile(filepath.Join(tmp, "reldir", "pwd.txt"))
 	if got := strings.TrimSpace(string(pwd)); !filepath.IsAbs(got) {
@@ -214,17 +214,17 @@ func TestLocalExecuteRecordsArtifactDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if artifacts.ArtifactDigest == "" {
+	if artifacts.Artifacts.ArtifactDigest == "" {
 		t.Fatal("artifact digest must be recorded at seal time")
 	}
 	digest, err := provenance.ArtifactDigest(filepath.Join(dir, "output"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if digest != artifacts.ArtifactDigest {
-		t.Fatalf("digest = %s, want %s", artifacts.ArtifactDigest, digest)
+	if digest != artifacts.Artifacts.ArtifactDigest {
+		t.Fatalf("digest = %s, want %s", artifacts.Artifacts.ArtifactDigest, digest)
 	}
-	if artifacts.IndexSHA256 == "" {
+	if artifacts.Artifacts.IndexSHA256 == "" {
 		t.Fatal("index hash must be recorded")
 	}
 }

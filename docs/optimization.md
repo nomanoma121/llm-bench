@@ -330,14 +330,21 @@ driver は harness から port-forward 越しに動かさない(ネットワー�
 「どう測ったか」と「どう採否するか」を同じ digest にすると、**閾値変更だけで比較不能**になる。両方を operator 所有にし、**snapshot 本体と digest の両方**を保存する(operator config を書き換えても当時の測定条件を復元できるようにする。HookPlan と同じ考え方)。
 
 ```
-MeasurementProtocol: schema/version, driver version, workload matrix, context depths,
-  warmup, KV fill procedure, repetition count, execution order, collector config,
-  collector interval, runtime reset policy, required metric sources
+MeasurementProtocol(1 Run の測定方法):
+  schema/version, driver(ExecutionSpec + argv), workload matrix(WorkloadCase[]),
+  warmup, KV fill procedure, within-run sampling, collector(ExecutionSpec + interval),
+  validity 規則, required metric sources
 
-PromotionPolicy: primary objective(name, direction=min), minimum effect size,
-  noise threshold, regression limits, VRAM headroom minimum, correctness predicates,
-  retry/gray-zone rule, allowed metric sources
+SamplingPolicy(複数 Run の編成。1 attempt = 1 Run なので protocol とは別):
+  initial_pairs(3), order_rule(balanced-randomized-pairs), max_pairs, seed_policy
+
+PromotionPolicy(採否の決め方):
+  primary objective(name, direction=min), minimum effect size, noise threshold,
+  regression limits, VRAM headroom minimum, correctness predicates,
+  gray-zone action(inconclusive), allowed metric sources
 ```
+
+**MVP は adaptive sampling をしない**: `initial_pairs = 3`(= A/B 交互で 6 Run)で判定し、`Decide` は `accept | reject | inconclusive` の 3 値のみ。追加測定(`need_more_samples`)は adaptive を導入するときに正式に追加する。**各 Run は fresh runtime**(SandboxClaim/runtime プロセスは Run 所有で毎 Run 作り直す)を不変条件とし、runtime reset は設定項目にしない。
 
 保存先: `Run` に `MeasurementProtocolID / MeasurementProtocolJSON / MeasurementProtocolDigest`(submit 時 snapshot)。`PromotionPolicyID / PromotionPolicyJSON / PromotionPolicyDigest` は **D で型と canonical snapshot を定義**し、**永続化(session への束縛)は E** で行う。
 
@@ -394,6 +401,7 @@ DecisionInput:
                         EnvironmentDigest, WorkloadDigest, MeasurementProtocolDigest,
                         MeasurementProtocolSnapshot, MetricsDigest, MetricsJSON}]
   PromotionPolicyID / PromotionPolicySnapshot / PromotionPolicyDigest
+  SamplingPolicyID / SamplingPolicySnapshot / SamplingPolicyDigest
   AlgorithmVersion
 ```
 出力:
@@ -428,8 +436,8 @@ verdict も immutable(`VerdictDigest`)として session 台帳に残す。Agent 
 
 ### 6.4 noise-aware 判定
 
-- 反復は **pair 単位の balanced randomization**(pair1: A→B、pair2: B→A、pair3: A→B)。seed と実行順を evidence に記録する。`AAA BBB` は時間ドリフトに弱く、常に `AB` は order effect を持つ
-- MVP は **3 pairs = 6 runs**。adaptive(N=3→5→7)は後段
+- 反復の**編成は `SamplingPolicy`**(operator 所有)が決める: **pair 単位の balanced randomization**(pair1: A→B、pair2: B→A、pair3: A→B)。seed と実行順は evidence と session 台帳に記録する。`AAA BBB` は時間ドリフトに弱く、常に `AB` は order effect を持つ
+- MVP は **3 pairs = 6 runs**(=6 個の独立 Run)。adaptive(N=3→5→7)と `need_more_samples` は後段
 - 閾値は最初は operator 固定値:
 
 ```
@@ -601,7 +609,7 @@ OptimizationSession
 | A | Measurement identity | **`ExecutionOutputs` 戻り型**、`LeaseState=not_applicable`、`RunKind` と protocol の独立、`MetricsDigest` / `MeasurementProtocol*`(driver content digest 込み)/ `WorkloadDigest` / `RuntimeSpecDigest` / `RuntimeBuildDigest` / `EnvironmentDigest` を Run provenance に追加。既存 `BenchmarkFingerprint` を壊さない。objective/threshold は入れない |
 | B | Sealed evidence | `evidence/metrics.json`(schema、source/trust、validity、上限、atomic seal、durability)、`GET /v1/runs/{id}/metrics`、`llmbench metrics --json`。collector は harness timing + nvidia-smi + runtime `/metrics`(任意) |
 | C | Compare + remote Agent CLI | `submit --remote --request-id --wait --json`、`status --remote`、`wait`/`list`/`logs`、`preflight`(local + server-side)、`compare --kind model\|runtime`、exit code 契約 |
-| D | Promotion policy | `PromotionPolicy` の型 + canonical snapshot/digest、`optimize decide`(純関数)、`Verdict`(`accept\|reject\|inconclusive`)+ `VerdictDigest`。**永続化(台帳)は E** |
+| D | Promotion policy | `PromotionPolicy` / `SamplingPolicy` の型 + canonical snapshot/digest、`optimize decide`(純関数、MVP は `accept\|reject\|inconclusive`)、`Verdict` + `VerdictDigest`。**永続化(台帳)は E** |
 | W | MeasurementWindow | `OwnerRef` 一般化、Window 状態機械、`ActiveRunID` CAS、timeout/idle close、recovery、engine の分岐 |
 | E | OptimizationSession | session 台帳(**PromotionPolicy snapshot と verdict history の永続化**)、budget、Issue intent(`kind: benchmark\|optimize`)、round 記録、failure 分類と再試行(同一 Run を再実行しない) |
 | F | Runtime spec | `runtimes/<engine>/<variant>`、`runtime verify`、spec/build digest、build cache |

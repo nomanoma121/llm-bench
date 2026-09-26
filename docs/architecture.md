@@ -587,6 +587,7 @@ type Config struct {
     // (v1.7) 測定 protocol と最適化 profile は operator 所有。recipe からは選べない
     MeasurementProtocols map[string]MeasurementProtocol // allowlist 本体(snapshot の元)
     PromotionPolicies    map[string]PromotionPolicy     // policy 本体(snapshot の元)
+    SamplingPolicies     map[string]SamplingPolicy      // 複数 Run の編成(測定 protocol とは別)
     OptimizationProfiles map[string]OptimizationProfile // kind/protocol/policy/budget の束
 }
 
@@ -610,6 +611,8 @@ type WorkloadCase struct {
     Prefill      bool // true なら prefill 計測ケース
 }
 
+// MeasurementProtocol は **1 Run の測定方法**だけを定める。複数 Run の編成(pair 数・
+// 実行順・seed)は SamplingPolicy が持つ(1 attempt = 1 Run の帰結)。
 type MeasurementProtocol struct {
     SchemaVersion int
     Driver        ExecutionSpec
@@ -617,9 +620,7 @@ type MeasurementProtocol struct {
     Workload      struct{ Matrix []WorkloadCase }
     Warmup        struct{ Steps int; DiscardSeconds int }
     KVFill        string // 例: "none" | "to:64k" | "to:250k"
-    Repetitions   int    // pair 数
-    OrderRule     string // 例: "balanced-randomized-pairs"(実際の順序と seed は evidence に記録)
-    RuntimeReset  string // 例: "none" | "between-pairs" | "between-runs"(測定条件の一部)
+    WithinRunSamples int // 1 Run 内で繰り返す測定回数(例: warmup 後に連続で測る回数)
     RequiredSources []string // promotion に必須の metric source(例: driver, external_gpu)
     Collector     []struct {
         Name       string
@@ -647,13 +648,29 @@ type PromotionPolicy struct {
     }
     AllowedSources []string // promotion に使える metric source(harness/driver/external_gpu)
     // 判定不能域の扱い(operator が変更できるため typed field として digest 対象)
-    GrayZone    struct{ Action string } // "inconclusive" | "needs-more-samples"
-    MaxRepetitions int                  // adaptive sampling を導入するまでの上限(MVP は 3)
+    // MVP は adaptive sampling を行わないため GrayZone は inconclusive 固定。
+    // adaptive を導入するときに need_more_samples(+ 追加 pair 数)を正式に追加する
+    GrayZone    struct{ Action string } // "inconclusive"(MVP)
+    MaxRepetitions int                  // 参考値。MVP では SamplingPolicy.InitialPairs を使う
 }
+// SamplingPolicy は複数 Run の編成(operator 所有)。MVP は adaptive sampling を行わない。
+// 「各 Run は fresh runtime」が不変条件なので runtime reset は設定項目にしない
+type SamplingPolicy struct {
+    SchemaVersion  int
+    InitialPairs   int    // 例: 3(3 pairs = A/B 交互で 6 Run)
+    OrderRule      string // "balanced-randomized-pairs"(実際の順序と seed は evidence に記録)
+    MaxPairs       int    // adaptive 導入までの上限(MVP は InitialPairs と同値)
+    SeedPolicy     string // "per-session-random" | "fixed:<n>"
+}
+
 type OptimizationProfile struct {
-    Kind         RunKind // visual | measurement(profile が固定し caller は上書き不可)
-    Protocol     string  // MeasurementProtocols のキー(存在しなければ Validate がエラー)
-    Policy       string  // PromotionPolicies のキー(存在しなければ Validate がエラー)
+    // Kind は文字列で受ける: RunKind は internal/run が所有するため、
+    // operator が RunKind を参照すると run → operator → run の import cycle になる。
+    // Validate で "visual" | "measurement" に限定し、submit 時に run.RunKind へ変換する
+    Kind         string
+    Protocol     string // MeasurementProtocols のキー(存在しなければ Validate がエラー)
+    Policy       string // PromotionPolicies のキー(存在しなければ Validate がエラー)
+    Sampling     string // SamplingPolicies のキー(存在しなければ Validate がエラー)
     MaxRounds    int
     MaxRuns      int
     MaxGPUDuration, MaxWindowDuration, MaxBuildDuration time.Duration

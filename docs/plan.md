@@ -24,7 +24,7 @@
 - [x] Add a single-run Agent Sandbox executor using an operator-owned SandboxTemplate and GPU ResourceClaim; send a Git commit snapshot, invoke build/runtime commands in the Sandbox, and collect HTML/logs.
 - [x] Add the official Go SDK access layer for named SandboxClaims, port-forwarded sandboxd commands, file transfer, and explicit release; expose manual operations in the CLI.
 - [ ] Keep the Agent session outside the Sandbox; reattach to its Claim after backing Pod replacement and avoid replaying non-idempotent commands.
-- [ ] Support multiple attempts within an optimization round; release GPU before human review. Keep the SandboxWarmPool at zero idle replicas.
+- [ ] Support optimization rounds as **collections of independent runs** (one measurement run per attempt), starting with a MeasurementWindow that holds the pause across rounds; release the GPU before human review and keep the SandboxWarmPool at zero idle replicas. Never re-run the same run.
 - [x] Keep GPU claims and inference pause/restore as operator-injected hooks; the target lease is engine-managed (acquired write-ahead, released as the final step of `releasing`). Do not add SSH execution.
 - [ ] Persist cluster run/session state durably and enforce one active run per target across harness replicas. Kubernetes ConfigMap run records, atomic target leases and leader election (with worker cancellation on lease loss) are implemented; durable Agent conversation and proven external-effect fencing are not.
 - [ ] Add failover tests and spread harness replicas across nodes with Pod anti-affinity. Lease election (including re-election after loss) has fake-client tests; multi-replica stays disabled because external-effect fencing is not proven safe end-to-end, and the chart has no templates yet.
@@ -34,7 +34,7 @@
 - [ ] Verify restoration after process, Pod, node, and GitHub failures.
 - [ ] Exercise GitHub PR, Argo CD, Deployment, and SandboxClaim transitions end-to-end on a non-production cluster with the target manifest repository.
 
-## 3b. Publication split (designed in `docs/architecture.md` v1.6, not implemented yet)
+## 3b. Publication split (designed in `docs/architecture.md` v1.6, implemented)
 
 The controller will stop owning permanent publication: it serves an authenticated preview of a run's artifacts, and a human merges accepted artifacts into `experiments/<model-id>/<experiment-id>/output/` for CI to publish.
 
@@ -44,6 +44,21 @@ The controller will stop owning permanent publication: it serves an authenticate
 - [x] Remove the controller publication lifecycle (`internal/pages`, `PublishFinalizer`, the `finalizing` phase and the operator `site:` block), migrating legacy `finalizing` records to succeeded.
 
 The split is implemented: the controller seals artifacts, serves authenticated previews and records the review in the Issue; `adopt` materializes the accepted artifact (with the authorizing vote) into `experiments/<model-id>/<experiment-id>/output/`, and CI publishes on merge. Digests and path checks live in Go, so the site toolchain never re-implements hashing. Publishing to GitHub Pages has not yet been exercised by a real merge.
+
+## 3c. Measurement and optimization (designed in `docs/architecture.md` v1.7 and `docs/optimization.md`, **not implemented**)
+
+The controller stays a single-Run state machine; measurement evidence is a separate sealed artifact and promotion decisions are computed by the harness, not claimed by the Agent.
+
+- [ ] A: measurement identity — record `MetricsDigest`, the frozen `MeasurementProtocol` (snapshot + digest), `RuntimeSpecDigest`, `RuntimeBuildDigest` and `EnvironmentDigest` on the run, without changing the existing `BenchmarkFingerprint`.
+- [ ] B: sealed evidence — `evidence/metrics.json` with schema validation, metric source/trust, measurement validity, size bounds, atomic seal; `GET /v1/runs/{id}/metrics` on the authenticated control API; `llmbench metrics --json`.
+- [ ] C: comparability and the remote Agent CLI — `compare --kind model|runtime`, `submit --remote --request-id`, `status --remote`, `wait`/`list`/`logs`, preflight (local and server-side) and the exit-code contract.
+- [ ] D: promotion policy — operator-owned `PromotionPolicy` (snapshot + digest) and a pure `optimize decide` that returns a verdict with reasons.
+- [ ] W: MeasurementWindow — generalize resource ownership (`OwnerRef`), keep the pause/restore PR held across measurement runs, one `ActiveRunID` via CAS, timeouts and recovery.
+- [ ] E: optimization session — round ledger, operator budgets, Issue intent (`kind: benchmark|optimize`, never a trigger), failure classification and retry as new runs.
+- [ ] F/G: runtime spec and image release — `runtimes/<engine>/<variant>` with spec/build digests and a build cache, plus a main-only trusted builder publishing OCI images pinned by digest.
+- [ ] H: published metrics — adopt evidence into git with manifest v2, render deterministic static SVG in the site build and include metric deltas in review comments.
+
+Explicitly not doing: attempts inside a run, sharing a SandboxClaim across a window, re-running the same run, Agent-controlled promotion, runtime-reported metrics as the primary objective, a single weighted score, always-on profiling.
 
 ## 4. Human evaluation and Agent loop
 

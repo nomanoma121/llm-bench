@@ -1,8 +1,8 @@
-# llm-bench コントローラ実装設計書(v1.6.0)
+# llm-bench コントローラ実装設計書(v1.7.0)
 
 > この文書は `docs/design.md`(ドメイン要件)・`docs/usage.md`(機能仕様)・`AGENTS.md`(規約)を実装に落とすための設計 blueprint である。
 > ChatGPT 等の外部レビューに単体で渡せるよう、背景要件から実装方針までを自己完結して記述する。
-> ステータス: v1.6.0 — v1.5.3 の実装(main マージ済み)に対し、**公開責務を分離**した。恒久公開は「人間が採用した artifact を main にマージしたこと」だけをトリガーに CI が行い、controller は認証付き候補プレビュー(§4.9)のみを提供する。controller 側 publication(旧 pages / `finalizing` フェーズ)は §4.12 の CD に置き換えて削除する。実装状況は §2.5、v1.6 の変更は §11。
+> ステータス: v1.7.0 — v1.6 の実装(main マージ済み)に対し、**測定と最適化の設計を追加**した。詳細は `docs/optimization.md`(測定 evidence、`RunKind`、MeasurementWindow、PromotionPolicy、OptimizationSession、runtime 供給網、Agent CLI 契約)。**v1.7 の内容は未実装**であり、実装は §6 のフェーズ 12〜19 で行う。v1.7 は resource ownership の不変条件を 1 つ変更する(§3.6 / §7)。実装状況は §2.5、変更は §11。
 
 ---
 
@@ -67,12 +67,20 @@ cmd/llmbench/                      # Go コントローラ(本設計の実装対
 | F16 | **実験 recipe・prompt の submit 時 snapshot**: run の再開は常に snapshot を使い、生きたリポジトリファイルに依存しない | 本設計 |
 | F17 | **operator 側の強制タイムアウト上限**: 実験者が引き上げられない ready/実行時間の上限を target 設定に持たせ、recipe 側 timeout はその範囲内でのみ許可 | 本設計 |
 | F18 | 採用と恒久公開: `adopt`(PV の artifact を git へ固定、`ArtifactDigest` 照合・`--into` confinement・review 完了述語・single-file 契約)・`manifest.json`・`adopted verify`・`site build`・main merge をトリガーとする CI 公開。**controller から site repo への書き込み経路を持たない** | 本設計で新設 |
+| F19 | *(v1.7・未実装)* Measurement evidence: `evidence/metrics.json` の sealed 保存(`MetricsDigest`)、metric source/trust、measurement validity、上限、`GET /v1/runs/{id}/metrics`。`docs/optimization.md` §5 | 本設計(v1.7) |
+| F20 | *(v1.7・未実装)* 測定 identity: `MeasurementProtocol`(snapshot+digest)、`RuntimeSpecDigest`/`RuntimeBuildDigest`/`EnvironmentDigest` を Run provenance へ | 本設計(v1.7) |
+| F21 | *(v1.7・未実装)* Comparability と promotion: `compare --kind model\|runtime`、`PromotionPolicy`(snapshot+digest)、`optimize decide`(**harness が判定**、辞書順ゲート、noise-aware)。metric 値は fingerprint に入れない | 本設計(v1.7) |
+| F22 | *(v1.7・未実装)* MeasurementWindow: `TargetOwner = Run \| Window`、pause/restore の保持、`ActiveRunID` CAS、timeout/idle close、crash recovery。**resource ownership の不変条件を変更**(§3.6) | 本設計(v1.7) |
+| F23 | *(v1.7・未実装)* OptimizationSession: round 台帳、budget(operator 所有)、failure 分類と新規 Run による再試行、Issue intent(`kind: benchmark\|optimize`、実行トリガーにはしない) | 本設計(v1.7) |
+| F24 | *(v1.7・未実装)* runtime 供給網: `runtimes/<engine>/<variant>` + `runtime verify` + build cache + **OCI image 公開(main のみの trusted builder、digest pin、attestation)** | 本設計(v1.7) |
+| F25 | *(v1.7・未実装)* Agent CLI 契約: `submit --remote --request-id`、`status --remote`、`wait`/`list`/`logs`/`metrics`、server-side `preflight`、`optimize` 系、**exit code 契約**。Agent は HTTP API のみを使い ConfigMap に触れない | 本設計(v1.7) |
 
 ### 1.5 非機能要件
 
 - `go test -race ./...` と `go vet ./...` が常時緑。ポリシーロジックは外部 SDK なしでテスト可能
 - 外部効果はすべて冪等。プロセスが任意の時点で死んでも再起動後に収束する(**外部呼び出し前に意図と進行状態を永続化する write-ahead 原則** — claim・hook・実行・プロセスのすべてに適用)。**結果の再現が不可能な処理(ベンチ実行本体)は、write-ahead からの復帰時に自動再実行せず失敗扱いにする**
 - **run の成功条件に公開を含めない**。恒久公開の唯一のゲートは「人間が採用し main にマージしたこと」であり、controller は公開の成否を知らない
+- *(v1.7)* evidence は**サイズ上限**を持ち、metric には **source/trust** と **measurement validity** を必ず記録する。promotion 判定は sealed evidence と operator policy だけを入力とする**純関数**で、runtime の自己申告値を primary objective にしない
 - 実験 YAML を変えずにオペレータ設定だけで実行先を差し替え可能
 - 依存は go.mod 固定分のみ。新規依存の追加は避ける
 
@@ -141,6 +149,10 @@ internal/
   sitebuild/           # 静的サイト生成(manifest を持つ実験のみ。ネットワーク不要。§4.12)
   httpapi/             # chi HTTP サーバ(薄い)。認証・デコード → run の Service へ委譲
                        #   preview(§4.9)は別リスナの別ハンドラ
+  measurement/         # (v1.7 予定)evidence schema・canonical 化・digest・上限・validity 判定
+  window/              # (v1.7 予定)MeasurementWindow の reconciler(§3.6)。
+                       #   Window の永続型と WindowStore は run が所有し、window は run に依存する
+  optimize/            # (v1.7 予定)PromotionPolicy・decide・session 台帳(§4.15/§4.16)
 ```
 
 ### 2.4 依存方向
@@ -184,6 +196,8 @@ adopt, sitebuild ──▶ provenance(検証は 1 箇所)
 
 v1.6 で追加した単位(§6 のフェーズ 8〜11): `provenance.ArtifactDigest` と Run への digest/`ControllerVersion` 記録、preview API(§4.9)、adopt + manifest + verify、`site build` + Actions(§4.12)、旧 publication の削除(`finalizing` の legacy 移行を含む)。すべて実装済みで、`go test -race ./...` と `go vet ./...` が緑。未検証は「GitHub Pages への実デプロイ」と「実クラスタでのプレビュー配信(Ingress + クラスタ認証)」
 
+**v1.7(測定・最適化)は設計のみで未実装**。`docs/optimization.md` が設計の正であり、実装は §6 のフェーズ 12〜19。利用者向け docs と `examples/` は各実装フェーズで更新する。
+
 未検証・未実装: 実クラスタでの e2e(Argo CD / Deployment / SandboxClaim の遷移)、Ingress + クラスタ認証でのプレビュー配信、マルチレプリカでの外部効果 fence の実証、Agent 最適化ループの接続(attempt 境界は §4.12 と §10 に設計のみ)、Git LFS の materialize。
 
 ### 2.6 採用しないもの
@@ -214,12 +228,14 @@ Phase:  pending ──▶ acquiring ──▶ running ──▶ releasing ──
                  (クラッシュ時は保存済み状態から冪等に再開)
 ```
 
+- *(v1.7)* `RunKind = visual | measurement`。**状態機械は共通**で、必須成果物だけが変わる: `visual` は `ArtifactDigest` 必須、`measurement` は `MetricsDigest` 必須で `ArtifactDigest` を作らない。**kind と MeasurementProtocol の付与は独立**で、どちらも recipe からは指定できない(operator の profile / 明示リクエストが決める。`docs/optimization.md` §3)
+- *(v1.7)* **resource ownership の不変条件を変更**する: `1 target = 1 exclusive owner`、owner は standalone Run または MeasurementWindow(§3.6)。standalone Run の意味論(terminal ⇒ 復元完了)は**変更しない**。window-bound Run は run-scoped resource だけを持ち、target が paused のまま terminal になりうる
 - `Phase = pending | acquiring | running | releasing | succeeded | failed`
 - **`finalizing` は v1.6 で廃止**した(公開は run の成功条件ではない)。v1.5.x の record が `finalizing` で停留している場合のみ、worker が `succeeded` へ移行する(legacy 移行。§3.3)
 - `ExecutionResult = none | success | failure`
 - `ExecutionState = not_started | invoking | completed` — **実行本体の write-ahead**。`invoking` を保存してから Execute を呼ぶ。復帰時に `invoking` だった場合は**自動再実行しない**(実行の再現性がないため `ExecutionResult=failure`(interrupted)として releasing へ進む。§10.1 の将来拡張を除く)
 - `HookState = not_started | acquiring | acquired | releasing | released` (+ `WaitReason`, `Error`)
-- `LeaseState = acquiring | acquired | releasing | released` — target 排他(TargetLease)の取得・解放**両側**が write-ahead
+- `LeaseState = acquiring | acquired | releasing | released | not_applicable` — target 排他(TargetLease)の取得・解放**両側**が write-ahead。`not_applicable` は window-bound Run 専用(§3.1 の owner 別不変条件)
 - 旧 `awaiting_acquire` は「`acquiring` + 該当 hook が `acquiring` + WaitReason」、旧 `needs_restore` は「`releasing` + 該当 hook の Error」として**派生ラベル**として status 表示にのみ現れる
 
 **write-ahead 原則(全外部効果に適用)**: 外部呼び出しの**前に**「これから行う」状態を永続化し、成功後に完了状態を永続化する。クラッシュが呼び出しと保存の間で起きても、再開時は「進行中」状態のステップを冪等に再試行する。**例外がベンチ実行本体(Execute)で、こちらは冪等でないため `invoking` からの復帰は再実行ではなく失敗とする。**
@@ -228,11 +244,12 @@ Phase:  pending ──▶ acquiring ──▶ running ──▶ releasing ──
 
 **ターミナル遷移の不変条件**:
 
-- release は厳密逆順。hook i を解放するには i+1..n が `released` であること
-- **TargetLease の解放は releasing フェーズの最後のステップ**(`LeaseState=releasing` を保存 → `ReleaseTargetLease`(NotFound=成功)→ `released` を保存)。terminal 書き込みは lease 解放保存の後でのみ行う
+- **(standalone Run)** release は厳密逆順。hook i を解放するには i+1..n が `released` であること
+- **(standalone Run)** **TargetLease の解放は releasing フェーズの最後のステップ**(`LeaseState=releasing` を保存 → `ReleaseTargetLease`(NotFound=成功)→ `released` を保存)。terminal 書き込みは lease 解放保存の後でのみ行う
+- **(window-bound Run, `WindowID != ""`)** TargetLease と GitOps restore は **Window が所有**するため、Run は acquire/release を一切通らない(`LeaseState=not_applicable` で固定)。Run の terminal 順序は「run-scoped hook を逆順 release → `Window.ActiveRunID` を CAS で解放(**成功後のみ**)→ terminal」。`ActiveRunID` の解放に失敗したら `ErrPending` で再試行する
 - releasing が完了する前に terminal にしない
 - **releasing 完了後の分岐は ExecutionResult で決定**: `failure → failed`、`success → succeeded`。**公開の成否は run の終了条件に含めない**(§1.5, §4.12)
-- 1 target の同時実行は LeaseStore が排除する。submit 自体は常に可能で、後続 run は `acquiring` で待機する
+- 排他は 2 層: **target owner 同士**(standalone Run ↔ standalone Run / standalone Run ↔ Window)は **TargetLease** が排除し、**Window 内の Run 同士**は **`Window.ActiveRunID`** が排除する。submit 自体は常に可能で、後続 run は `acquiring` で待機する
 
 ### 3.2 主要な型と interface(run パッケージで定義)
 
@@ -241,7 +258,7 @@ type Phase string // pending | acquiring | running | releasing | succeeded | fai
 type ExecutionResult string // none | success | failure
 type ExecutionState string // not_started | invoking | completed
 type HookPhase string // not_started | acquiring | acquired | releasing | released
-type LeaseState string // acquiring | acquired | releasing | released
+type LeaseState string // acquiring | acquired | releasing | released | not_applicable(window-bound Run は lease を持たない)
 
 // 用語: コントローラ側の target 排他を **TargetLease**、Agent Sandbox 側の GPU claim を
 // **SandboxClaim** と呼び分ける。以下の LeaseStore は TargetLease のみを扱う
@@ -268,7 +285,10 @@ type Artifacts struct {
     // ArtifactDigest は payload(output/ 配下の全 regular file。§4.4 の canonical 規則)の tree digest。
     // **artifact 確定保存の瞬間に計算**し、この値が非空の間だけ preview(§4.9)・review(§4.8)・
     // adopt(§4.12)が artifact を「確定済み」として扱う。3 者は必ず同じ関数(provenance.ArtifactDigest)
-    // を使う。digest が空 = 未確定(実行中・保存失敗)なので配信も adopt もしない
+    // を使う。
+    // 空の意味は RunKind で異なる(v1.7):
+    //   visual Run      : 空 = sealed visual artifact がまだ無い(実行中・保存失敗)
+    //   measurement Run : 空が正常(visual payload を作らない)。判定は MetricsDigest を見る
     ArtifactDigest    string
 }
 
@@ -283,6 +303,20 @@ type Run struct {
     RecipeSchemaVersion int         // snapshot 形式のバージョン
     RecipeJSON      string          // 検証済み experiment.Config の canonical JSON
     PromptSHA256    string
+    // ── v1.7(測定・最適化。docs/optimization.md)──
+    Kind               RunKind // visual | measurement(operator profile / SubmitOptions が決める。
+                       //              "" は legacy record のみ = visual として扱う)
+    WindowID           string  // 空なら standalone。非空なら MeasurementWindow に束縛(§3.6)
+    RequestID          string  // idempotency key(submit 時に指定。RunID は決定論的に導出)
+    RequestDigest      string  // request-id に束縛された内容の digest(不一致は 409)
+    MeasurementProtocolID     string
+    MeasurementProtocolJSON   string // snapshot(operator config 変更後も復元できる)
+    MeasurementProtocolDigest string
+    WorkloadDigest     string  // protocol が指定する workload matrix のうち実際に実行した workload
+    RuntimeSpecDigest  string  // 何をビルドするつもりだったか(submit 時に既知)
+    RuntimeBuildDigest string  // 実際に動いた binary/image
+    EnvironmentDigest  string  // GPU/driver/toolkit 等の安定条件
+    MetricsDigest      string  // sealed evidence(evidence/metrics.json)の digest
     // ── 進行状態 ──
     Phase           Phase
     ExecutionResult ExecutionResult
@@ -314,10 +348,32 @@ var (
     ErrVersionConflict = errors.New("run: store version conflict")
 )
 
+// ExecutionOutputs は 1 回の実行が確定させた provenance をまとめて返す。
+// Run にフィールドを足すだけでは保存経路が無いため、ExecCompleted の CAS 保存と
+// 同じタイミングで Run へ反映する(measurement の digest 群もここを通る)
+type Evidence struct {
+    Path   string // <output>/runs/<runID>/evidence/metrics.json
+    Digest string // sealed bytes の SHA-256(MetricsDigest)
+    // Valid は sealed evidence の measurement_valid(harness が検証して設定する)。
+    // Engine は Kind=measurement の成功条件にこれを使う(JSON を Engine が読まない)
+    Valid          bool
+    InvalidReasons []string
+}
+type ExecutionOutputs struct {
+    Artifacts          Artifacts
+    Evidence           Evidence // sealed evidence。MetricsDigest はここから Run へ保存する
+    RuntimeBuildDigest string
+    EnvironmentDigest  string
+    WorkloadDigest     string
+}
 type Executor interface {
     // 呼び出し前に worker が ExecutionState=invoking を保存すること(契約)。
-    // 戻り時点で成果物は Artifacts.Dir へ確定保存+ハッシュ済みであること
-    Execute(ctx context.Context, r Run) (Artifacts, error)
+    // 戻り時点で成果物は Artifacts.Dir へ確定保存+ハッシュ済みであること。
+    // **error を返した場合でも、返却済みの sealed Evidence は Run へ保存する**
+    // (「failed run でも MetricsDigest を持てる」契約の実装経路)
+    // ErrPending を返してよいのは invoking に入る前の preparation(例: runtime build)だけで、
+    // invoking 中の再試行は禁止(v1.6 の「同一 Run を再実行しない」)
+    Execute(ctx context.Context, r Run) (ExecutionOutputs, error)
 }
 // TargetLease の store。実装: filestore / kube
 // 用語注意: SandboxClaim(Sandbox 側 GPU claim)は扱わない。そちらは sandbox.Hook が管理する
@@ -327,19 +383,50 @@ type RunStore interface { // file / ConfigMap 双方が実装
     LoadRun(ctx context.Context, id string) (Run, error)
     ListUnfinished(ctx context.Context) ([]Run, error) // non-terminal(phase != succeeded/failed)
 }
+// (v1.7) owner は run か window のどちらか。文字列連結ではなく型で持つ
+type OwnerRef struct{ Kind string; ID string } // kind: "run" | "window"
+
 // TargetLease の store。実装: filestore / kube
 // 用語注意: SandboxClaim(Sandbox 側 GPU claim)は扱わない。そちらは sandbox.Hook が管理する
 type LeaseStore interface {
-    // 冪等: 同一 runID が owner なら成功。他 run が保持中は ErrLeaseBusy。atomic create
-    AcquireTargetLease(ctx context.Context, target, runID string) error
+    // 冪等: 同じ owner なら成功。他 owner が保持中は ErrLeaseBusy。atomic create
+    AcquireTargetLease(ctx context.Context, target string, owner OwnerRef) error
     // 条件付き削除で完全に冪等:
-    //   owner == runID → 削除して成功(k8s: UID/resourceVersion precondition 付き DELETE、
-    //                     filestore: lock 下の owner 比較+削除)
-    //   存在しない    → 成功(NotFound = success。releasing 保存後のクラッシュで
-    //                     解放済みのときの再呼び出しを吸収する)
-    //   owner != runID → 削除せず ErrLeaseBusy(古い run のリトライが次の run の
-    //                     TargetLease を消さない)
-    ReleaseTargetLease(ctx context.Context, target, runID string) error
+    //   owner 一致      → 削除して成功(k8s: UID/resourceVersion precondition 付き DELETE、
+    //                      filestore: lock 下の owner 比較+削除)
+    //   存在しない      → 成功(NotFound = success。releasing 保存後のクラッシュで
+    //                      解放済みのときの再呼び出しを吸収する)
+    //   owner 不一致    → 削除せず ErrLeaseBusy(古い owner のリトライが次の owner の
+    //                      TargetLease を消さない)
+    ReleaseTargetLease(ctx context.Context, target string, owner OwnerRef) error
+}
+
+// (v1.7) MeasurementWindow の永続型。**所有は run パッケージ**(Run と同じ理由:
+// window の reconciler は run の契約(OwnerRef/LeaseStore/HookSource)を必要とするため、
+// 型を window 側に置くと run → window → run の循環になる)。
+// internal/window は reconciler(実装)だけを持ち、run に依存する
+type Window struct {
+    ID, Target string
+    Phase      WindowPhase // pending | acquiring | open | closing | closed
+    Result     string      // none | success | failure
+    LeaseState LeaseState
+    HookPlan        []operator.PlannedHook
+    HookPlanDigest  string
+    Hooks           []HookState
+    ActiveRunID     string
+    MaxDurationDeadline time.Time
+    IdleDeadline        time.Time
+    LastActivityAt      time.Time
+    Error           string
+    StoreVersion    string
+    CreatedAt, UpdatedAt time.Time
+}
+
+// (v1.7) MeasurementWindow の store。RunStore と同じ CAS/ListUnfinished 契約
+type WindowStore interface {
+    SaveWindow(ctx context.Context, w *Window) error
+    LoadWindow(ctx context.Context, id string) (*Window, error)
+    ListUnfinished(ctx context.Context) ([]Window, error)
 }
 
 type Clock func() time.Time
@@ -349,7 +436,9 @@ func (e *Engine) Submit(ctx context.Context, r Run) error
 // Submit の snapshot 保存順(厳密):
 //   1. <output>/runs/<runID>/input/ を temp dir に書く
 //   2. fsync + atomic rename で snapshot 確定
-//   3. Run(pending + LeaseState=acquiring + HookPlan snapshot)を保存
+//   3. Run(pending + HookPlan snapshot)を保存。LeaseState は owner で決まる:
+//        standalone   → acquiring(worker が lease を取得)
+//        window-bound → not_applicable(Window が保持。Run は lease を触らない)
 // この順により「Run だけ存在して snapshot がない」状態を作らない。
 // 逆方向のクラッシュで残る孤立 input dir は起動時に GC 可能(既知の無害な残留)
 // TargetLease 取得は worker が write-ahead で行う(submit 時に取ると「取得成功→保存前クラッシュ」で幽霊 lease が残るため)
@@ -365,8 +454,15 @@ loop:
   r := store.LoadRun(id)
   switch r.Phase:
   case pending, acquiring:
+    # (v1.7) runtime build などの冪等な preparation は ExecutionState=invoking より前に
+    # 完了させる(cache miss の再試行を ErrPending で表現してよいのはこの段階だけ)
+    # (v1.7) window-bound Run は lease/hook(window-scoped)を取らない:
+    #   Window を read → phase==open かつ target 一致を確認
+    #   - open だが ActiveRunID が他 run → ErrPending
+    #   - missing / target 不一致 / closing / closed → 恒久エラー(ErrPending にしない)
+    #   ActiveRunID を CAS で自分にする → run-scoped hook のみ acquire
     if r.LeaseState == acquiring:          # write-ahead 済(submit 時)。
-      err := leases.AcquireTargetLease(r.Target, r.ID)
+      err := leases.AcquireTargetLease(r.Target, OwnerRef{Kind: "run", ID: r.ID})
       - ErrLeaseBusy → save(WaitReason="target busy")、interval 後再試行
       - その他の error → save(ExecutionResult=failure, Phase=releasing)
         # 取得が実は成功していた曖昧ケースも、冪等な ReleaseTargetLease が回収する
@@ -389,8 +485,16 @@ loop:
     # 正常開始は not_started からのみ
     save(ExecutionState=invoking)          # write-ahead
     ctx timeout = operator Limits.MaxExecutionDuration(F17)
-    a, err := executor.Execute(ctx, r)     # 成果物は Dir へ確定保存+ハッシュ済みで返る
-    save(ExecutionState=completed, ExecutionResult=success|failure, Artifacts=a) → releasing
+    out, err := executor.Execute(ctx, r)   # 成果物は Dir へ確定保存+ハッシュ済みで返る
+    # **Kind ごとの必須成果物は Engine が検証する**(Executor の nil error を成功と同一視しない)
+    #   visual                : Artifacts.ArtifactDigest == "" → failure
+    #   measurement           : out.Evidence.Digest == "" または !out.Evidence.Valid → failure
+    #   visual + protocol     : ArtifactDigest のみが成功条件。invalid evidence は visual run を失敗させない
+    # error でも Evidence は保存する(MetricsDigest は残す。valid かは Evidence.Valid が持つ)
+    save(ExecutionState=completed, ExecutionResult=success|failure,
+         Artifacts=out.Artifacts, MetricsDigest=out.Evidence.Digest,
+         RuntimeBuildDigest=out.RuntimeBuildDigest, EnvironmentDigest=out.EnvironmentDigest,
+         WorkloadDigest=out.WorkloadDigest) → releasing
   case releasing:
     # 解放対象 = HookPhase が acquiring / acquired / releasing の hook のみ(not_started は触らない)
     # 厳密逆順で 1 個ずつ:
@@ -400,18 +504,31 @@ loop:
     - その他の error → save(Hooks[i].Error) して releasing に留まり interval 再試行
       # error 種別を問わず released にせず、TargetLease も解放せず terminal に進まない。
       # ErrPending は UI 表示上の「待機」分類に過ぎない(不変条件の構造的担保)
-    hook 解放完了後:
-    save(LeaseState=releasing) → err := leases.ReleaseTargetLease(...)
+    hook 解放完了後、owner で 2 経路に分かれる:
+    # (a) standalone Run(WindowID == "")
+    save(LeaseState=releasing) → err := leases.ReleaseTargetLease(target, OwnerRef{Kind:"run", ID:r.ID})
     - nil   → save(LeaseState=released)
     - error → LeaseState=releasing のまま interval 再試行(NotFound は成功扱いの契約)
-    # lease released の保存後のみ分岐する(公開の成否は run の終了条件ではない):
+    # (b) window-bound Run(WindowID != "")
+    #     lease も GitOps restore も Window が所有するため何も解放しない。
+    #     ActiveRunID の CAS 解放が成功した後のみ terminal へ進む
+    window.ActiveRunID を CAS で空にする
+    - StoreVersion conflict → window を再読込して再試行(競合した保存に対応する外部効果は実行しない)
+    - ActiveRunID == 自分の run ID → 空にする(成功)
+    - ActiveRunID == ""           → clear 後のクラッシュとして成功扱い
+    - ActiveRunID == 別の run ID  → **恒久エラーとして fail closed**(ownership 破損。
+                                    待機して隠してはならない)
+    # どちらの経路も、復元責務が完了した保存後のみ分岐する(公開の成否は run の終了条件ではない):
     - ExecutionResult == failure → **failed**
     - ExecutionResult == success  → **succeeded**
   case finalizing:  # 旧 record の移行専用。新規 run はこの phase に入らない
     # v1.5.x の publication 待ち record のみ到達する。LeaseState=released かつ
     # ExecutionResult=success なので published 済みか否かに関わらず succeeded とする
     save(Phase=succeeded)
-  case succeeded, failed: return
+  case succeeded, failed:
+    # (v1.7) window-bound Run は terminal 時に window-scoped resource を解放しない
+    # (Window.ActiveRunID の CAS 解放のみ)。復元は Window の責務(§3.6)。
+    return
 ```
 
 - **1 ステップ 1 保存**。任意の時点で死んでも、保存済み Phase/HookState/LeaseState/ExecutionState から同一ステップを冪等に再開する
@@ -421,7 +538,7 @@ loop:
 ### 3.4 Dispatcher(並列とリカバリ)
 
 - `Engine.Run` は周期 tick(既定 30s、`--retry-interval`)ごとに `ListUnfinished` を走査し、**実行中でない run に worker goroutine を割り当てる**(run ID 単位の in-flight 排他)
-- run 毎に worker が立つため**異なる target は並行して進む**。同一 target の後続 run は ErrLeaseBusy 待ちとして `acquiring` で待機し、先行 run の lease 解放後に自動前進する
+- run 毎に worker が立つため**異なる target は並行して進む**。同一 target の後続 run は待機理由を owner で書き分ける: **standalone は `ErrLeaseBusy`**、**window-bound は `ActiveRunID` busy(`ErrPending`、待機理由に window ID を記録)**。先行 owner の解放(または Window 内の先行 run の完了)後に自動前進する
 - 起動時: `ListUnfinished` の全 run を dispatch 対象にする。**HookSource は Run.HookPlan(snapshot)から再構成し、構築前に HookPlanDigest を毎回検証する**。snapshot の Kind が実装として存在しない場合は永続エラーとして手動介入を要求する
 - hook の長時間待機は禁止: PR マージ待ち等も一律 `ErrPending` を返し、worker が interval を置いて再試行する
 - k8s モードの leader は、Lease を喪失した時点で自分が起動した全 worker の context を cancel する(milestone 6)
@@ -431,6 +548,33 @@ loop:
 実験コマンド・Sandbox 内コマンドに注入: `LLMBENCH_RUN_ID`, `LLMBENCH_PROMPT_PATH`(= snapshot の `input/prompt.md`), `LLMBENCH_OUTPUT_DIR`, `LLMBENCH_MODEL_ID`, `LLMBENCH_MODEL_PATH`(ローカル: `<root>/models/<id>`、Sandbox: `/models/<id>`), `LLMBENCH_CONTEXT_SIZE`。
 
 **ローカル runner の子プロセス環境変数は allowlist 型**: `LLMBENCH_*` と `PATH`/`HOME`/`TMPDIR` のみを明示的に構成し、コントローラの認証情報(`LLMBENCH_GITHUB_TOKEN` 等)は継承しない。**ただし local プロセスはコントローラと同一の filesystem/network 権限を持つため、local target は隔離境界ではない**(信頼された開発用途専用。§1.3)。
+
+### 3.6 Resource ownership と MeasurementWindow(v1.7・未実装)
+
+`pause/restore` は GitOps PR(人間のマージ)を伴うため、1 run ごとに回すと最適化ループが破綻する(20 ラウンド × 6 run = 120 サイクル)。**MeasurementWindow** は pause を保持したまま複数の測定 run を実行し、PR サイクルを 1 回にまとめる。詳細は `docs/optimization.md` §4。
+
+**所有範囲(最小)**: Window が持つのは **TargetLease と GitOps pause/restore** だけ。command hook と SandboxClaim は従来どおり Run が持つ(SandboxClaim まで Window が持つと、中断した runtime プロセスの掃除を別途 write-ahead 化する必要があり状態機械の変更が大きくなる)。
+
+```
+Window: pending → acquiring → open → closing → closed
+acquiring: TargetLease acquire(write-ahead) → GitOps pause hook acquire → open
+open:      1 run のみ ActiveRunID を CAS で取得して実行できる
+closing:   ActiveRunID が空になるまで release を開始しない
+           → GitOps restore hook release → TargetLease release → closed
+```
+
+不変条件:
+
+- `open` 以外では新しい Run slot を取得できない
+- `ActiveRunID` は最大 1 件(**CAS 必須**。複数 worker が同時に `open` を読めるため)
+- `closing` に入ったら `open` に戻らない。`closing` 中は新しい Run を開始しない
+- external effect は Window でも write-ahead
+- release エラー中は `closing` のまま。`closed` にしてはならない
+- TargetLease release 完了前に `closed` へ行かない
+- standalone Run の意味論は一切変更しない
+- `ErrPending` は「open だが他 run が実行中」のみ。missing / target 不一致 / closing / closed は**恒久エラー**(永久待ちを作らない)
+
+recovery(起動時は **Windows → Runs** の順): `ActiveRunID` が unfinished run を指す → recover、terminal run を指す → CAS で slot 解放、存在しない run を指す → stale slot として解放、`WindowID` を持つ run があるが window が無い → その run は実行しない。`max_window_duration` / `idle_timeout` 超過で reconciler が `closing` へ落とし、controller が死んでも release → restore に必ず収束する。
 
 ---
 
@@ -468,16 +612,123 @@ func CanonicalJSON(c Config) ([]byte, error)   // snapshot 用の決定論的シ
 type Config struct {
     Targets map[string]Target
     Preview *Preview
-    Site    *Site   // deprecated(v1.5): フェーズ 8〜10 の移行期間のみ併存。フェーズ 11 で削除する
     Review  *Review
     Defaults Limits      // target が省略した場合の既定上限
+    // (v1.7) 測定 protocol と最適化 profile は operator 所有。recipe からは選べない
+    MeasurementProtocols map[string]MeasurementProtocol // allowlist 本体(snapshot の元)
+    PromotionPolicies    map[string]PromotionPolicy     // policy 本体(snapshot の元)
+    SamplingPolicies     map[string]SamplingPolicy      // 複数 Run の編成(測定 protocol とは別)
+    OptimizationProfiles map[string]OptimizationProfile // kind/protocol/policy/budget の束
 }
 
-// BuildHookPlan は hook の並び順を決定する**唯一の箇所**:
-//   command hooks(宣言順) → gitops(設定あれば) → sandbox-claim(設定あれば)
-// Load/Validate はこの関数の結果に対して不変条件(gitops が sandbox-claim より先、等)を検証する。
-// 検証対象を「設定ファイルの見た目」ではなくこの出力にすることで、順序の定義が一箇所に集まる
+// (v1.7) 測定 protocol と昇格 policy。**どちらも operator 所有**で recipe からは変更できない。
+// 中身の契約は docs/optimization.md §6。snapshot(JSON)と digest の両方を run/session に保存する
+// ExecutionSpec は「candidate が変更できない測定コード」の実行と出力の境界(§optimization §5.4)。
+// driver も collector も同じ契約を使う
+type ExecutionSpec struct {
+    ContentDigest string // 実行物ツリーの digest(version 文字列では不足)
+    ExecMode      string // "sandbox-exec" | "separate-container"
+    OutputMode    string // "stdout-transport"(推奨) | "private-dir"
+}
+
+// WorkloadCase は workload matrix の 1 ケース。WorkloadDigest は実行した matrix 全体の
+// canonical digest であり、部分選択(WorkloadSelector)は将来拡張
+type WorkloadCase struct {
+    Name         string
+    ContextDepth int // 事前充填する KV の深さ(トークン)
+    PromptTokens int // 事前充填に使うプロンプト長
+    DecodeSteps  int // 計測する decode ステップ数
+    Prefill      bool // true なら prefill 計測ケース
+}
+
+// MeasurementProtocol は **1 Run の測定方法**だけを定める。複数 Run の編成(pair 数・
+// 実行順・seed)は SamplingPolicy が持つ(1 attempt = 1 Run の帰結)。
+type MeasurementProtocol struct {
+    SchemaVersion int
+    Driver        ExecutionSpec
+    DriverArgv    []string
+    Workload      struct{ Matrix []WorkloadCase }
+    Warmup        struct{ Steps int; DiscardSeconds int }
+    KVFill        string // 例: "none" | "to:64k" | "to:250k"
+    WithinRunSamples int // 1 Run 内で繰り返す測定回数(例: warmup 後に連続で測る回数)
+    RequiredSources []string // promotion に必須の metric source(例: driver, external_gpu)
+    Collector     []struct {
+        Name       string
+        IntervalMS int
+        Spec       ExecutionSpec
+    }
+    Validity struct{ Rules []string } // measurement_valid の判定規則(§optimization §5.5)
+    // runtime identity(runtime commit 等)は **protocol に入れない**。
+    // baseline/candidate で must-equal になってしまい runtime 最適化が比較不能になるため、
+    // RuntimeSpecDigest / RuntimeBuildDigest だけが持つ
+}
+// Validate は参照整合と MVP 制約を fail-closed で検査する(設定エラーにする):
+//   OptimizationProfile の Protocol/Policy/Sampling の参照先が存在すること
+//   SamplingPolicy.InitialPairs == MaxPairs(MVP は adaptive なし)
+//   PromotionPolicy.GrayZone.Action == "inconclusive"(MVP)
+//   OptimizationProfile.Kind が "visual" | "measurement"
+type PromotionPolicy struct {
+    SchemaVersion int
+    PrimaryMetric string   // 例: decode_step_ms
+    Direction     string   // "min" | "max"
+    AbsFloor      float64
+    RelFloor      float64
+    NoiseMultiple float64  // paired MAD に対する係数(診断用。MVP は床のみ)
+    Guards        struct {
+        PrefillRegressionLimit float64
+        MinVRAMHeadroomMiB     int // 既定 512
+        CorrectnessPredicates  []string
+    }
+    AllowedSources []string // promotion に使える metric source(harness/driver/external_gpu)
+    // 判定不能域の扱い(operator が変更できるため typed field として digest 対象)
+    // MVP は adaptive sampling を行わないため GrayZone は inconclusive 固定。
+    // adaptive を導入するときに need_more_samples(+ 追加 pair 数)を正式に追加する
+    // 反復数は SamplingPolicy が持つ(PromotionPolicy には置かない)
+    GrayZone    struct{ Action string } // "inconclusive"(MVP)
+}
+// SamplingPolicy は複数 Run の編成(operator 所有)。MVP は adaptive sampling を行わない。
+// 「各 Run は fresh runtime」が不変条件なので runtime reset は設定項目にしない
+type SamplingPolicy struct {
+    SchemaVersion  int
+    InitialPairs   int    // 例: 3(3 pairs = A/B 交互で 6 Run)
+    OrderRule      string // "balanced-randomized-pairs"(実際の順序と seed は evidence に記録)
+    MaxPairs       int    // adaptive 導入までの上限(MVP は InitialPairs と同値)
+    SeedPolicy     string // "per-session-random" | "fixed:<n>"
+}
+
+// SamplingPlan は SamplingPolicy から Session が生成した実体。evidence には
+// {policy_digest, seed, pair_index, position} を記録する
+type SamplingPlan struct {
+    PolicyID     string
+    PolicyDigest string
+    Seed         int64
+    Pairs        []struct{ Index int; First, Second string }
+}
+
+type OptimizationProfile struct {
+    // Kind は文字列で受ける: RunKind は internal/run が所有するため、
+    // operator が RunKind を参照すると run → operator → run の import cycle になる。
+    // Validate で "visual" | "measurement" に限定し、submit 時に run.RunKind へ変換する
+    Kind         string
+    Protocol     string // MeasurementProtocols のキー(存在しなければ Validate がエラー)
+    Policy       string // PromotionPolicies のキー(存在しなければ Validate がエラー)
+    Sampling     string // SamplingPolicies のキー(存在しなければ Validate がエラー)
+    MaxRounds    int
+    MaxRuns      int
+    MaxGPUDuration, MaxWindowDuration, MaxBuildDuration time.Duration
+    MaxInfraRetries int
+}
+
+// hook 計画は 3 契約に分かれ、それぞれが digest を持つ。順序の定義はこの 3 箇所に集約する:
+//   BuildHookPlan(t, runID)          standalone Run: command → gitops → sandbox-claim
+//   BuildWindowHookPlan(t, windowID) MeasurementWindow: gitops のみ(ブランチ名は windowID 由来)
+//   BuildWindowBoundRunHookPlan(t, runID) window-bound Run: command → sandbox-claim
+// window-bound Run の実効順序は Window の GitOps pause → command → SandboxClaim となり、
+// 「command が gitops より先」という旧不変条件の明示的な例外になる(§3.6)
+// Load/Validate は各関数の出力に対して不変条件(gitops が sandbox-claim より先、等)を検証する。
 func BuildHookPlan(t Target, runID string) []PlannedHook // run ID 依存フィールド(ブランチ名・claim 名)を含むため runID を受ける
+func BuildWindowHookPlan(t Target, windowID string) []PlannedHook
+func BuildWindowBoundRunHookPlan(t Target, runID string) []PlannedHook
 
 // hook 計画の要素型。run パッケージから参照される(operator → run 依存を作らないためここに置く。
 // §2.4 の「run → operator(型のみ)」を維持し、循環を構造的に排除する)
@@ -493,7 +744,9 @@ type GitOpsPlan struct {
     Owner, Repository, BaseBranch, FilePath string
     YAMLPath []string
     ActiveValue, PausedValue string
-    PauseBranch, RestoreBranch string // 決定論的: llmbench/{pause,restore}-<runID>
+    PauseBranch, RestoreBranch string // 決定論的: llmbench/{pause,restore}-<owner.ID>
+                                      //   standalone Run → runID、MeasurementWindow → windowID
+                                      //   (crash recovery で外部 PR を再発見する identity)
     AppNamespace, AppName string
     WorkloadNamespace, Deployment string
     ActiveReplicas int
@@ -511,6 +764,8 @@ type Preview struct {
     // v1.6 では operator 設定にしない(変更要求が出たら設定化する)
 }
 type Target struct {
+    // (v1.7) この target で使ってよい measurement protocol 名。空なら measurement run 不可
+    MeasurementProtocols []string
     Hooks   []CommandHook // {Name, Acquire []string, Release []string} argv。両方必須
     GitOps  *GitOps
     Sandbox *Sandbox
@@ -694,11 +949,14 @@ func Fingerprint(in FingerprintInput) string // canonical JSON → sha256
 
 ### 4.11 httpapi(chi)
 
-- `POST /v1/runs` `{experiment, input_commit?}` → 202 `{run_id}`。実験が allowlist target を選んでいるかは operator 設定で検証
+- `POST /v1/runs` `{experiment, input_commit?, kind?, measurement_protocol?, request_id?}` → 202 `{run_id}`。実験が allowlist target を選んでいるかは operator 設定で検証。`kind`/`measurement_protocol` は operator の allowlist に照合し(`measurement` は protocol 必須)、`request_id` 指定時は `RunID` を決定論的に導出する(§optimization §9.1)
 - `GET|HEAD /v1/runs/{id}/artifacts/{path...}` は **control API ではなく別リスナ**(§4.9)。ここには bearer 認証を掛けず、Ingress 側で認証する
 - **local target への HTTP 経由 submit は、operator が `AllowHTTPLocal: true` を明示した場合のみ許可(既定拒否)**。`LLMBENCH_API_TOKEN` 未設定時は loopback bind のみとし、local target は常に拒否
 - `GET /v1/runs/{id}` → Run 全体(Phase/HookState/LeaseState/ExecutionState/Artifacts)。**公開 URL は返さない**(恒久公開は controller の責務外。preview URL は `preview.base_url` から導出する)
 - bearer 認証: `LLMBENCH_API_TOKEN` 設定時のみ要求
+- *(v1.7)* `POST /v1/runs` は `request_id` を受け付ける。`RunID` を決定論的に導出し、同 id + 同 `RequestDigest` は**既存 Run を返す**、同 id + 異なる digest は **409**。TTL は無し(§9.1)
+- *(v1.7)* `GET /v1/runs/{id}/metrics` → sealed evidence(JSON)。**認証済み control API 側**に置く(preview リスナには置かない)。evidence が無い run は 404
+- *(v1.7)* `POST /v1/preflight` → operator policy・target availability・protocol の存在・runtime/image の存在・model pin・collector の可用性を GPU 取得前に検査(ローカル CLI だけでは cluster capability を検査できない)
 - handler はデコード → `run.Service`(Submit/Status interface をここで宣言)呼び出しのみ
 
 ### 4.12 adoption と CD(恒久公開)
@@ -821,6 +1079,20 @@ llmbench adopted verify --root experiments          # CI(§4.12)
 llmbench site build --root experiments --out _site  # CI(§4.12)
 ```
 
+*(v1.7・未実装)測定と最適化の追加コマンド:*
+
+```
+llmbench submit --remote <controller-url> --request-id <key> [--wait] [--json]
+llmbench status --remote <controller-url> | --coordination-namespace <ns>
+llmbench list | wait <run-id> | logs <run-id> | preview <run-id> | context --json
+llmbench metrics <run-id> --json | metrics diff <a> <b> --json
+llmbench compare --kind model|runtime <a> <b> --json
+llmbench preflight <experiment.yaml> --commit <sha> [--remote <url>] --json
+llmbench optimize start --issue <n> --profile <name> | round | decide | status
+```
+
+**exit code 契約**: `0` 成功 / `2` 入力不正 / `3` 競合(lease busy・digest 不一致・request-id 衝突)/ `4` 人間待ち(pause PR 未マージ)/ `10` run 失敗(`reason` で `execution_timeout` 等を区別)/ `11` client の `--wait` timeout(Run は cancel しない)。`--json` を全コマンドで受け付け、エラーは stderr に `{"error":{"code","message","hint"}}`。**Agent は HTTP API のみを使い、ConfigMap を直接触らない**。
+
 環境変数: `LLMBENCH_API_TOKEN`、`LLMBENCH_GITHUB_TOKEN`、`LLMBENCH_DISCORD_WEBHOOK`。`LLMBENCH_GITHUB_TOKEN` は Issue 記録と GitOps PR のみに使う(**site repo への書き込み権限は不要**)。preview は Ingress + クラスタ認証で守る(§4.9)。
 
 ## 6. 実装フェーズと完了条件
@@ -839,6 +1111,19 @@ llmbench site build --root experiments --out _site  # CI(§4.12)
 | 10 | 公開サイト | `site build`(manifest がある実験のみ・決定性テスト)+ `.github/workflows/pages.yml`(PR は verify/build、main で deploy)+ サンドボックス iframe 表示 |
 | 11 | 旧 publication 削除 | CD が動作してから実施。`pages`/`PublishFinalizer`/`Finalizer`/`finalizing` 新規遷移/`public_url` 新規書き込み/operator `site:` を削除し、**旧 `site:` 設定を明示エラーにする**。旧 record の legacy 移行テスト |
 
+**v1.7(測定と最適化。`docs/optimization.md` §14 と同じ。**いずれも未着手**)**
+
+| # | 内容 | 完了条件 |
+|---|------|---------|
+| 12 | A: 測定 identity | `MetricsDigest`/`MeasurementProtocol*`/`RuntimeSpecDigest`/`RuntimeBuildDigest`/`EnvironmentDigest` を Run provenance へ。既存 `BenchmarkFingerprint` を壊さない。objective/threshold は入れない |
+| 13 | B: sealed evidence | `evidence/metrics.json`(schema・source/trust・validity・上限・atomic seal・durability)、`GET /v1/runs/{id}/metrics`、`llmbench metrics --json`。collector は harness timing + nvidia-smi + runtime `/metrics`(任意) |
+| 14 | C: compare + Agent CLI | `submit --remote --request-id --wait`、`status --remote`、`wait`/`list`/`logs`/`preflight`(local + server-side)、`compare --kind`、exit code 契約 |
+| 15 | D: promotion policy | `PromotionPolicy` snapshot/digest、`optimize decide`(純関数)、verdict 台帳 |
+| 16 | W: MeasurementWindow | `OwnerRef` 一般化、Window 状態機械、`ActiveRunID` CAS、timeout/idle close、recovery、engine の明示分岐(§3.6) |
+| 17 | E: OptimizationSession | session 台帳、budget、Issue intent(`kind: benchmark|optimize`)、round 記録、failure 分類と新規 Run 再試行 |
+| 18 | F/G: runtime spec とイメージ公開 | `runtimes/<engine>/<variant>` + `runtime verify` + spec/build digest + build cache、main のみの trusted builder から GHCR へ(digest pin・attestation) |
+| 19 | H: 公開 metrics | adopted evidence 契約(manifest v2)、site build の静的 SVG、review 差分表 |
+
 各フェーズで `go test -race ./...` と `go vet ./...`。実データで実験プレースホルダを書き換えない。
 
 ## 7. 既存 docs からの意図的な変更点
@@ -849,6 +1134,9 @@ llmbench site build --root experiments --out _site  # CI(§4.12)
 4. **Finalize / finalizing の廃止**(§3.1): 公開を controller の責務から外したため、`releasing` 完了後は `success → succeeded` / `failure → failed` の二択になった。旧 record の `finalizing` は succeeded へ移行する
 5. **local target の位置づけ明確化**(§1.3, §4.11): 隔離境界ではない。HTTP 経由 local 実行は既定拒否
 6. `docs/usage.md` / `README.md` / `AGENTS.md` の該当記述はフェーズ 7 で更新
+7. *(v1.7)* **resource ownership の不変条件を変更**: 「1 target = 1 active Run / Run terminal ⇒ 復元完了」を「1 target = 1 exclusive owner(standalone Run | MeasurementWindow)」に一般化する。standalone Run の意味論は変えず、window-bound Run だけが「target が paused のまま terminal」になりうる(復元は Window の責務)。黙って変更せず、§3.6 と `docs/optimization.md` §2.1 に明記する
+8. *(v1.7)* **artifact と evidence を分離**: `ArtifactDigest` の「非空 = sealed」という意味を「sealed visual artifact が存在する」に限定し、evidence は `MetricsDigest` で別に表す。preview/review/adopt は visual artifact を要求し、`decide` は `MetricsDigest` を要求する
+9. *(v1.7)* **comparability と subject identity を分離**: 既存 `BenchmarkFingerprint` に runtime digest を入れると runtime 最適化が比較不能になるため、比較可否は `compare --kind` の must-equal/may-differ で判定する。**metric 値は fingerprint に入れない**
 
 ## 8. テスト方針
 
@@ -882,13 +1170,18 @@ llmbench site build --root experiments --out _site  # CI(§4.12)
 - `filestore` は書き込み中断シミュレーションと StoreVersion 競合テスト
 - `gitops` は §4.6 決定テーブルの全分岐(**drift ケース: 自 PR merged なのに manifest が逆方向、を含む**)
 - `operator` は hook 順序不変条件違反の検出テスト
+- *(v1.7)* `decide` は純関数の table-driven(各ゲートの境界・noise 閾値未満・headroom 不足・validity false・同点)・verdict digest の安定性
+- *(v1.7)* evidence: schema 検証・上限超過・canonical 化の決定性・seal durability(親 dir fsync 前に digest を保存しない)・回収上限
+- *(v1.7)* Window: `ActiveRunID` の CAS 競合(2 worker)・`open` 以外の拒否・`closing` 中の新規 run 拒否・release エラー中に `closed` にならないこと・timeout/idle 収束・recovery 表の全行
+- *(v1.7)* idempotency: 同 request-id 再送で同一 Run、digest 不一致で 409。`preflight`/`metrics` の応答と認可(control API のみ)
 
 ## 9. コーディング規約
 
 - エラーは sentinel(`run.ErrPending` / `run.ErrLeaseBusy` / `run.ErrVersionConflict`)+ `%w`。分岐は `errors.Is`
 - context 第一引数。`Clock` 注入。ID 生成は注入可能
 - 設定は yaml KnownFields で未知フィールド拒否。canonical JSON はソートキーで決定論化
-- 決定論的外部名: Claim `llmbench-<runID>`、プロセス handle `runtime-<runID>`、ブランチ `llmbench/{pause,restore}-<runID>`、成果物 `<output>/runs/<runID>/`(input snapshot はその下 `input/`、配信・adopt 対象は `output/`)、採用先 `experiments/<model-id>/<experiment-id>/output/`
+- 決定論的外部名 *(v1.7 追加分)*: RunID は `request_id` から決定論的に導出(`Truncate128(SHA256(namespace + "\0" + request_id))`)、evidence は `evidence/metrics.json`、Window は `window/<windowID>`。
+決定論的外部名: Claim `llmbench-<runID>`、プロセス handle `runtime-<runID>`、ブランチ `llmbench/{pause,restore}-<runID>`、成果物 `<output>/runs/<runID>/`(input snapshot はその下 `input/`、配信・adopt 対象は `output/`)、採用先 `experiments/<model-id>/<experiment-id>/output/`
 - パッケージコメント必須。パッケージ名は提供物を語る
 - ログは logr 構造化フィールド
 
@@ -899,11 +1192,13 @@ llmbench site build --root experiments --out _site  # CI(§4.12)
 3. Ingress(クラスタ認証)+ 別リスナで配信した preview の挙動と、生成 HTML の JS が sandbox 内でどこまで動くか。フェーズ 8 で確認
 3b. helper: `os.OpenRoot` による root confinement の Go バージョン要件と、`iframe sandbox` 表示での生成 HTML の動作。フェーズ 8/10 で確認
 4. (将来拡張)invoke を managed process(`invoke-<runID>`)+ completion receipt にして、`invoking` 割り込みからの再アタッチを可能にする。v1 は「interrupted = failure」で足りる
-5. (将来拡張)最適化ラウンドの multi-attempt: attempt 境界は「**artifact が PV へ immutable snapshot として確定した瞬間**」とし、`<output>/runs/<runID>/attempts/<attemptID>/output/` に置く。review/adopt の identity も `{run_id, attempt_id, artifact_digest}` へ拡張する。preview handler を SandboxClient に依存させないため、attempt 完了ごとに harness へ copy してから次 attempt を開始する。**v1.6 では状態機械を実装せず、現行の単発実行を「唯一の attempt 相当」として扱う**
+5. **(v1.7 で方針変更)最適化の試行錯誤は Run の内部に持たない**。`attempts/<attemptID>/` を Run 内に置く案は破棄し、**1 attempt = 1 Run** として `OptimizationSession > Round > 独立した Run` で表現する(`docs/optimization.md` §8)。非冪等な Execute を Run 内部で複数回扱うと v1.6 で固めた write-ahead/recovery が再び複雑になるため、再試行は同一 Run の再実行ではなく**新しい Run を作る**
 6. (将来拡張)multi-file artifact: v1.6 は self-contained な単一 `index.html` に固定する(§4.3)。付随 JS/CSS/JSON を認める場合は、preview の CSP と公開サイトの `srcdoc` で相対 URL が解決できるよう **bundle/inline の仕様**(および `script-src`/`img-src` の見直し)を先に定義する
 7. (将来拡張)プレビューの外部公開: Cloudflare Access での外部 ID 許可、または一時 deployment。社内 OIDC 限定で足りる間は実装しない
 
 ## 11. 変更履歴
+
+- v1.7.0: **測定と最適化の設計を追加**(未実装。詳細は `docs/optimization.md`)。① artifact と evidence を分離(visual payload は `ArtifactDigest`、測定結果は `evidence/metrics.json` の `MetricsDigest`。`RunKind = visual | measurement` を導入し、状態機械は共通のまま必須成果物だけ変える)。② 測定 identity(`MeasurementProtocol` snapshot+digest、`RuntimeSpecDigest`/`RuntimeBuildDigest`/`EnvironmentDigest`)を Run provenance へ。③ comparability は `compare --kind model|runtime` の must-equal/may-differ で判定し、**既存 `BenchmarkFingerprint` に runtime digest を入れない**(入れると runtime 最適化が比較不能になる)。metric 値は fingerprint に入れない。④ promotion は `MeasurementProtocol` と `PromotionPolicy` を分離し、後者を operator 所有にして **harness が純関数で判定**する(辞書順ゲート、noise-aware、measurement validity gate、source/trust)。Agent に採否権を与えない。⑤ **resource ownership の不変条件を変更**: `1 target = 1 exclusive owner(standalone Run | MeasurementWindow)`。Window は TargetLease と GitOps pause/restore だけを持ち、`ActiveRunID` を CAS で 1 本に制限する。standalone Run の意味論は不変。⑥ 最適化の試行錯誤は Run 内部ではなく `OptimizationSession > Round > 独立 Run`(1 attempt = 1 Run)で表現し、§10 の `attempts/` 案を破棄。⑦ runtime 供給網(`RuntimeSpecDigest`/`RuntimeBuildDigest`、build cache、**OCI image を digest pin で公開**する main 限定 trusted builder、attestation)。⑧ Agent CLI 契約(`submit --remote --request-id`、`preflight`(server-side 含む)、exit code、Agent は HTTP API のみ)
 
 - v1.6.0: **公開責務の分離**(ユーザー提案 + 外部レビュー)。不変条件を追加: `run success ≠ publication` / `preview ≠ public site` / review・adopt・publication の同一性は artifact digest / `adopt` は人間が認可した materialization / **`main merge` が唯一の恒久公開ゲート**。① controller の publication(旧 §4.9 pages、`Finalizer`/`FinalizeResult`/`finalizing` 新規遷移/`PublicURL`/`PublishError` の新規書き込み/operator `site:`)を削除し、CI(`adopted verify` + `site build` + GitHub Actions → Pages)へ移す(§4.12)。② `§4.9` を **preview**(別リスナ・上流認証・`output/` 限定・CSP `sandbox allow-scripts`・`os.OpenRoot` による confinement・SandboxClient 非依存)に置換。③ review の前提を「succeeded + artifact 存在」に変更し、preview URL は `preview.base_url` から導出(URL を Run に永続化せず、marker に run ID と artifact digest を残す)。④ `adopt`/`manifest.json`/`adopted verify`/`site build` を追加し、hash・inventory・path 検証は Go 側を正とする。⑤ 旧 record の `finalizing` は succeeded へ移行。⑥ 最適化ラウンドの attempt 境界は §10 に設計のみ記載(現行の単発実行を唯一の attempt 相当とする)。⑦ 公開ゲートは「main 上の存在」+ PR 必須の branch protection。⑧ 2 周目のレビュー指摘の反映: **サイト移行を段階化**(`site:` の削除とエラー化はフェーズ 11。8〜10 は `Site`/`Preview` 併存)、**seal を runner の atomic rename + 配信時 digest 再計算(不一致 409)の 2 段で保証**、**`output/manifest.json` を予約名として seal 時に拒否**、**`--review` 省略述語を「`<into>` に有効な manifest が無い場合のみ」と機械化**、**adopt の atomic rename 対象を `<into>/output/` に限定し placeholder 置換規則を明記**、**pre-v1.6 record は preview/adopt 対象外(backfill しない)**、§1.3/§4.6 の旧「公開サイト書き込み権限」記述を削除。⑭ 8 周目のレビュー指摘の反映: **`.gitignore` に `.adopt.lock` / `.adopt-tmp-*/` / `.adopt-bak-*/` の 3 系統を明示**し、永続 lock file が誤って commit されないようにする。⑬ 7 周目のレビュー指摘の反映: **lock file は unlink せず安定した inode を使い続ける**(削除すると inode 入れ替えで排他が破れる。解放は FD close/プロセス終了に任せる)。⑫ 6 周目のレビュー指摘の反映: **adopt の write 手順全体(`recovery→判定→temp→swap→cleanup`)を `<into>` 単位の advisory lock で排他**し、同一 `<into>` に `.adopt-tmp-*`/`.adopt-bak-*` が複数あれば fail closed(復旧表の一意性を保つ)。**manifest の review に `vote_comment_id` と `choice` を追加**し、採用を認可した Issue 上の決定を不変の証跡として保存。⑪ 5 周目のレビュー指摘の反映: **決定表に `output なし / tmp あり / bak なし` を追加し、`output なし / tmp あり / bak あり` の tmp 不完全時の動作を規定**、**「tmp が完全」の述語を schema/inventory/digest/single-file で機械的に固定**(fail-closed)。**「最新 vote」の順序を GitHub comment 昇順の最後の有効 vote と固定**(payload の `at` は使わない・多数決はしない・`review status` と `adopt --review` が同じ関数を共有)。⑩ 4 周目のレビュー指摘の反映: **「review 完了」の述語を固定**(Issue 正本に有効な vote が 1 件以上あり、最新の解決結果が adopt 対象 run を選ぶ。`tie`/`invalid` は拒否)、**`adopted verify` に「`review: null` は 1 model 最大 1 件」の global invariant を追加**、**artifact を self-contained な単一 `index.html` に固定**(multi-file は preview の CSP と公開サイトの `srcdoc` で表示できないため。bundle/inline は §10)、**adopt の two-phase rename に各段の親 dir fsync とクラッシュ復旧決定表を追加**、**Sandbox 回収の per-file 上限を明記**。⑨ 前段の反映: **artifact 同一性の定義を §4.4 の `ArtifactDigest(outputDir)` 1 箇所に固定**(preview/review/adopt/verify が同じ関数を使う)、**`manifest.json` を payload inventory から除外**して自己参照を排除、**preview は `ArtifactDigest` が非空の確定済み artifact のみ配信**、operator に `Preview` 型を追加(旧 `site:` はエラー)、file size 上限は実装定数(8 MiB)、`--review` の必須/任意を明確化(比較相手が無い baseline のみ任意)、公開サイトは **git 上の adopt 済み bytes だけ**を埋め込み preview URL を参照しない、公開ゲートは「main 上の存在」+ PR 必須の branch protection、`ControllerVersion` を Run に永続化、adopt の `--into` confinement を規定
 

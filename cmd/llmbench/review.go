@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -14,7 +15,9 @@ import (
 	"github.com/nomanoma121/llm-bench/internal/experiment"
 	"github.com/nomanoma121/llm-bench/internal/filestore"
 	"github.com/nomanoma121/llm-bench/internal/issues"
+	"github.com/nomanoma121/llm-bench/internal/kube"
 	"github.com/nomanoma121/llm-bench/internal/operator"
+	"github.com/nomanoma121/llm-bench/internal/provenance"
 	"github.com/nomanoma121/llm-bench/internal/review"
 	"github.com/nomanoma121/llm-bench/internal/run"
 )
@@ -60,8 +63,12 @@ func buildReviewService(g *globalFlags, opCfg operator.Config) (*review.Service,
 }
 
 // loadRunView projects a finished run for review validation.
-func loadRunView(ctx context.Context, store *filestore.Store, id string) (review.RunView, error) {
-	r, err := store.LoadRun(ctx, id)
+//
+// runs resolves the run record: records move to Kubernetes when coordination
+// is configured, while artifacts always stay on the harness volume, so the two
+// are resolved separately.
+func loadRunView(ctx context.Context, runs run.RunStore, artifactsDir func(string) string, id string) (review.RunView, error) {
+	r, err := runs.LoadRun(ctx, id)
 	if err != nil {
 		return review.RunView{}, err
 	}
@@ -71,13 +78,22 @@ func loadRunView(ctx context.Context, store *filestore.Store, id string) (review
 	if r.Artifacts.ArtifactDigest == "" {
 		return review.RunView{}, fmt.Errorf("review: run %s has no sealed artifact yet", id)
 	}
+	// Recompute the payload digest: the Issue marker must describe the bytes
+	// that are actually there, not merely the digest recorded at seal time.
+	digest, err := provenance.ArtifactDigest(filepath.Join(artifactsDir(id), "output"))
+	if err != nil {
+		return review.RunView{}, fmt.Errorf("review: read artifact of %s: %w", id, err)
+	}
+	if digest != r.Artifacts.ArtifactDigest {
+		return review.RunView{}, fmt.Errorf("review: run %s changed after sealing; re-run the benchmark", id)
+	}
 	var cfg experiment.Config
 	if err := json.Unmarshal([]byte(r.RecipeJSON), &cfg); err != nil {
 		return review.RunView{}, fmt.Errorf("review: decode recipe snapshot of %s: %w", id, err)
 	}
 	return review.RunView{
 		ID:             r.ID,
-		ArtifactDigest: r.Artifacts.ArtifactDigest,
+		ArtifactDigest: digest,
 		Fingerprint:    r.Fingerprint,
 		Model:          cfg.Model,
 		ModelDigest:    r.Artifacts.ModelTreeDigest,
@@ -97,9 +113,25 @@ func newReviewCmd(g *globalFlags) *cobra.Command {
 	return cmd
 }
 
+// runReader returns the store that holds run records (Kubernetes when
+// coordination is configured, the local file store otherwise) plus the
+// artifact directory resolver, which always points at the harness volume.
+func runReader(g *globalFlags, coordinationNamespace string) (run.RunStore, func(string) string, error) {
+	fs := mustFileStore(g)
+	if coordinationNamespace == "" {
+		return fs, fs.ArtifactsDir, nil
+	}
+	client, err := kubeClient(g.kubeconfig)
+	if err != nil {
+		return nil, nil, err
+	}
+	return kube.NewRunStore(client, coordinationNamespace), fs.ArtifactsDir, nil
+}
+
 func newReviewRequestCmd(g *globalFlags) *cobra.Command {
 	var configPath string
 	var issue int
+	var coordNamespace string
 	cmd := &cobra.Command{
 		Use:   "request <baseline-run-id> <candidate-run-id>",
 		Short: "Post an A/B comparison comment on the Issue and record the review",
@@ -116,12 +148,15 @@ func newReviewRequestCmd(g *globalFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			store := mustFileStore(g)
-			base, err := loadRunView(context.Background(), store, args[0])
+			runs, artifactsDir, err := runReader(g, coordNamespace)
 			if err != nil {
 				return err
 			}
-			cand, err := loadRunView(context.Background(), store, args[1])
+			base, err := loadRunView(context.Background(), runs, artifactsDir, args[0])
+			if err != nil {
+				return err
+			}
+			cand, err := loadRunView(context.Background(), runs, artifactsDir, args[1])
 			if err != nil {
 				return err
 			}
@@ -136,6 +171,7 @@ func newReviewRequestCmd(g *globalFlags) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "operator configuration (required)")
 	cmd.Flags().IntVar(&issue, "issue", 0, "originating Issue number (required)")
+	cmd.Flags().StringVar(&coordNamespace, "coordination-namespace", "", "kubernetes namespace holding run records (defaults to the local file store)")
 	_ = cmd.MarkFlagRequired("issue")
 	_ = cmd.MarkFlagRequired("config")
 	return cmd

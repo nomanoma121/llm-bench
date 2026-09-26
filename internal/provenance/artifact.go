@@ -134,6 +134,18 @@ func ArtifactDigestWithOverride(dir, overridePath string, overrideBytes []byte) 
 	if err != nil {
 		return "", err
 	}
+	// The substituted file must be part of the payload, otherwise the digest
+	// would not cover the bytes the caller is about to hand out.
+	covered := false
+	for _, f := range files {
+		if f.Path == overridePath {
+			covered = true
+			break
+		}
+	}
+	if !covered {
+		return "", fmt.Errorf("provenance: %s is not part of the artifact payload", overridePath)
+	}
 	return PayloadDigest(files), nil
 }
 

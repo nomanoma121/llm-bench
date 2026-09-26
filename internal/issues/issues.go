@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/google/go-github/v89/github"
@@ -74,6 +75,10 @@ func (i *Issues) FindComments(ctx context.Context, issue int, marker string) ([]
 			}
 		}
 		if resp == nil || resp.NextPage == 0 {
+			// The vote rules take the last valid comment as the decision, so
+			// the canonical order must be enforced here rather than assumed
+			// from the API's paging order.
+			sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 			return out, nil
 		}
 		opts.Page = resp.NextPage

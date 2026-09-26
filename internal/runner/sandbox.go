@@ -203,6 +203,9 @@ func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.Artifacts, error)
 	if err != nil {
 		return run.Artifacts{}, fmt.Errorf("runner: pull index.html: %w", err)
 	}
+	if len(index) > maxArtifactBytes {
+		return run.Artifacts{}, fmt.Errorf("runner: artifact is %d bytes, over the %d byte limit", len(index), maxArtifactBytes)
+	}
 	if err := os.WriteFile(filepath.Join(staging, "index.html"), index, 0o644); err != nil {
 		return run.Artifacts{}, err
 	}
@@ -232,19 +235,40 @@ func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.Artifacts, error)
 // verifySingleOutputScript returns the python3 program that fails unless the
 // sandbox output directory contains exactly index.html.
 func verifySingleOutputScript(root string) string {
-	return fmt.Sprintf(`import os, sys
+	return fmt.Sprintf(`import os, stat, sys
 root = %q
+limit = %d
 bad = []
+count = 0
 for dirpath, dirnames, filenames in os.walk(root):
     for name in filenames:
-        rel = os.path.relpath(os.path.join(dirpath, name), root)
+        path = os.path.join(dirpath, name)
+        rel = os.path.relpath(path, root)
         if rel != "index.html":
             bad.append(rel)
+            continue
+        # The sealed payload is a single regular file: a symlink or any other
+        # special would mean local and sandbox disagree about what was hashed.
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode):
+            bad.append(rel + " (not a regular file)")
+            continue
+        if st.st_size > limit:
+            bad.append(rel + " (too large)")
+            continue
+        count += 1
 if bad:
     sys.stderr.write("unexpected output files: " + ",".join(sorted(bad)))
     sys.exit(3)
-`, root)
+if count != 1:
+    sys.stderr.write("output/index.html is missing")
+    sys.exit(3)
+`, root, maxArtifactBytes)
 }
+
+// maxArtifactBytes bounds a single recovered artifact file. It matches the
+// preview's serving limit so local and sandbox seal the same thing.
+const maxArtifactBytes = 8 << 20
 
 // formatInvokeLog records the invoked argv, captured output and exit status.
 func formatInvokeLog(argv []string, stdout, stderr []byte, code int, execErr error) []byte {

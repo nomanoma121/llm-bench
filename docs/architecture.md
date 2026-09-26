@@ -179,10 +179,10 @@ adopt, sitebuild ──▶ provenance(検証は 1 箇所)
 | Sandbox runner | `sandbox`(決定論的 claim・Ready/削除の収束待ち・argv境界quote・detachプロセス)/ `runner.Sandbox`(commit照合・archive転送・readiness clamp・モデル digest pin) |
 | GitOps hook | `gitops`(状態+帰属の決定テーブル・同一revisionでのArgo収束・Pod消滅確認・rollback・drift拒否)/ `kube`(Argo CD・Deployment/Pod確認) |
 | レビュー | `issues`(bot_loginでfail-closed)/ `discord`(Issueリンクのみ)/ `review`(Issueが投票履歴の正、fingerprint検証) |
-| 旧 publication(v1.5) | `pages`(非force・競合リトライで冪等公開)/ `runner.PublishFinalizer` / `finalizing` フェーズ。**v1.6 で削除**(§4.12 の CD へ移行) |
+| 旧 publication(v1.5) | `pages` / `runner.PublishFinalizer` / `finalizing` フェーズ。**v1.6 で削除済み**(§4.12 の CD へ移行) |
 | Kubernetes 協調 | `kube`(ConfigMap store=CAS、TargetLease=owner条件付き削除、Lease リーダー選出と喪失時の worker cancel、再選出) |
 
-v1.6 で追加する単位(§6 のフェーズ 8〜11): `provenance.ArtifactDigest` と Run への digest/`ControllerVersion` 記録、preview API(§4.9)、adopt + manifest + verify、`site build` + Actions(§4.12)、旧 publication の削除(`finalizing` の legacy 移行を含む)。**v1.6 の設計はこの文書が正であり、実装は未着手**(利用者向け docs と `examples/` は実装フェーズで更新する)。
+v1.6 で追加した単位(§6 のフェーズ 8〜11): `provenance.ArtifactDigest` と Run への digest/`ControllerVersion` 記録、preview API(§4.9)、adopt + manifest + verify、`site build` + Actions(§4.12)、旧 publication の削除(`finalizing` の legacy 移行を含む)。すべて実装済みで、`go test -race ./...` と `go vet ./...` が緑。未検証は「GitHub Pages への実デプロイ」と「実クラスタでのプレビュー配信(Ingress + クラスタ認証)」
 
 未検証・未実装: 実クラスタでの e2e(Argo CD / Deployment / SandboxClaim の遷移)、Ingress + クラスタ認証でのプレビュー配信、マルチレプリカでの外部効果 fence の実証、Agent 最適化ループの接続(attempt 境界は §4.12 と §10 に設計のみ)、Git LFS の materialize。
 

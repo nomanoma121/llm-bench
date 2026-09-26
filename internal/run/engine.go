@@ -24,7 +24,6 @@ type Engine struct {
 	Leases    LeaseStore
 	Hooks     HookSource
 	Executor  Executor
-	Finalizer Finalizer // optional: nil short-circuits finalizing to succeeded
 	Snapshots InputSnapshotter
 	Log       logr.Logger
 	Clock     Clock
@@ -393,28 +392,26 @@ func (e *Engine) stepReleasing(ctx context.Context, r *Run) (wait bool, err erro
 		} // keep the failure reason visible on failed runs
 		return false, e.save(ctx, r)
 	}
-	// LeaseState == released: decide the outcome now.
+	// LeaseState == released: decide the outcome now. Publication is not part
+	// of a run's success condition (§1.5): a run that executed and restored
+	// everything is succeeded, and adoption/publication is a human decision
+	// handled by CI (§4.12).
 	if r.ExecutionResult == ResultSuccess {
-		if e.Finalizer == nil {
-			r.Phase = PhaseSucceeded
-			return false, e.save(ctx, r)
-		}
-		r.Phase = PhaseFinalizing
+		r.Phase = PhaseSucceeded
+		r.WaitReason = ""
 		return false, e.save(ctx, r)
 	}
 	r.Phase = PhaseFailed
 	return false, e.save(ctx, r)
 }
 
+// stepFinalizing migrates records written before v1.6: they waited for the
+// controller to publish, which no longer exists. The lease is already
+// released, so the run is simply succeeded; the recorded publication fields
+// stay untouched as history.
 func (e *Engine) stepFinalizing(ctx context.Context, r *Run) (wait bool, err error) {
-	res, err := e.Finalizer.Finalize(ctx, *r, r.Artifacts)
-	if err != nil {
-		r.PublishError = err.Error()
-		return true, e.save(ctx, r) // stay finalizing; GPU is already released
-	}
-	r.PublicURL = res.PublicURL
-	r.PublishError = ""
 	r.Phase = PhaseSucceeded
+	r.WaitReason = ""
 	return false, e.save(ctx, r)
 }
 

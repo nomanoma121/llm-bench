@@ -2,7 +2,7 @@
 
 The Go module lives at the repository root. See [design.md](design.md) for the full workflow.
 
-The control plane validates an experiment, runs a command-backed benchmark locally or in an Agent Sandbox, exposes a chi HTTP API and a Cobra CLI, persists run state, and applies ordered acquire/release hooks. Outputs are published to a static site (one directory per run) with artifact hashes; there is no screenshot step, so the human A/B comparison uses the published HTML itself. The hooks are configured by the controller operator, not by experiment authors. An optional GitOps hook creates pause/restore GitHub PRs and checks the configured Argo CD Application and inference Deployment/Pods.
+The control plane validates an experiment, runs a command-backed benchmark locally or in an Agent Sandbox, exposes a chi HTTP API and a Cobra CLI, persists run state, and applies ordered acquire/release hooks. Artifacts are sealed with a digest and served as authenticated previews; there is no screenshot step, so the human A/B comparison uses the raw HTML itself. The controller never publishes: a human adopts an accepted artifact into the repository and CI builds the public site from what was merged. The hooks are configured by the controller operator, not by experiment authors. An optional GitOps hook creates pause/restore GitHub PRs and checks the configured Argo CD Application and inference Deployment/Pods.
 
 From the repository root:
 
@@ -72,7 +72,7 @@ review:
   discord_webhook_env: LLMBENCH_DISCORD_WEBHOOK
 ```
 
-The Discord setting is optional; when set, provide that environment variable in the controller and Discord receives only the Issue link. Once both runs have succeeded, been published and finished restoration, request and record a review:
+The Discord setting is optional; when set, provide that environment variable in the controller and Discord receives only the Issue link. Once both runs have succeeded with sealed artifacts and finished restoration, request and record a review:
 
 ```sh
 go run ./cmd/llmbench review request <baseline-run-id> <candidate-run-id> --issue 42 --config examples/server-gitops.yaml

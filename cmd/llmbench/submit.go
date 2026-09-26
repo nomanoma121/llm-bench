@@ -57,9 +57,6 @@ func runSubmit(cmd *cobra.Command, g *globalFlags, expPath, configPath, commit s
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "run %s finished: phase=%s result=%s\n", final.ID, final.Phase, final.ExecutionResult)
-	if final.PublicURL != "" {
-		fmt.Fprintf(cmd.OutOrStdout(), "published: %s\n", final.PublicURL)
-	}
 	if final.Phase != run.PhaseSucceeded {
 		return fmt.Errorf("run %s did not succeed (phase=%s wait_reason=%q)", final.ID, final.Phase, final.WaitReason)
 	}

@@ -34,11 +34,8 @@ targets:
     sandbox:
       namespace: bench
       warm_pool: demo-llmbench
-site:
-  owner: example
-  repository: llm-bench-site
-  branch: gh-pages
-  base_url: https://example.github.io/llm-bench-site
+preview:
+  base_url: https://llmbench-preview.example.internal
 `
 
 func TestParseExamples(t *testing.T) {
@@ -65,8 +62,8 @@ func TestParseExamples(t *testing.T) {
 	if _, ok := c.Targets["local"]; !ok {
 		t.Fatal("local missing")
 	}
-	if c.Site == nil || c.Site.Branch != "gh-pages" {
-		t.Fatal("site not parsed")
+	if c.Preview == nil || c.Preview.BaseURL != "https://llmbench-preview.example.internal" {
+		t.Fatal("preview block not parsed")
 	}
 }
 
@@ -205,4 +202,45 @@ func TestPlanDigestIsStable(t *testing.T) {
 		t.Fatal("digest should differ for different run IDs")
 	}
 	_ = time.Second
+}
+
+func TestParseRejectsRemovedSiteBlock(t *testing.T) {
+	in := `
+targets:
+  local:
+    hooks: []
+site:
+  owner: example
+  repository: llm-bench-site
+  branch: gh-pages
+  base_url: https://example.github.io/llm-bench-site
+`
+	_, err := Parse(strings.NewReader(in))
+	if err == nil || !strings.Contains(err.Error(), "site configuration was removed") {
+		t.Fatalf("expected an explicit removal error, got %v", err)
+	}
+}
+
+func TestReviewRequiresPreviewBaseURL(t *testing.T) {
+	in := `
+targets:
+  local:
+    hooks: []
+review:
+  owner: example
+  repository: llm-bench
+  bot_login: bench-app[bot]
+`
+	if _, err := Parse(strings.NewReader(in)); err == nil || !strings.Contains(err.Error(), "preview.base_url") {
+		t.Fatalf("expected the preview requirement, got %v", err)
+	}
+}
+
+func TestPreviewRequiresAbsoluteURL(t *testing.T) {
+	for _, base := range []string{"", "not-a-url", "/relative"} {
+		in := "targets:\n  local:\n    hooks: []\npreview:\n  base_url: \"" + base + "\"\n"
+		if _, err := Parse(strings.NewReader(in)); err == nil {
+			t.Fatalf("base_url %q: expected rejection", base)
+		}
+	}
 }

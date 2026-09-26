@@ -175,7 +175,8 @@ func TestSubmitMapsErrors(t *testing.T) {
 }
 
 func TestStatusEndpoint(t *testing.T) {
-	f := &fakeService{run: run.Run{ID: "r1", Phase: run.PhaseSucceeded, PublicURL: "https://x/y"}}
+	f := &fakeService{run: run.Run{ID: "r1", Phase: run.PhaseSucceeded,
+		Artifacts: run.Artifacts{ArtifactDigest: "sha256:abc"}}}
 	ts := serve(t, f, "")
 
 	resp, err := http.Get(ts.URL + "/v1/runs/r1")
@@ -188,8 +189,16 @@ func TestStatusEndpoint(t *testing.T) {
 	}
 	var view StatusView
 	_ = json.NewDecoder(resp.Body).Decode(&view)
-	if view.ID != "r1" || view.PublicURL != "https://x/y" {
+	if view.ID != "r1" || view.Artifacts.ArtifactDigest != "sha256:abc" {
 		t.Fatalf("view = %+v", view)
+	}
+	// Publication is CI's business: the API never reports a public URL.
+	body, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "public_url") || strings.Contains(string(body), "publish_error") {
+		t.Fatalf("status view must not expose legacy publication fields: %s", body)
 	}
 
 	f.statusErr = run.ErrNotFound

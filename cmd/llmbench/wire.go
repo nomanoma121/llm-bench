@@ -24,7 +24,6 @@ import (
 	"github.com/nomanoma121/llm-bench/internal/httpapi"
 	"github.com/nomanoma121/llm-bench/internal/kube"
 	"github.com/nomanoma121/llm-bench/internal/operator"
-	"github.com/nomanoma121/llm-bench/internal/pages"
 	"github.com/nomanoma121/llm-bench/internal/provenance"
 	"github.com/nomanoma121/llm-bench/internal/run"
 	"github.com/nomanoma121/llm-bench/internal/runner"
@@ -324,23 +323,15 @@ func buildEngine(g *globalFlags, cfg operator.Config, interval time.Duration,
 func buildEngineWithStores(g *globalFlags, cfg operator.Config, interval time.Duration,
 	sandboxes *sandboxClients, gitopsGateways *gitopsGateways, stores engineStores,
 ) (*run.Engine, error) {
-	// Publication (site) wiring: only when the operator configured a site.
-	var finalizer run.Finalizer
-	if cfg.Site != nil {
-		publisher, err := pages.New(cfg.Site.Owner, cfg.Site.Repository, cfg.Site.Branch, cfg.Site.BaseURL, cfg.Site.ExtraFiles)
-		if err != nil {
-			return nil, fmt.Errorf("wire: pages publisher: %w", err)
-		}
-		finalizer = &runner.PublishFinalizer{Publisher: publisher}
-	}
-
+	// There is no controller-side publication: a run ends at succeeded, and
+	// publishing happens when a human adopts an artifact and CI builds the
+	// site from it (docs/architecture.md §4.12).
 	engine := &run.Engine{
 		Store:     stores.Runs,
 		Leases:    stores.Leases,
 		Snapshots: stores.Snapshots,
 		Hooks:     &planHookSource{dir: g.root, sandboxClients: sandboxes, gitopsGateways: gitopsGateways},
 		Executor:  executorRouter{g: g, cfg: cfg, sandboxClients: sandboxes},
-		Finalizer: finalizer,
 		Log:       controllerLogger(),
 		Interval:  interval,
 		MaxExecutionDuration: func(target string) time.Duration {

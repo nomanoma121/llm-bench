@@ -86,15 +86,20 @@ TOKEN=$(gh api -X POST repos/<owner>/<repo>/actions/runners/registration-token -
 mkdir -p ~/actions-runner-llm-bench && cd ~/actions-runner-llm-bench
 curl -sLO https://github.com/actions/runner/releases/download/v<version>/actions-runner-osx-arm64-<version>.tar.gz
 tar xzf actions-runner-osx-arm64-<version>.tar.gz && rm actions-runner-osx-arm64-<version>.tar.gz
-./config.sh --url https://github.com/<owner>/<repo> --token "$TOKEN" --labels llm-bench --unattended --replace
+# Repeat once per label: --labels llm-bench-verify and --labels llm-bench-deploy
+./config.sh --url https://github.com/<owner>/<repo> --token "$TOKEN" --labels llm-bench-verify --unattended --replace
 
 # 3. Keep it running across logins (macOS LaunchAgent; use ./svc.sh with systemd elsewhere).
 ./svc.sh install && ./svc.sh start
 ```
 
+Two runners are registered with distinct labels: **`llm-bench-verify`** for pull requests and **`llm-bench-deploy`** for the `main`-only deploy job. Keeping them separate means a pull request never runs in the job that holds `pages: write` / `id-token: write`.
+
 Operational notes:
 
-- The runner executes repository code from pull requests, so PR jobs get `contents: read` only; page/id-token permissions are granted to the deploy job, which runs on `main` only. Do not accept pull requests from untrusted forks on this runner.
+- Pull-request code is untrusted. The verify job runs with `contents: read` only, and it is guarded so that it runs **only for pull requests from this repository**. A user-owned private repository cannot disable forking through the API, so this guard is the mechanical control: a fork pull request never executes here (and cannot satisfy the required `verify` check, so it cannot merge).
+- The two labels are a configuration boundary, not a machine boundary. On a single host, code from a same-repository pull request shares the operating system with the deploy job. If you add collaborators whose pull requests you do not fully trust, register `llm-bench-verify` on a **separate host or VM**, or run ephemeral runners that are discarded after each job.
+- Labels on the deploy runner: register it with `--labels llm-bench-deploy` (the verify runner uses `--labels llm-bench-verify`). Change a runner's labels under Settings → Actions → Runners, or with `gh api -X PUT repos/<owner>/<repo>/actions/runners/<id>/labels -f 'labels[]=llm-bench-verify'`.
 - `actions/setup-go` installs the toolchain named by `go.mod`; the runner also needs network access to github.com and the Go module proxy, plus disk space for the module and build caches.
 - `verify` is a **required** status check on `main`, so pull requests cannot merge while the runner is offline. Keep the machine running, or stop requiring the check when the runner is decommissioned.
 - To decommission it: `./svc.sh stop && ./svc.sh uninstall` and remove it under Settings → Actions → Runners.

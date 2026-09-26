@@ -25,9 +25,14 @@ permissions:
 jobs:
   verify:
     name: verify
-    # Runs on a self-hosted runner so publication does not depend on hosted
-    # minutes. Register it with the extra label: see docs/usage.md.
-    runs-on: [self-hosted, llm-bench]
+    # Pull-request code is untrusted: it may only run with a read-only token and
+    # only from this repository. Forks cannot be disabled on a user-owned
+    # private repository, so the guard below is the mechanical control; a fork
+    # pull request therefore never runs here (and cannot satisfy the required
+    # check, so it cannot merge either).
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Separate runner label from the privileged deploy job (see docs/usage.md).
+    runs-on: [self-hosted, llm-bench-verify]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -52,7 +57,9 @@ jobs:
     name: deploy
     needs: verify
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    runs-on: [self-hosted, llm-bench]
+    # Only merged main code reaches this job, which is the only one holding
+    # pages/id-token permissions.
+    runs-on: [self-hosted, llm-bench-deploy]
     timeout-minutes: 20
     permissions:
       contents: read   # actions/checkout needs it; listing permissions drops the rest

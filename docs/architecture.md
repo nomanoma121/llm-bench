@@ -179,10 +179,10 @@ adopt, sitebuild ──▶ provenance(検証は 1 箇所)
 | Sandbox runner | `sandbox`(決定論的 claim・Ready/削除の収束待ち・argv境界quote・detachプロセス)/ `runner.Sandbox`(commit照合・archive転送・readiness clamp・モデル digest pin) |
 | GitOps hook | `gitops`(状態+帰属の決定テーブル・同一revisionでのArgo収束・Pod消滅確認・rollback・drift拒否)/ `kube`(Argo CD・Deployment/Pod確認) |
 | レビュー | `issues`(bot_loginでfail-closed)/ `discord`(Issueリンクのみ)/ `review`(Issueが投票履歴の正、fingerprint検証) |
-| 旧 publication(v1.5) | `pages`(非force・競合リトライで冪等公開)/ `runner.PublishFinalizer` / `finalizing` フェーズ。**v1.6 で削除**(§4.12 の CD へ移行) |
+| 旧 publication(v1.5) | `pages` / `runner.PublishFinalizer` / `finalizing` フェーズ。**v1.6 で削除済み**(§4.12 の CD へ移行) |
 | Kubernetes 協調 | `kube`(ConfigMap store=CAS、TargetLease=owner条件付き削除、Lease リーダー選出と喪失時の worker cancel、再選出) |
 
-v1.6 で追加する単位(§6 のフェーズ 8〜11): `provenance.ArtifactDigest` と Run への digest/`ControllerVersion` 記録、preview API(§4.9)、adopt + manifest + verify、`site build` + Actions(§4.12)、旧 publication の削除(`finalizing` の legacy 移行を含む)。**v1.6 の設計はこの文書が正であり、実装は未着手**(利用者向け docs と `examples/` は実装フェーズで更新する)。
+v1.6 で追加した単位(§6 のフェーズ 8〜11): `provenance.ArtifactDigest` と Run への digest/`ControllerVersion` 記録、preview API(§4.9)、adopt + manifest + verify、`site build` + Actions(§4.12)、旧 publication の削除(`finalizing` の legacy 移行を含む)。すべて実装済みで、`go test -race ./...` と `go vet ./...` が緑。未検証は「GitHub Pages への実デプロイ」と「実クラスタでのプレビュー配信(Ingress + クラスタ認証)」
 
 未検証・未実装: 実クラスタでの e2e(Argo CD / Deployment / SandboxClaim の遷移)、Ingress + クラスタ認証でのプレビュー配信、マルチレプリカでの外部効果 fence の実証、Agent 最適化ループの接続(attempt 境界は §4.12 と §10 に設計のみ)、Git LFS の materialize。
 
@@ -762,7 +762,7 @@ func Fingerprint(in FingerprintInput) string // canonical JSON → sha256
   - **「tmp が完全」の述語(機械的に判定する)**: `.adopt-tmp-<runID>/` に `manifest.json` が存在し、**schema 検証に成功**し、**inventory が過不足なし**(列挙された全ファイルが存在し sha256 一致、`index.html` 以外の payload ファイルが無い = single-file 契約。§4.3)、**`artifact_digest` が再計算値と一致**する。1 つでも欠ければ「不完全」として破棄する(fail-closed)
 
   - **`.adopt-*` は一時領域**であり、`adopted verify`/`site build` は `output/manifest.json` だけを見るため公開物には現れない。**採用が成功するまで commit しない**
-- 既定は dry-run(`--write` で実体化)
+- 既定は dry-run。**dry-run はファイルシステムを一切変更しない**(lock file の作成も、中断した swap の復旧も行わない)。採用後の状態だけを報告する
 - **`--into` の confinement**(ユーザー入力なので慣例に頼らない): リポジトリ root(`--root`)配下であること、`experiments/<model-id>/<experiment-id>` の 2 段の正確な形であること、`..`・絶対パス・backslash を拒否し、**symlink を経由した root 外への脱出を拒否**する。`<model-id>` は run の `model` と一致しなければならない。これらを満たさない場合は書き込まずに失敗する
 - **run と採用先 experiment の結び付き**: `filepath.Dir(run.Experiment) == <into>` を必須とする(run が記録した recipe のディレクトリ以外へ adopt できない)。これにより `<into>/config.yaml` と実際に実行された recipe が一致する。`adopted verify` も manifest の `model`/`experiment_id` が**実際のディレクトリ位置と一致**することを検証する
 - `manifest.json`(`schema_version: 1`): `run_id` / `experiment_id` / `model` / `benchmark_fingerprint` / `artifact_digest` / `prompt_sha256` / `input_commit` / `model_tree_digest` / `controller_version` / `adopted_at` / `review{review_id,issue_url,vote_comment_id,choice}`(比較相手が無い場合は `null`) / `artifacts[{path,sha256,size}]`

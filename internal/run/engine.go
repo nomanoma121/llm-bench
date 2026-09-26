@@ -24,7 +24,6 @@ type Engine struct {
 	Leases    LeaseStore
 	Hooks     HookSource
 	Executor  Executor
-	Finalizer Finalizer // optional: nil short-circuits finalizing to succeeded
 	Snapshots InputSnapshotter
 	Log       logr.Logger
 	Clock     Clock
@@ -393,28 +392,32 @@ func (e *Engine) stepReleasing(ctx context.Context, r *Run) (wait bool, err erro
 		} // keep the failure reason visible on failed runs
 		return false, e.save(ctx, r)
 	}
-	// LeaseState == released: decide the outcome now.
+	// LeaseState == released: decide the outcome now. Publication is not part
+	// of a run's success condition (§1.5): a run that executed and restored
+	// everything is succeeded, and adoption/publication is a human decision
+	// handled by CI (§4.12).
 	if r.ExecutionResult == ResultSuccess {
-		if e.Finalizer == nil {
-			r.Phase = PhaseSucceeded
-			return false, e.save(ctx, r)
-		}
-		r.Phase = PhaseFinalizing
+		r.Phase = PhaseSucceeded
+		r.WaitReason = ""
 		return false, e.save(ctx, r)
 	}
 	r.Phase = PhaseFailed
 	return false, e.save(ctx, r)
 }
 
+// stepFinalizing migrates records written before v1.6: they waited for the
+// controller to publish, which no longer exists. Only a consistent record
+// (successful execution with the lease already released) may go straight to
+// succeeded; anything else is repaired through the normal releasing path, so
+// a malformed record can never reach terminal without releasing its lease.
 func (e *Engine) stepFinalizing(ctx context.Context, r *Run) (wait bool, err error) {
-	res, err := e.Finalizer.Finalize(ctx, *r, r.Artifacts)
-	if err != nil {
-		r.PublishError = err.Error()
-		return true, e.save(ctx, r) // stay finalizing; GPU is already released
+	if r.ExecutionResult == ResultSuccess && r.LeaseState == LeaseReleased {
+		r.Phase = PhaseSucceeded
+		r.WaitReason = ""
+		return false, e.save(ctx, r)
 	}
-	r.PublicURL = res.PublicURL
-	r.PublishError = ""
-	r.Phase = PhaseSucceeded
+	r.WaitReason = "legacy finalizing record is inconsistent; releasing before finishing"
+	r.Phase = PhaseReleasing
 	return false, e.save(ctx, r)
 }
 

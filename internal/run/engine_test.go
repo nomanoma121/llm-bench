@@ -216,30 +216,6 @@ func (f *fakeExecutor) callCount() int {
 	return f.calls
 }
 
-type fakeFinalizer struct {
-	mu    sync.Mutex
-	calls int
-	err   error
-}
-
-func (f *fakeFinalizer) Finalize(_ context.Context, _ Run, _ Artifacts) (FinalizeResult, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls++
-	if f.err != nil {
-		err := f.err
-		f.err = nil // succeed on retry
-		return FinalizeResult{}, err
-	}
-	return FinalizeResult{PublicURL: "https://example.invalid/runs/x"}, nil
-}
-
-func (f *fakeFinalizer) callCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.calls
-}
-
 // ---------- helpers ----------
 
 const testTarget = "gpu"
@@ -250,7 +226,6 @@ type fixture struct {
 	hooks  *fakeHooks
 	events *eventLog
 	exec   *fakeExecutor
-	fin    *fakeFinalizer
 	engine *Engine
 	plan   []operator.PlannedHook
 	digest string
@@ -263,7 +238,6 @@ func newFixture(t *testing.T, hookNames ...string) *fixture {
 		leases: newFakeLeases(),
 		events: &eventLog{},
 		exec:   &fakeExecutor{artifacts: Artifacts{Dir: "/tmp/artifacts", IndexSHA256: "abc"}},
-		fin:    &fakeFinalizer{},
 	}
 	f.hooks = &fakeHooks{hooks: map[string]Hook{}, events: f.events}
 	for _, name := range hookNames {
@@ -276,14 +250,13 @@ func newFixture(t *testing.T, hookNames ...string) *fixture {
 	}
 	f.digest = digest
 	f.engine = &Engine{
-		Store:     f.store,
-		Leases:    f.leases,
-		Hooks:     f.hooks,
-		Executor:  f.exec,
-		Finalizer: f.fin,
-		Log:       discardLogger(),
-		Clock:     time.Now,
-		Interval:  time.Millisecond,
+		Store:    f.store,
+		Leases:   f.leases,
+		Hooks:    f.hooks,
+		Executor: f.exec,
+		Log:      discardLogger(),
+		Clock:    time.Now,
+		Interval: time.Millisecond,
 	}
 	return f
 }
@@ -361,11 +334,8 @@ func TestHappyPathOrdering(t *testing.T) {
 			t.Fatalf("event %d = %s, want %s (all=%v)", i, got[i], w, got)
 		}
 	}
-	if f.fin.callCount() != 1 {
-		t.Fatalf("finalizer calls = %d, want 1", f.fin.callCount())
-	}
-	if r.PublicURL == "" {
-		t.Fatal("public url not set")
+	if r.Phase != PhaseSucceeded {
+		t.Fatalf("phase = %s", r.Phase)
 	}
 }
 
@@ -435,9 +405,6 @@ func TestExecuteFailureSkipsFinalizing(t *testing.T) {
 	if r.Phase != PhaseFailed {
 		t.Fatalf("phase = %s, want failed", r.Phase)
 	}
-	if f.fin.callCount() != 0 {
-		t.Fatalf("finalizer must not run for failed executions, got %d calls", f.fin.callCount())
-	}
 	if r.ExecutionState != ExecCompleted {
 		t.Fatalf("execution state = %s", r.ExecutionState)
 	}
@@ -498,10 +465,8 @@ func TestCompletedInRunningIsIntegrityFailure(t *testing.T) {
 	}
 }
 
-func TestPublishFailureStaysFinalizingUntilSuccess(t *testing.T) {
+func TestLegacyFinalizingRecordMigratesToSucceeded(t *testing.T) {
 	f := newFixture(t, "a")
-	f.engine.Finalizer = f.fin
-	f.fin.err = errors.New("pages commit failed")
 	if _, err := f.engine.Submit(context.Background(), f.newRun("r1"), nil); err != nil {
 		t.Fatal(err)
 	}
@@ -510,15 +475,31 @@ func TestPublishFailureStaysFinalizingUntilSuccess(t *testing.T) {
 	if err := f.engine.Drain(ctx, "r1"); err != nil {
 		t.Fatal(err)
 	}
-	r, _ := f.store.LoadRun(ctx, "r1")
-	if r.Phase != PhaseSucceeded {
-		t.Fatalf("phase = %s publish_error=%q", r.Phase, r.PublishError)
+	// Simulate a record written by v1.5: it waited for the controller to
+	// publish. The worker must recognize it and finish without any external
+	// effect (publication is not part of a run's success condition).
+	r, err := f.store.LoadRun(ctx, "r1")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if r.PublicURL == "" {
-		t.Fatal("public url empty")
+	r.Phase = PhaseFinalizing
+	r.PublicURL = "https://legacy.invalid/runs/r1"
+	r.PublishError = "legacy publication error"
+	if err := f.store.SaveRun(ctx, &r); err != nil {
+		t.Fatal(err)
 	}
-	if f.fin.callCount() < 2 {
-		t.Fatalf("finalizer calls = %d, want >=2", f.fin.callCount())
+	if err := f.engine.Drain(ctx, "r1"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.store.LoadRun(ctx, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Phase != PhaseSucceeded {
+		t.Fatalf("phase = %s, want succeeded", got.Phase)
+	}
+	if got.PublicURL != "https://legacy.invalid/runs/r1" {
+		t.Fatalf("legacy publication fields must be preserved: %q", got.PublicURL)
 	}
 }
 
@@ -744,7 +725,7 @@ func TestConcurrentTargetsProceedInParallel(t *testing.T) {
 	slow2 := &gateExecutor{gate: slow.gate}
 	f2 := &Engine{
 		Store: f.store, Leases: f.leases, Hooks: f.hooks,
-		Executor: slow2, Finalizer: f.fin, Log: discardLogger(),
+		Executor: slow2, Log: discardLogger(),
 		Clock: time.Now, Interval: time.Millisecond,
 	}
 	r2 := f.newRun("r2")
@@ -1003,4 +984,41 @@ func TestRunWaitsForWorkersOnCancel(t *testing.T) {
 		t.Fatal("Run did not return after the worker finished")
 	}
 	_ = released
+}
+
+func TestLegacyFinalizingRecordWithoutReleasedLeaseIsRepaired(t *testing.T) {
+	// A malformed legacy record must not jump to terminal: it goes through
+	// releasing so nothing skips restoration.
+	f := newFixture(t, "a")
+	if _, err := f.engine.Submit(context.Background(), f.newRun("r1"), nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := f.engine.Drain(ctx, "r1"); err != nil {
+		t.Fatal(err)
+	}
+	r, err := f.store.LoadRun(ctx, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Phase = PhaseFinalizing
+	r.LeaseState = LeaseAcquired
+	r.ExecutionResult = ResultFailure
+	if err := f.store.SaveRun(ctx, &r); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.engine.Drain(ctx, "r1"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.store.LoadRun(ctx, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Phase != PhaseFailed {
+		t.Fatalf("phase = %s, want failed after releasing", got.Phase)
+	}
+	if got.LeaseState != LeaseReleased {
+		t.Fatalf("lease = %s, want released", got.LeaseState)
+	}
 }

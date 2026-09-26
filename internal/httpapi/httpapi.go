@@ -48,8 +48,6 @@ type StatusView struct {
 	ExecutionState  run.ExecutionState  `json:"execution_state"`
 	LeaseState      run.LeaseState      `json:"lease_state"`
 	WaitReason      string              `json:"wait_reason,omitempty"`
-	PublishError    string              `json:"publish_error,omitempty"`
-	PublicURL       string              `json:"public_url,omitempty"`
 	Hooks           []run.HookState     `json:"hooks"`
 	Artifacts       run.Artifacts       `json:"artifacts"`
 }
@@ -64,8 +62,6 @@ func NewStatusView(r run.Run) StatusView {
 		ExecutionState:  r.ExecutionState,
 		LeaseState:      r.LeaseState,
 		WaitReason:      r.WaitReason,
-		PublishError:    r.PublishError,
-		PublicURL:       r.PublicURL,
 		Hooks:           r.Hooks,
 		Artifacts:       r.Artifacts,
 	}

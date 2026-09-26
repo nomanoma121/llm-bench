@@ -34,6 +34,9 @@ const (
 	PhaseAcquiring  Phase = "acquiring"
 	PhaseRunning    Phase = "running"
 	PhaseReleasing  Phase = "releasing"
+	// PhaseFinalizing is retained only to decode records written before v1.6.
+	// New runs never enter it: releasing goes straight to succeeded or failed,
+	// and a legacy record in this phase migrates to succeeded (§3.1).
 	PhaseFinalizing Phase = "finalizing"
 	PhaseSucceeded  Phase = "succeeded"
 	PhaseFailed     Phase = "failed"
@@ -128,9 +131,9 @@ type Run struct {
 	HookPlan            []operator.PlannedHook `json:"hook_plan"`
 	HookPlanDigest      string                 `json:"hook_plan_digest"`
 	WaitReason          string                 `json:"wait_reason,omitempty"`
-	PublishError        string                 `json:"publish_error,omitempty"`
+	PublishError        string                 `json:"publish_error,omitempty"` // legacy (v1.5): read-only
 	Artifacts           Artifacts              `json:"artifacts"`
-	PublicURL           string                 `json:"public_url,omitempty"`
+	PublicURL           string                 `json:"public_url,omitempty"` // legacy (v1.5): read-only; CI decides the published URL
 	StoreVersion        string                 `json:"store_version,omitempty"`
 	CreatedAt           time.Time              `json:"created_at"`
 	UpdatedAt           time.Time              `json:"updated_at"`
@@ -165,15 +168,6 @@ type HookSource interface {
 // persisted to Artifacts.Dir (with hashes computed at that moment).
 type Executor interface {
 	Execute(ctx context.Context, r Run) (Artifacts, error)
-}
-
-// FinalizeResult carries the outcome of publication.
-type FinalizeResult struct{ PublicURL string }
-
-// Finalizer publishes and finalizes artifacts. It only runs for successful
-// executions, after all resources have been released.
-type Finalizer interface {
-	Finalize(ctx context.Context, r Run, a Artifacts) (FinalizeResult, error)
 }
 
 // RunStore persists run records with compare-and-swap semantics on

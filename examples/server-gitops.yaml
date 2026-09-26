@@ -19,17 +19,6 @@ targets:
       namespace: bench
       warm_pool: demo-llmbench
 
-site:
-  owner: example-owner
-  repository: llm-bench-site
-  branch: main
-  # A header-capable host (for example Cloudflare Pages) so the CSP in
-  # extra_files is actually served; GitHub Pages cannot send custom headers.
-  base_url: https://llm-bench-site.pages.dev
-  extra_files:
-    _headers: |
-      /*
-        Content-Security-Policy: default-src 'none'; script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'
 # Candidate previews. The controller serves a run's output/ directory on a
 # second listener (serve --preview-addr, plus --preview-public when it is not
 # loopback) and derives the URLs that review comments link from base_url. Put

@@ -6,6 +6,7 @@
 package operator
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -98,17 +99,6 @@ type Preview struct {
 	BaseURL string `yaml:"base_url" json:"base_url"`
 }
 
-// Site is the deprecated (v1.5) static hosting configuration. It stays until
-// the controller publication lifecycle is removed; new configurations should
-// use Preview and let CI publish adopted artifacts.
-type Site struct {
-	Owner      string            `yaml:"owner" json:"owner"`
-	Repository string            `yaml:"repository" json:"repository"`
-	Branch     string            `yaml:"branch" json:"branch"`
-	BaseURL    string            `yaml:"base_url" json:"base_url"`
-	ExtraFiles map[string]string `yaml:"extra_files,omitempty" json:"extra_files,omitempty"`
-}
-
 // Review configures the Issue-based A/B review record.
 type Review struct {
 	Owner             string `yaml:"owner" json:"owner"`
@@ -121,7 +111,6 @@ type Review struct {
 type Config struct {
 	Targets  map[string]Target `yaml:"targets" json:"targets"`
 	Preview  *Preview          `yaml:"preview,omitempty" json:"preview,omitempty"`
-	Site     *Site             `yaml:"site,omitempty" json:"site,omitempty"` // deprecated, see Site
 	Review   *Review           `yaml:"review,omitempty" json:"review,omitempty"`
 	Defaults Limits            `yaml:"defaults,omitempty" json:"defaults,omitempty"`
 }
@@ -269,8 +258,17 @@ func Load(path string) (Config, error) {
 // Parse reads and validates operator configuration. Unknown fields are
 // rejected.
 func Parse(r io.Reader) (Config, error) {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return Config{}, fmt.Errorf("operator: read: %w", err)
+	}
+	if hasRemovedSiteBlock(raw) {
+		// Fail loudly instead of ignoring a block that no longer does
+		// anything: the controller never publishes (docs/architecture.md §4.12).
+		return Config{}, errors.New("operator: site configuration was removed; publishing is performed by CI from adopted artifacts")
+	}
 	var c Config
-	dec := yaml.NewDecoder(r)
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	dec.KnownFields(true)
 	if err := dec.Decode(&c); err != nil {
 		return Config{}, fmt.Errorf("operator: parse: %w", err)
@@ -328,9 +326,9 @@ func (c Config) Validate() error {
 			return fmt.Errorf("operator: target %q violates hook ordering: gitops must precede sandbox-claim", id)
 		}
 	}
-	if c.Site != nil {
-		if c.Site.Owner == "" || c.Site.Repository == "" || c.Site.Branch == "" || c.Site.BaseURL == "" {
-			return errors.New("operator: site requires owner, repository, branch and base_url")
+	if c.Preview != nil {
+		if err := validatePreviewBaseURL(c.Preview.BaseURL); err != nil {
+			return err
 		}
 	}
 	if c.Preview != nil {
@@ -399,4 +397,23 @@ func validatePreviewBaseURL(raw string) error {
 		return errors.New("operator: preview base_url must not contain a query or fragment")
 	}
 	return nil
+}
+
+// hasRemovedSiteBlock reports whether the document still carries the removed
+// top-level "site:" key, so the error can name it explicitly.
+func hasRemovedSiteBlock(raw []byte) bool {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return false // the decoder reports the syntax error itself
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return false
+	}
+	root := doc.Content[0]
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == "site" {
+			return true
+		}
+	}
+	return false
 }

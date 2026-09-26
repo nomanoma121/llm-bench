@@ -6,8 +6,8 @@ Agentが推論runtimeをモデルごとに試し、固定した課題の出力�
 - `runtimes/<engine>/<variant>/`: runtime本体とモデル向けの変更。
 - `benchmarks/visual/prompt.md`: 複数の実験で共有する課題。
 - `experiments/<model-id>/<experiment-id>/`: 1候補の`config.yaml`、実験ノート、採用した生成物。
-- `cmd/llmbench/`: Go製controller・CLIのエントリポイント。共通の実装は`internal/`(experiment / operator / run / runner / hook / gitops / sandbox / kube / issues / pages / discord / filestore / provenance / review / httpapi)。
+- `cmd/llmbench/`: Go製controller・CLIのエントリポイント。共通の実装は`internal/`(experiment / operator / run / runner / hook / gitops / sandbox / kube / issues / discord / filestore / provenance / review / preview / adopt / sitebuild / httpapi)。
 - `charts/llmbench/`: Agent Sandboxとharness用の実験的Helm Chart。**現状はvalues-onlyのscaffoldで、`templates/` が無いためインストールしても何も作成しません**。
-- コントローラ(`cmd/llmbench` + `internal/`)側の実装: Sandboxでの単発benchmark、GitOpsの停止・復帰PRとArgo CD／実Podの状態確認、モデル重みの実行前後の同一性検査、生成HTMLの静的サイト公開、IssueでのA/Bレビュー、Kubernetes上の実行記録とリース選出。スクリーンショットは撮らず、公開サイトの生HTML(専用origin)を人間が直接比較します。実クラスタでの統合検証とAgentの最適化ループの接続は未完了です。
+- コントローラ(`cmd/llmbench` + `internal/`)側の実装: Sandboxでの単発benchmark、GitOpsの停止・復帰PRとArgo CD／実Podの状態確認、モデル重みの実行前後の同一性検査、生成HTMLの認証付きプレビュー、採用成果物の`adopt`とIssueでのA/Bレビュー、Kubernetes上の実行記録とリース選出。スクリーンショットは撮らず生HTMLを人間が直接比較します。恒久公開はcontrollerではなくCI(`main`マージ→`site build`→GitHub Pages)が行い、controllerは公開先への書き込み権限を持ちません。実クラスタでの統合検証とAgentの最適化ループの接続は未完了です。
 
 合意済みの運用と実装順は[docs/design.md](docs/design.md)と[docs/plan.md](docs/plan.md)に記録しています。実行方法は[docs/usage.md](docs/usage.md)を参照してください。

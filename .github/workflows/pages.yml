@@ -25,7 +25,10 @@ permissions:
 jobs:
   verify:
     name: verify
-    runs-on: ubuntu-latest
+    # Runs on a self-hosted runner so publication does not depend on hosted
+    # minutes. Register it with the extra label: see docs/usage.md.
+    runs-on: [self-hosted, llm-bench]
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -45,7 +48,8 @@ jobs:
     name: deploy
     needs: verify
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, llm-bench]
+    timeout-minutes: 20
     permissions:
       contents: read   # actions/checkout needs it; listing permissions drops the rest
       pages: write

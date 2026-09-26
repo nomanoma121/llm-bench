@@ -87,6 +87,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	if rel != "index.html" {
+		// v1.6 seals a single-file payload, and the digest deliberately
+		// excludes the reserved manifest name: serving anything else could
+		// return bytes that no digest covers.
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
 	// Recompute the payload digest with the bytes we are about to return: a
 	// response can therefore only contain bytes covered by the verified
 	// digest. A mismatch means the artifact changed after it was sealed.

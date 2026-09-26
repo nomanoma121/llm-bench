@@ -188,3 +188,21 @@ func TestParsePath(t *testing.T) {
 		}
 	}
 }
+
+func TestOnlyIndexIsServed(t *testing.T) {
+	h, dir := sealedFixture(t, "<html/>")
+	// A file that exists but is outside the payload (the reserved manifest
+	// name) must not be served: no digest covers it.
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(`{"schema_version":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if rec := get(t, h, http.MethodGet, "/v1/runs/r1/artifacts/manifest.json"); rec.Code != http.StatusNotFound {
+		t.Fatalf("manifest.json status = %d", rec.Code)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "other.html"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if rec := get(t, h, http.MethodGet, "/v1/runs/r1/artifacts/other.html"); rec.Code != http.StatusNotFound {
+		t.Fatalf("other.html status = %d", rec.Code)
+	}
+}

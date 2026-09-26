@@ -113,3 +113,13 @@ func TestValidateSingleFilePayload(t *testing.T) {
 		}
 	}
 }
+
+func TestArtifactDigestWithOverrideRejectsUncoveredPath(t *testing.T) {
+	dir := writePayload(t, map[string]string{"index.html": "x", ManifestName: "{}"})
+	if _, err := ArtifactDigestWithOverride(dir, ManifestName, []byte("{}")); err == nil {
+		t.Fatal("a path outside the payload must not be digestable")
+	}
+	if _, err := ArtifactDigestWithOverride(dir, "missing.html", []byte("x")); err == nil {
+		t.Fatal("a missing path must not be digestable")
+	}
+}

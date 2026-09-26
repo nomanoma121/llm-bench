@@ -7,7 +7,9 @@ package review
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -27,7 +29,9 @@ const (
 const MarkerPrefix = "<!-- llmbench:review:"
 
 // VoteMarker separates the review ID from the vote payload inside a marker
-// comment: "<!-- llmbench:review:<id>|vote:<choice>|<voter> -->".
+// comment: "<!-- llmbench:review:<id>|vote:<base64(json Vote)> -->". The
+// payload carries the choice, notes, voter and timestamp so the Issue alone
+// can reproduce a review's history.
 const VoteMarker = "|vote:"
 
 // Vote is one recorded judgement.
@@ -122,8 +126,13 @@ func (s *Service) Request(ctx context.Context, baseline, candidate RunView, issu
 	now := s.now()
 
 	// Retrying a request must not post a duplicate comment: the marker is the
-	// idempotency key.
-	if existing, err := s.Issues.FindComments(ctx, issue, MarkerPrefix+id+" -->"); err == nil && len(existing) > 0 {
+	// idempotency key. A failed lookup must abort the request instead of
+	// risking a second marker.
+	existing, err := s.Issues.FindComments(ctx, issue, MarkerPrefix+id+" -->")
+	if err != nil {
+		return Review{}, fmt.Errorf("review: check existing request: %w", err)
+	}
+	if len(existing) > 0 {
 		r, err := s.project(ctx, issue, id, baseline, candidate, now)
 		if err != nil {
 			return Review{}, err
@@ -169,8 +178,13 @@ func (s *Service) Vote(ctx context.Context, reviewID, choice, notes, voter strin
 	if err != nil {
 		return Review{}, err
 	}
-	body := fmt.Sprintf("%s%s|vote:%s|%s -->\n\n**Vote recorded: %s**%s\n",
-		MarkerPrefix, reviewID, choice, voter, choice, notesSuffix(notes))
+	vote := Vote{Choice: choice, Notes: notes, Voter: voter, At: s.now()}
+	payload, err := encodeVote(vote)
+	if err != nil {
+		return Review{}, err
+	}
+	body := fmt.Sprintf("%s%s|vote:%s -->\n\n**Vote recorded: %s**%s\n",
+		MarkerPrefix, reviewID, payload, choice, notesSuffix(notes))
 	if err := s.Issues.PostComment(ctx, r.Issue, body); err != nil {
 		return Review{}, fmt.Errorf("review: post vote comment: %w", err)
 	}
@@ -204,11 +218,11 @@ func (s *Service) projectVotes(ctx context.Context, index Review) (Review, error
 	}
 	votes := make([]Vote, 0, len(comments))
 	for _, body := range comments {
-		choice, voter, ok := parseVoteMarker(body, index.ID)
+		vote, ok := parseVoteMarker(body, index.ID)
 		if !ok {
 			continue
 		}
-		votes = append(votes, Vote{Choice: choice, Voter: voter, At: index.CreatedAt})
+		votes = append(votes, vote)
 	}
 	index.Votes = votes
 	return index, nil
@@ -227,28 +241,42 @@ func (s *Service) project(ctx context.Context, issue int, id string, baseline, c
 	return s.projectVotes(ctx, r)
 }
 
-// parseVoteMarker extracts the choice and voter from a vote comment.
-func parseVoteMarker(body, reviewID string) (choice, voter string, ok bool) {
+// encodeVote renders a vote as the marker payload.
+func encodeVote(v Vote) (string, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("review: encode vote: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// parseVoteMarker decodes a vote comment, preserving choice, notes, voter and
+// timestamp.
+func parseVoteMarker(body, reviewID string) (Vote, bool) {
 	marker := MarkerPrefix + reviewID + VoteMarker
 	i := strings.Index(body, marker)
 	if i < 0 {
-		return "", "", false
+		return Vote{}, false
 	}
 	rest := body[i+len(marker):]
 	end := strings.Index(rest, " -->")
 	if end < 0 {
-		return "", "", false
+		return Vote{}, false
 	}
-	fields := strings.SplitN(rest[:end], "|", 2)
-	if len(fields) != 2 {
-		return "", "", false
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(rest[:end]))
+	if err != nil {
+		return Vote{}, false
 	}
-	switch fields[0] {
+	var v Vote
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return Vote{}, false
+	}
+	switch v.Choice {
 	case ChoiceA, ChoiceB, ChoiceTie, ChoiceInvalid:
 	default:
-		return "", "", false
+		return Vote{}, false
 	}
-	return fields[0], fields[1], true
+	return v, true
 }
 
 func notesSuffix(notes string) string {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeStore struct{ reviews map[string]Review }
@@ -142,15 +143,15 @@ func TestVoteRecordsAndPosts(t *testing.T) {
 	if len(r.Votes) != 1 || r.Votes[0].Choice != ChoiceB {
 		t.Fatalf("votes = %+v", r.Votes)
 	}
-	// The vote comment carries the machine-readable marker.
+	// The vote comment carries the machine-readable marker with its payload.
 	found := false
 	for _, c := range iss.comments[7] {
-		if strings.Contains(c, "vote:"+ChoiceB) {
+		if strings.Contains(c, VoteMarker) && strings.Contains(c, "**Vote recorded: "+ChoiceB+"**") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatal("vote marker comment missing on Issue")
+		t.Fatalf("vote marker comment missing on Issue: %v", iss.comments[7])
 	}
 }
 
@@ -166,13 +167,21 @@ func TestStatusProjectsVotesFromIssue(t *testing.T) {
 	}
 	// A vote recorded by someone else directly on the Issue (or a local save
 	// that failed) must still appear: the Issue is canonical.
-	iss.comments[7] = append(iss.comments[7], fmt.Sprintf("%s%s|vote:B|judge -->", MarkerPrefix, rec.ID))
+	payload, err := encodeVote(Vote{Choice: ChoiceB, Notes: "cleaner", Voter: "judge", At: time.Unix(1700000000, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	iss.comments[7] = append(iss.comments[7], fmt.Sprintf("%s%s%s%s -->", MarkerPrefix, rec.ID, VoteMarker, payload))
 	got, err := svc.Status(context.Background(), rec.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got.Votes) != 1 || got.Votes[0].Choice != ChoiceB || got.Votes[0].Voter != "judge" {
 		t.Fatalf("votes = %+v", got.Votes)
+	}
+	// Notes and the original timestamp survive the projection.
+	if got.Votes[0].Notes != "cleaner" || !got.Votes[0].At.Equal(time.Unix(1700000000, 0).UTC()) {
+		t.Fatalf("projection lost vote details: %+v", got.Votes[0])
 	}
 	if !strings.Contains(iss.lastMarker(), rec.ID) {
 		t.Fatalf("status must query the Issue with the review marker: %q", iss.lastMarker())

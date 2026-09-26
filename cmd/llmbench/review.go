@@ -172,14 +172,27 @@ func newReviewVoteCmd(g *globalFlags) *cobra.Command {
 }
 
 func newReviewStatusCmd(g *globalFlags) *cobra.Command {
-	return &cobra.Command{
+	var configPath string
+	cmd := &cobra.Command{
 		Use:   "status <review-id>",
-		Short: "Show the local review record (the Issue is canonical)",
+		Short: "Show the review with its votes rebuilt from the Issue",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store := mustFileStore(g)
-			var r review.Review
-			if err := store.LoadJSON(context.Background(), "reviews", args[0], &r); err != nil {
+			if configPath == "" {
+				return errors.New("review: --config is required")
+			}
+			opCfg, err := operator.Load(configPath)
+			if err != nil {
+				return err
+			}
+			svc, err := buildReviewService(g, opCfg)
+			if err != nil {
+				return err
+			}
+			// The Service reads the Issue: a concurrent vote or a lost local
+			// save is still reflected.
+			r, err := svc.Status(context.Background(), args[0])
+			if err != nil {
 				return err
 			}
 			b, err := json.MarshalIndent(r, "", "  ")
@@ -190,4 +203,7 @@ func newReviewStatusCmd(g *globalFlags) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&configPath, "config", "", "operator configuration (required)")
+	_ = cmd.MarkFlagRequired("config")
+	return cmd
 }

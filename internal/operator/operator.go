@@ -393,5 +393,10 @@ func validatePreviewBaseURL(raw string) error {
 	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return errors.New("operator: preview base_url must be an absolute http(s) URL")
 	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		// The value is used as a URL prefix: paths are appended to it, so a
+		// query or fragment would swallow the appended path.
+		return errors.New("operator: preview base_url must not contain a query or fragment")
+	}
 	return nil
 }

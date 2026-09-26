@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -91,6 +92,19 @@ func (f *fakeSandboxClient) Put(_ context.Context, _ string, _ io.Reader, dest s
 func (f *fakeSandboxClient) Pull(_ context.Context, _, path string) ([]byte, error) {
 	f.pulls = append(f.pulls, path)
 	if strings.HasSuffix(path, "index.html") {
+		return f.index, nil
+	}
+	return []byte("log"), nil
+}
+
+// PullLimited mirrors the real bounded transfer: it refuses to return more
+// than limit bytes.
+func (f *fakeSandboxClient) PullLimited(ctx context.Context, claimName, path string, limit int64) ([]byte, error) {
+	f.pulls = append(f.pulls, path)
+	if strings.HasSuffix(path, "index.html") {
+		if int64(len(f.index)) > limit {
+			return nil, fmt.Errorf("sandbox: file exceeds the transfer limit")
+		}
 		return f.index, nil
 	}
 	return []byte("log"), nil

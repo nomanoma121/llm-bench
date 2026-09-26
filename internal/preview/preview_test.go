@@ -174,6 +174,7 @@ func TestParsePath(t *testing.T) {
 		{"/v1/runs/r1/artifacts/index.html", true, "index.html"},
 		{"/v1/runs/r1/artifacts/", true, "index.html"},
 		{"/v1/runs/r1/artifacts", true, "index.html"},
+		{"/v1/runs/r1/artifacts//index.html", false, ""},
 		{"/v1/runs/r1/index.html", false, ""},
 		{"/v1/other/r1/artifacts/index.html", false, ""},
 		{"/v1/runs/r1/artifacts/a/b.html", true, "a/b.html"},

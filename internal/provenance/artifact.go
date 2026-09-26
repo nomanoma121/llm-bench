@@ -17,6 +17,11 @@ import (
 // produce it: the runner fails a run whose output directory contains it.
 const ManifestName = "manifest.json"
 
+// MaxArtifactBytes bounds one payload file. It belongs to the sealing
+// contract rather than to the preview alone: a sealed artifact must always be
+// servable, so local and sandbox runs reject anything larger at seal time.
+const MaxArtifactBytes = 8 << 20 // 8 MiB
+
 // PayloadFile is one regular file of the artifact payload.
 type PayloadFile struct {
 	Path   string `json:"path"` // slash-separated, relative to the payload root
@@ -175,6 +180,9 @@ func ValidateSingleFilePayload(dir string) ([]PayloadFile, error) {
 			names = append(names, f.Path)
 		}
 		return nil, fmt.Errorf("provenance: artifact payload must be exactly index.html, found %v", names)
+	}
+	if files[0].Size > MaxArtifactBytes {
+		return nil, fmt.Errorf("provenance: index.html is %d bytes, over the %d byte limit", files[0].Size, MaxArtifactBytes)
 	}
 	return files, nil
 }

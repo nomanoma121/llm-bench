@@ -123,3 +123,14 @@ func TestArtifactDigestWithOverrideRejectsUncoveredPath(t *testing.T) {
 		t.Fatal("a missing path must not be digestable")
 	}
 }
+
+func TestValidateSingleFilePayloadEnforcesSizeLimit(t *testing.T) {
+	dir := t.TempDir()
+	big := make([]byte, MaxArtifactBytes+1)
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ValidateSingleFilePayload(dir); err == nil {
+		t.Fatal("expected the sealing size limit to reject an oversized index.html")
+	}
+}

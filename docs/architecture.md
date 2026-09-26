@@ -154,16 +154,17 @@ review ──▶ run(型参照のみ)
 run ──▶ experiment, operator(型のみ), logr
 provenance ──▶ (なし。標準ライブラリ + git バイナリ)
 
-sandbox ──▶ (agent-sandbox SDK のみ)
-gitops ──▶ kube, (go-github)
-kube ──▶ (client-go)
+sandbox ──▶ run(契約型のみ), (agent-sandbox SDK)
+gitops ──▶ run(契約型のみ), kube, (go-github)
+kube ──▶ run(契約型のみ), (client-go)
+hook ──▶ run(契約型のみ)
 issues ──▶ (go-github)
-pages ──▶ (go-github)
 discord ──▶ (net/http)
-filestore ──▶ (標準ライブラリ)
+filestore ──▶ run(契約型・sentinel のみ), (標準ライブラリ)
+adopt, sitebuild ──▶ provenance(検証は 1 箇所)
 ```
 
-- **実装 → ポリシーの import は存在しない**(暗黙的型満足のため不要)
+- **run-wide の phase/state-transition ポリシーは `internal/run` にしか置かない**。一方で interface 実装(`filestore`/`kube`/`hook`/`sandbox`/`gitops`)は **`internal/run` の契約型と sentinel(`run.Run`/`run.ErrVersionConflict`/`run.ErrLeaseBusy`/`run.ErrPending` 等)を import してよい**(AGENTS.md と同じ規則)。実装→抽象の import はこの契約参照に限られ、暗黙的型満足のために interface 自体を import する必要はない。統合固有の reconciliation/ownership 判断(GitOps の決定テーブル、command hook の exit 75 解釈)は各実装パッケージが持つ
 - `gitops → kube` は同一インテグレーション層内の参照として許容
 - `runner` は SDK を import しない。`SandboxClient` / `Git` の interface を満たす実装を cmd が注入する。preview(§4.9)は `httpapi` が artifact ディレクトリだけを受け取る(read-only)
 
@@ -663,7 +664,7 @@ func Fingerprint(in FingerprintInput) string // canonical JSON → sha256
 - 経路: `GET|HEAD /v1/runs/{id}/artifacts/{path...}`。実体は `<output>/runs/<runID>/output/` 配下のみ。`input/`(recipe snapshot)や output 外のログは配信しない
 - **seal された artifact だけを配信する**(2 段の防御):
   1. **seal の実装契約**: runner は `<output>/runs/<runID>/output/` を直接書かず、temp dir に全ファイルを書き **fsync → atomic rename で `output/` を確定**させ、その瞬間に `ArtifactDigest` を計算して Run へ保存する。seal 後は誰もそのディレクトリを書き換えない(書き換える実装は契約違反)
-  2. **配信時の検証**: Run record の `Artifacts.ArtifactDigest` が非空であることを必須条件(空 = `invoking` 中または保存失敗 → 404)とし、さらに**配信前に payload から `ArtifactDigest` を再計算して記録値と照合**する。不一致なら配信せず 409 を返す(ディスク上の改変・部分書き込み・外部からの差し替えを検出する)。review/adopt も同じ照合を行う(§4.8/§4.12)
+  2. **配信時の検証(TOCTOU を閉じる)**: Run record の `Artifacts.ArtifactDigest` が非空であることを必須条件(空 = `invoking` 中または保存失敗 → 404)とする。さらに **①要求されたファイルをメモリへ読み込み、② payload 全体の `ArtifactDigest` を「①の bytes を使って」再計算し、③記録値と一致したときだけ①の buffer を返す**。不一致なら配信せず 409 を返す(ディスク上の改変・部分書き込み・外部からの差し替えを検出する)。**返した bytes は必ず検証済み digest に含まれる**ため、検証後〜read の間に差し替えられても未検証の bytes は返らない。1 ファイル 8 MiB 上限により buffer は有界。review/adopt も同じ照合を行う(§4.8/§4.12)。**1 リクエスト 1 ファイル**(listing なし)なので、この方式で応答全体が検証対象になる
   - これにより **Issue marker の digest とレビュアが見た bytes が一致する**ことが構造的に保証される
 - **control API とは別リスナ**(`serve --preview-addr`)。control API の bearer 認証は使わず、**上流(Ingress + クラスタ認証)での認証終端を前提**とする。非 loopback bind には「上流で認証する」ことを示す明示フラグを要求する(control API の loopback 規則と同型)
 - 外向け URL は operator 設定 `preview.base_url` から導出する。**Run に `preview_url` を永続化しない**(URL は導出値。同一性の正は run ID + artifact digest。§4.8)
@@ -707,8 +708,9 @@ func Fingerprint(in FingerprintInput) string // canonical JSON → sha256
 
 - `--review` の扱い(**機械的な述語で判定する**。呼び出し側の自己申告に依存しない):
   - `--review` を渡した場合、review 記録の artifact digest と実際に adopt する payload の digest を照合し、不一致なら失敗する
-  - **`--review` を省略できるのは、`<into>` に有効な `output/manifest.json` がまだ存在しない場合のみ**(= その experiment の最初の採用 = baseline。比較相手が原理的に存在しない)。省略時は manifest の `review` を `null` とし、`site build` は「未レビュー」として表示する
-  - `<into>` に有効な manifest が既にある採用は `--review` 必須。無ければ**書き込み前に失敗**する(採用済みの実験に review を迂回して artifact を追加できない)`site build` は review の無い採用を「未レビュー」として明示し、review 済みと区別して表示する
+  - **`--review` を省略できるのは、その model に adopt 済み artifact が 1 件も無い場合のみ**(`experiments/<model-id>/**/output/manifest.json` を走査して 0 件 = 未採用のモデル。この最初の採用が baseline であり、比較相手が原理的に存在しない)。省略時は manifest の `review` を `null` とし、`site build` は「未レビュー」として表示する
+  - 上記以外の採用は `--review` 必須。無ければ**書き込み前に失敗**する。**述語は「新しい experiment-id を選べば常に省略できる」形にしてはならない**(destination 単位の判定は review 迂回になる)
+  - **`manifest.json` が存在するが schema 検証に失敗する場合は hard error** とし、「manifest が無い」とは絶対に扱わない(fail-open 禁止)`site build` は review の無い採用を「未レビュー」として明示し、review 済みと区別して表示する
 
 **adopt**: `llmbench adopt <run-id> --into experiments/<model-id>/<experiment-id> [--review <review-id>] [--write]`
 
@@ -716,11 +718,19 @@ func Fingerprint(in FingerprintInput) string // canonical JSON → sha256
 - **レビューした artifact と adopt する artifact が同一であることを digest で検証**する(`--review` 指定時)
 - 書き込みは temp dir → copy → hash → manifest → fsync → atomic rename。**atomic に置換するのは `<into>/output/` だけ**であり、`<into>/config.yaml` / `README.md` などには一切触れない(`output/` 以外の削除も行わない)
 - 既存 `output/` の扱い:
-  - 有効な manifest があり digest が一致 → **成功(冪等 no-op)**
+  - 有効な manifest があり **`run_id` と `artifact_digest` の両方**が一致 → **成功(冪等 no-op)**
+  - 有効な manifest があり digest は同一だが `run_id` が異なる → **provenance 更新として許可**する(payload は再検証して同一であることを確認し、manifest を新しい run の来歴で書き換える。CLI は「来歴を更新した」と明示する)
   - 有効な manifest があり digest が異なる → **拒否**(別の採用が既にある)
-  - 有効な manifest が無い(未採用の placeholder `index.html` や空ディレクトリ)→ **置換してよい**(dry-run で削除・追加されるファイルを列挙してから `--write`)。placeholder を採用 artifact の妨げにしない
+  - 有効な manifest が無い(未採用の placeholder `index.html` や空ディレクトリ)→ **置換してよい**(dry-run で差分を列挙してから `--write`)
+- **非空ディレクトリの置換手順**(`os.Rename` は空でないディレクトリを置換できないため、RemoveAll→Rename ではクラッシュ時に `output/` 消失状態が残る):
+  1. `<into>/.adopt-tmp-<runID>/` に新 payload + manifest を書いて fsync
+  2. 既存 `output/` があれば `<into>/.adopt-bak-<runID>/` へ rename(atomic)。
+  3. `.adopt-tmp-*` を `output/` へ rename(atomic)
+  4. 親ディレクトリを fsync して `.adopt-bak-*` を削除
+  - **クラッシュ時**: `output/` が無く `.adopt-bak-*` があれば、次回の adopt 実行がそれを `output/` へ戻してからやり直す(`.adopt-tmp-*` が完全な場合は swap を完了させる)。**`.adopt-*` は一時領域であり、`adopted verify`/`site build` は `output/manifest.json` だけを見るので公開物には現れない**。採用が成功するまで commit しない
 - 既定は dry-run(`--write` で実体化)
 - **`--into` の confinement**(ユーザー入力なので慣例に頼らない): リポジトリ root(`--root`)配下であること、`experiments/<model-id>/<experiment-id>` の 2 段の正確な形であること、`..`・絶対パス・backslash を拒否し、**symlink を経由した root 外への脱出を拒否**する。`<model-id>` は run の `model` と一致しなければならない。これらを満たさない場合は書き込まずに失敗する
+- **run と採用先 experiment の結び付き**: `filepath.Dir(run.Experiment) == <into>` を必須とする(run が記録した recipe のディレクトリ以外へ adopt できない)。これにより `<into>/config.yaml` と実際に実行された recipe が一致する。`adopted verify` も manifest の `model`/`experiment_id` が**実際のディレクトリ位置と一致**することを検証する
 - `manifest.json`(`schema_version: 1`): `run_id` / `experiment_id` / `model` / `benchmark_fingerprint` / `artifact_digest` / `prompt_sha256` / `input_commit` / `model_tree_digest` / `controller_version` / `adopted_at` / `review{review_id,issue_url}`(比較相手が無い場合は `null`) / `artifacts[{path,sha256,size}]`
 - **`output/manifest.json` は予約名**である。benchmark が `output/manifest.json` を生成した場合、**runner は seal 時に失敗させる**(そのまま通すと preview では配信対象なのに digest 対象外となり、adopt の manifest とも衝突する)。payload 内の他階層の `manifest.json` は通常ファイルとして扱ってよい
 - **artifacts は payload の完全な inventory** として扱い、**`manifest.json` 自身を含めない**(自己参照で hash 不能になるため)。`ArtifactDigest` も payload のみから計算する(§4.4)。したがって `output/` の内容は「`artifacts` に列挙された全ファイル + `manifest.json`」と**過不足なく一致**しなければならない
@@ -735,7 +745,10 @@ func Fingerprint(in FingerprintInput) string // canonical JSON → sha256
 
 **`llmbench site build --root experiments --out <dir>`**: `manifest.json` を持つ実験だけを対象に静的サイトを生成する(`output/` があるだけのプレースホルダは公開しない)。index は `adopted_at` 降順 → model 昇順 → experiment-id 昇順。review の無い採用は「未レビュー」として表示する。**ネットワーク不要・read-only**。controller と同じバイナリ・同じ検証を使うため CI と手元で結果が一致する
 
-**公開サイトの隔離**: raw な生成 HTML をトップレベルで公開せず、**trusted なページが `iframe sandbox="allow-scripts"` で表示する**構造を既定とする。埋め込む bytes は **`site build` が git 上の adopt 済み artifact から読んだものだけ**であり、**preview URL を埋め込み元にしない**(preview は認証付きの一時配信であり、恒久サイトが依存すると PV 削除で壊れ、外部閲覧者も OIDC を通れない)。GitHub Pages はカスタムレスポンスヘッダを持たないため、ヘッダに依存せず隔離できるこの構造が必要
+**公開サイトの隔離**(GitHub Pages はカスタムレスポンスヘッダを返せないため、ヘッダに依存しない構造にする):
+
+- **raw artifact を直接 navigate できる公開リソースにしない**: `site build` は採用 `index.html` を公開パスへ複製せず、**wrapper ページへ `srcdoc` として inline 埋め込み**する(srcdoc でも sandbox なしでは同一 origin になるため、sandbox と必ずセット)。埋め込む bytes は **git 上の adopt 済み artifact から読んだものだけ**で、**preview URL を埋め込み元にしない**(preview は認証付きの一時配信であり、恒久サイトが依存すると PV 削除で壊れ、外部閲覧者も OIDC を通れない)
+- **役割の分離**: `iframe sandbox="allow-scripts"` は **origin/capability 隔離**(同一 origin 化の防止)であり、`connect-src` 等の送信先制限は **CSP が担う**。したがって framed document の**先頭に `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' <許可 CDN 固定>; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'">` を挿入**する(preview の CSP ヘッダと同等の内容。`sandbox` ディレクティブは header 専用なので CD 側では使えない)。`site build` は「wrapper の iframe 属性」と「埋め込み文書の meta CSP」を必ず対で生成し、wrapper 以外から raw artifact へ到達する URL を出力しない
 
 **CI(`.github/workflows/pages.yml`)**: PR では `adopted verify` + `site build` のみ。main push で build artifact を `upload-pages-artifact` → `deploy-pages`(`pages: write` / `id-token: write`)。**ホスト差し替え(Cloudflare Pages 等)は workflow の責務**であり controller は無変更
 

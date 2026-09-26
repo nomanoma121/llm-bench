@@ -35,6 +35,8 @@ type SandboxClient interface {
 	Exec(ctx context.Context, claimName string, argv []string, env map[string]string, cwd string) (stdout, stderr []byte, exitCode int, err error)
 	Put(ctx context.Context, claimName string, r io.Reader, dest string) error
 	Pull(ctx context.Context, claimName, path string) ([]byte, error)
+	// PullLimited streams a file, aborting the transfer once it exceeds limit.
+	PullLimited(ctx context.Context, claimName, path string, limit int64) ([]byte, error)
 	// ReleaseSandboxClaim waits until the claim and its GPU are gone.
 	// released=false means it is still terminating.
 	ReleaseSandboxClaim(ctx context.Context, claimName string) (released bool, err error)
@@ -199,12 +201,11 @@ func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.Artifacts, error)
 	if err := os.MkdirAll(staging, 0o755); err != nil {
 		return run.Artifacts{}, err
 	}
-	index, err := s.Client.Pull(ctx, s.Claim, sandboxOutput+"/index.html")
+	// Bounded transfer: untrusted sandbox bytes must not be able to make the
+	// harness allocate an unbounded buffer.
+	index, err := s.Client.PullLimited(ctx, s.Claim, sandboxOutput+"/index.html", maxArtifactBytes)
 	if err != nil {
 		return run.Artifacts{}, fmt.Errorf("runner: pull index.html: %w", err)
-	}
-	if len(index) > maxArtifactBytes {
-		return run.Artifacts{}, fmt.Errorf("runner: artifact is %d bytes, over the %d byte limit", len(index), maxArtifactBytes)
 	}
 	if err := os.WriteFile(filepath.Join(staging, "index.html"), index, 0o644); err != nil {
 		return run.Artifacts{}, err
@@ -268,7 +269,7 @@ if count != 1:
 
 // maxArtifactBytes bounds a single recovered artifact file. It matches the
 // preview's serving limit so local and sandbox seal the same thing.
-const maxArtifactBytes = 8 << 20
+const maxArtifactBytes = provenance.MaxArtifactBytes
 
 // formatInvokeLog records the invoked argv, captured output and exit status.
 func formatInvokeLog(argv []string, stdout, stderr []byte, code int, execErr error) []byte {

@@ -23,9 +23,9 @@ import (
 	"github.com/nomanoma121/llm-bench/internal/run"
 )
 
-// MaxFileSize bounds a single served file. The payload is a single
-// self-contained index.html, so this also bounds the whole payload.
-const MaxFileSize = 8 << 20 // 8 MiB
+// MaxFileSize bounds a single served file. It is the sealing contract's
+// limit: anything sealed is servable.
+const MaxFileSize = provenance.MaxArtifactBytes
 
 // CSP is sent with every artifact response. `sandbox allow-scripts` (without
 // allow-same-origin) makes the document opaque, and the remaining directives
@@ -69,6 +69,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	record, err := h.Store.LoadRun(req.Context(), runID)
 	if err != nil || record.Artifacts.ArtifactDigest == "" {
 		// Unsealed or unknown runs are indistinguishable from outside.
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if rel != "index.html" {
+		// The v1.6 payload is a single file and the digest deliberately
+		// excludes the reserved manifest name: refuse anything else before
+		// touching the filesystem, so a file that no digest covers is never
+		// read (or even sized) on behalf of a request.
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
@@ -142,7 +150,6 @@ func parsePath(urlPath string) (runID, rel string, ok bool) {
 	if len(segs) == 3 {
 		rel = segs[2]
 	}
-	rel = strings.TrimPrefix(rel, "/")
 	if rel == "" {
 		rel = "index.html"
 	}

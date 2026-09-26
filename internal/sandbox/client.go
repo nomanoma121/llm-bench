@@ -6,7 +6,9 @@ package sandbox
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -285,6 +287,42 @@ func (c *Client) Pull(ctx context.Context, claim, path string) ([]byte, error) {
 		return nil, fmt.Errorf("sandbox: pull %s: %w", path, err)
 	}
 	return b, nil
+}
+
+// ErrTooLarge reports a transfer that exceeded the caller's limit.
+var ErrTooLarge = errors.New("sandbox: file exceeds the transfer limit")
+
+// PullLimited streams a file from the sandbox and aborts the transfer as soon
+// as it exceeds limit, so bytes produced inside the sandbox can never make the
+// harness allocate more than limit (plus one read buffer). Sandbox bytes are
+// untrusted input: a size check after an unbounded read would be too late.
+func (c *Client) PullLimited(ctx context.Context, claim, path string, limit int64) ([]byte, error) {
+	sb, err := c.sandboxHandle(ctx, claim)
+	if err != nil {
+		return nil, err
+	}
+	dst := &limitedBuffer{limit: limit}
+	if _, err := sb.ReadTo(ctx, path, dst); err != nil {
+		if errors.Is(err, ErrTooLarge) {
+			return nil, fmt.Errorf("sandbox: pull %s: %w", path, ErrTooLarge)
+		}
+		return nil, fmt.Errorf("sandbox: pull %s: %w", path, err)
+	}
+	return dst.buf.Bytes(), nil
+}
+
+// limitedBuffer refuses writes that would exceed its limit; the returned error
+// aborts the SDK's streaming read.
+type limitedBuffer struct {
+	buf   bytes.Buffer
+	limit int64
+}
+
+func (w *limitedBuffer) Write(p []byte) (int, error) {
+	if int64(w.buf.Len())+int64(len(p)) > w.limit {
+		return 0, ErrTooLarge
+	}
+	return w.buf.Write(p)
 }
 
 func (c *Client) k8sHelper() (*sandboxsdk.K8sHelper, error) {

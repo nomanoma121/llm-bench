@@ -244,3 +244,20 @@ func TestPreviewRequiresAbsoluteURL(t *testing.T) {
 		}
 	}
 }
+
+func TestPreviewRejectsQueryOrFragment(t *testing.T) {
+	for _, base := range []string{
+		"https://preview.example/path?foo=bar",
+		"https://preview.example/path#frag",
+	} {
+		in := "targets:\n  local:\n    hooks: []\npreview:\n  base_url: " + base + "\n"
+		if _, err := Parse(strings.NewReader(in)); err == nil {
+			t.Fatalf("base_url %q: expected rejection", base)
+		}
+	}
+	// A path prefix is fine: the run path is appended to it.
+	in := "targets:\n  local:\n    hooks: []\npreview:\n  base_url: https://preview.example/llm-bench\n"
+	if _, err := Parse(strings.NewReader(in)); err != nil {
+		t.Fatalf("a path prefix must be accepted: %v", err)
+	}
+}

@@ -35,7 +35,10 @@ func runSubmit(cmd *cobra.Command, g *globalFlags, expPath, configPath, commit s
 	if err != nil {
 		return err
 	}
-	engine := buildEngine(g, opCfg, time.Second, newSandboxClients(g), newGitopsGateways(g))
+	engine, err := buildEngine(g, opCfg, time.Second, newSandboxClients(g), newGitopsGateways(g))
+	if err != nil {
+		return err
+	}
 	submitted, err := engine.Submit(ctx, r, inputs)
 	if err != nil {
 		return err

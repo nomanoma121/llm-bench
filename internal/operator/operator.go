@@ -325,6 +325,11 @@ func (c Config) Validate() error {
 		if c.Review.Owner == "" || c.Review.Repository == "" {
 			return errors.New("operator: review requires owner and repository")
 		}
+		if c.Review.BotLogin == "" {
+			// Comments are only trusted when their author is known; an empty
+			// login would let any participant forge controller records.
+			return errors.New("operator: review requires bot_login")
+		}
 	}
 	return nil
 }

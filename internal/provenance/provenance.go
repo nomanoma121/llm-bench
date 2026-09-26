@@ -24,8 +24,11 @@ type FingerprintInput struct {
 	BenchmarkSchemaVersion string `json:"benchmark_schema_version"`
 	ContextSize            int    `json:"context_size"`
 	RuntimeSignature       string `json:"runtime_signature"`
-	TargetKind             string `json:"target_kind"` // local | sandbox
-	ControllerVersion      string `json:"controller_version"`
+	// Generation is the canonical JSON of the recipe's sampling conditions;
+	// runs that differ only in temperature or seed must not compare equal.
+	Generation        string `json:"generation"`
+	TargetKind        string `json:"target_kind"` // local | sandbox
+	ControllerVersion string `json:"controller_version"`
 }
 
 // Fingerprint derives the canonical fingerprint of the execution conditions.

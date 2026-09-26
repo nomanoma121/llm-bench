@@ -76,7 +76,10 @@ func newServeCmd(g *globalFlags) *cobra.Command {
 				return errors.New("serve: refusing to serve without LLMBENCH_API_TOKEN on a non-loopback address")
 			}
 
-			engine := buildEngine(g, opCfg, retryInterval, newSandboxClients(g), newGitopsGateways(g))
+			engine, err := buildEngine(g, opCfg, retryInterval, newSandboxClients(g), newGitopsGateways(g))
+			if err != nil {
+				return err
+			}
 			svc := &apiService{
 				g:             g,
 				opCfg:         opCfg,

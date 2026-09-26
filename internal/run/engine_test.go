@@ -770,10 +770,24 @@ func TestConcurrentTargetsProceedInParallel(t *testing.T) {
 }
 
 type gateExecutor struct {
-	gate chan struct{}
+	gate     chan struct{}
+	released chan struct{}
+	started  chan struct{}
 }
 
 func (g *gateExecutor) Execute(ctx context.Context, _ Run) (Artifacts, error) {
+	if g.started != nil {
+		select {
+		case <-g.started:
+		default:
+			close(g.started)
+		}
+	}
+	defer func() {
+		if g.released != nil {
+			close(g.released)
+		}
+	}()
 	select {
 	case <-g.gate:
 		return Artifacts{Dir: "/tmp/x"}, nil
@@ -939,4 +953,54 @@ func TestDrainDuringDispatchDoesNotDoubleExecute(t *testing.T) {
 	if f.exec.callCount() != 1 {
 		t.Fatalf("executor calls = %d, want 1", f.exec.callCount())
 	}
+}
+
+// blockingExecutor models an external effect that cannot be interrupted by
+// context cancellation (it must finish before its worker returns).
+type blockingExecutor struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingExecutor) Execute(_ context.Context, _ Run) (Artifacts, error) {
+	close(b.started)
+	<-b.release
+	return Artifacts{Dir: "/tmp/x"}, nil
+}
+
+func TestRunWaitsForWorkersOnCancel(t *testing.T) {
+	f := newFixture(t, "a")
+	f.engine.Interval = time.Millisecond
+	gate := make(chan struct{})
+	released := make(chan struct{})
+	started := make(chan struct{})
+	f.engine.Executor = &blockingExecutor{started: started, release: gate}
+	if _, err := f.engine.Submit(context.Background(), f.newRun("r1"), nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		_ = f.engine.Run(ctx)
+		close(runDone)
+	}()
+	// Wait until the worker is inside Execute, then cancel.
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the worker never reached Execute")
+	}
+	cancel()
+	select {
+	case <-runDone:
+		t.Fatal("Run returned while a worker was still executing")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(gate)
+	select {
+	case <-runDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return after the worker finished")
+	}
+	_ = released
 }

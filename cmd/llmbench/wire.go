@@ -153,11 +153,16 @@ func prepareRun(g *globalFlags, opCfg operator.Config, expPath, commit string) (
 		return run.Run{}, nil, err
 	}
 	now := currentTime()
+	generation, err := cfg.GenerationJSON()
+	if err != nil {
+		return run.Run{}, nil, err
+	}
 	fingerprint, err := provenance.Fingerprint(provenance.FingerprintInput{
 		Prompt:                 promptBytes,
 		BenchmarkSchemaVersion: benchSchemaVersion,
 		ContextSize:            cfg.Runtime.ContextSize,
 		RuntimeSignature:       cfg.Runtime.Engine + "/" + cfg.Runtime.Variant,
+		Generation:             generation,
 		TargetKind:             targetKind(target),
 		ControllerVersion:      controllerVersion,
 	})

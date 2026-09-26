@@ -44,9 +44,13 @@ func (i *Issues) PostComment(ctx context.Context, issue int, body string) error 
 	return err
 }
 
-// FindComments implements review.Issues. Comments are filtered to the bot
-// login when configured.
+// FindComments implements review.Issues. Only comments authored by the
+// configured bot login are returned: an unset login fails closed instead of
+// accepting every participant's comment as a controller record.
 func (i *Issues) FindComments(ctx context.Context, issue int, marker string) ([]string, error) {
+	if i.BotLogin == "" {
+		return nil, errors.New("issues: bot_login is required to identify controller comments")
+	}
 	opts := &github.IssueListCommentsOptions{ListOptions: github.ListOptions{PerPage: 100}}
 	var out []string
 	for {
@@ -58,10 +62,8 @@ func (i *Issues) FindComments(ctx context.Context, issue int, marker string) ([]
 			if c.Body == nil {
 				continue
 			}
-			if i.BotLogin != "" {
-				if c.User == nil || c.User.Login == nil || *c.User.Login != i.BotLogin {
-					continue
-				}
+			if c.User == nil || c.User.Login == nil || *c.User.Login != i.BotLogin {
+				continue
 			}
 			if strings.Contains(*c.Body, marker) {
 				out = append(out, *c.Body)

@@ -41,6 +41,18 @@ type Runtime struct {
 	Start       *Start `yaml:"start,omitempty" json:"start,omitempty"`
 }
 
+// Generation holds the sampling conditions a runtime is invoked with. They
+// participate in the benchmark fingerprint: two runs that differ only in
+// temperature or seed are not A/B comparable. Pointers distinguish "unset"
+// from an explicit zero.
+type Generation struct {
+	Temperature *float64 `yaml:"temperature,omitempty" json:"temperature,omitempty"`
+	TopP        *float64 `yaml:"top_p,omitempty" json:"top_p,omitempty"`
+	TopK        *int     `yaml:"top_k,omitempty" json:"top_k,omitempty"`
+	Seed        *int64   `yaml:"seed,omitempty" json:"seed,omitempty"`
+	MaxTokens   *int     `yaml:"max_tokens,omitempty" json:"max_tokens,omitempty"`
+}
+
 // Invoke is the command whose output is benchmarked.
 type Invoke struct {
 	// Argv is executed without a shell. The runner records stdout/stderr as
@@ -50,11 +62,25 @@ type Invoke struct {
 
 // Config is the parsed experiment recipe.
 type Config struct {
-	Model     string  `yaml:"model" json:"model"`
-	Benchmark string  `yaml:"benchmark" json:"benchmark"`
-	Target    string  `yaml:"target" json:"target"`
-	Runtime   Runtime `yaml:"runtime" json:"runtime"`
-	Invoke    Invoke  `yaml:"invoke" json:"invoke"`
+	Model      string      `yaml:"model" json:"model"`
+	Benchmark  string      `yaml:"benchmark" json:"benchmark"`
+	Target     string      `yaml:"target" json:"target"`
+	Runtime    Runtime     `yaml:"runtime" json:"runtime"`
+	Generation *Generation `yaml:"generation,omitempty" json:"generation,omitempty"`
+	Invoke     Invoke      `yaml:"invoke" json:"invoke"`
+}
+
+// GenerationJSON canonicalizes the generation conditions for the fingerprint
+// (empty when the recipe declares none).
+func (c Config) GenerationJSON() (string, error) {
+	if c.Generation == nil {
+		return "", nil
+	}
+	b, err := json.Marshal(c.Generation)
+	if err != nil {
+		return "", fmt.Errorf("experiment: canonical generation: %w", err)
+	}
+	return string(b), nil
 }
 
 // DefaultReadyTimeoutSeconds is used when Start.ReadyTimeoutSeconds is zero.

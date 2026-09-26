@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -24,6 +25,7 @@ func (s *fakeStore) LoadReview(_ context.Context, id string) (Review, error) {
 
 type fakeIssues struct {
 	comments map[int][]string // issue -> bodies
+	marker   string
 }
 
 func (f *fakeIssues) PostComment(_ context.Context, issue int, body string) error {
@@ -32,6 +34,7 @@ func (f *fakeIssues) PostComment(_ context.Context, issue int, body string) erro
 }
 
 func (f *fakeIssues) FindComments(_ context.Context, issue int, marker string) ([]string, error) {
+	f.marker = marker
 	var out []string
 	for _, b := range f.comments[issue] {
 		if strings.Contains(b, marker) {
@@ -40,6 +43,11 @@ func (f *fakeIssues) FindComments(_ context.Context, issue int, marker string) (
 	}
 	return out, nil
 }
+
+// findComments records markers for assertions.
+func (f *fakeIssues) lastMarker() string { return f.marker }
+
+func (f *fakeIssues) setMarker(m string) { f.marker = m }
 
 type fakeNotifier struct{ messages []string }
 
@@ -56,7 +64,10 @@ func TestRequestValidatesComparability(t *testing.T) {
 	store := &fakeStore{reviews: map[string]Review{}}
 	iss := &fakeIssues{comments: map[int][]string{}}
 	notifier := &fakeNotifier{}
-	svc := &Service{Store: store, Issues: iss, Notifier: notifier}
+	svc := &Service{
+		Store: store, Issues: iss, Notifier: notifier,
+		IssueURL: func(issue int) string { return fmt.Sprintf("https://example.test/issues/%d", issue) },
+	}
 
 	t.Run("fingerprint mismatch rejected", func(t *testing.T) {
 		a := view("a", "https://x/a", "m1", "d1")
@@ -100,8 +111,8 @@ func TestRequestValidatesComparability(t *testing.T) {
 		if !strings.Contains(iss.comments[42][0], "https://x/a") || !strings.Contains(iss.comments[42][0], "https://x/b") {
 			t.Fatal("comment must contain both URLs")
 		}
-		if len(notifier.messages) != 1 {
-			t.Fatalf("notifier messages = %v", notifier.messages)
+		if len(notifier.messages) != 1 || notifier.messages[0] != "https://example.test/issues/42" {
+			t.Fatalf("notification must be the Issue link only: %v", notifier.messages)
 		}
 	})
 }
@@ -140,6 +151,83 @@ func TestVoteRecordsAndPosts(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("vote marker comment missing on Issue")
+	}
+}
+
+func TestStatusProjectsVotesFromIssue(t *testing.T) {
+	store := &fakeStore{reviews: map[string]Review{}}
+	iss := &fakeIssues{comments: map[int][]string{}}
+	svc := &Service{Store: store, Issues: iss}
+	a := view("a", "https://x/a", "m", "d")
+	b := view("b", "https://x/b", "m", "d")
+	rec, err := svc.Request(context.Background(), a, b, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A vote recorded by someone else directly on the Issue (or a local save
+	// that failed) must still appear: the Issue is canonical.
+	iss.comments[7] = append(iss.comments[7], fmt.Sprintf("%s%s|vote:B|judge -->", MarkerPrefix, rec.ID))
+	got, err := svc.Status(context.Background(), rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Votes) != 1 || got.Votes[0].Choice != ChoiceB || got.Votes[0].Voter != "judge" {
+		t.Fatalf("votes = %+v", got.Votes)
+	}
+	if !strings.Contains(iss.lastMarker(), rec.ID) {
+		t.Fatalf("status must query the Issue with the review marker: %q", iss.lastMarker())
+	}
+}
+
+func TestRequestIsRetrySafe(t *testing.T) {
+	store := &fakeStore{reviews: map[string]Review{}}
+	iss := &fakeIssues{comments: map[int][]string{}}
+	svc := &Service{Store: store, Issues: iss}
+	a := view("a", "https://x/a", "m", "d")
+	b := view("b", "https://x/b", "m", "d")
+	first, err := svc.Request(context.Background(), a, b, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.Request(context.Background(), a, b, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID != second.ID {
+		t.Fatalf("review IDs differ on retry: %s vs %s", first.ID, second.ID)
+	}
+	if len(iss.comments[7]) != 1 {
+		t.Fatalf("retry posted a duplicate comment: %d comments", len(iss.comments[7]))
+	}
+}
+
+func TestSameModelWithoutDigestsIsRefused(t *testing.T) {
+	store := &fakeStore{reviews: map[string]Review{}}
+	iss := &fakeIssues{comments: map[int][]string{}}
+	svc := &Service{Store: store, Issues: iss}
+	a := view("a", "https://x/a", "m", "")
+	b := view("b", "https://x/b", "m", "")
+	_, err := svc.Request(context.Background(), a, b, 7)
+	if err == nil || !strings.Contains(err.Error(), "recorded model digests") {
+		t.Fatalf("missing digests must be refused, got %v", err)
+	}
+}
+
+func TestNotifierReceivesIssueLinkOnly(t *testing.T) {
+	store := &fakeStore{reviews: map[string]Review{}}
+	iss := &fakeIssues{comments: map[int][]string{}}
+	notifier := &fakeNotifier{}
+	svc := &Service{
+		Store: store, Issues: iss, Notifier: notifier,
+		IssueURL: func(issue int) string { return fmt.Sprintf("https://example.test/issues/%d", issue) },
+	}
+	a := view("a", "https://x/a", "m", "d")
+	b := view("b", "https://x/b", "m", "d")
+	if _, err := svc.Request(context.Background(), a, b, 42); err != nil {
+		t.Fatal(err)
+	}
+	if len(notifier.messages) != 1 || notifier.messages[0] != "https://example.test/issues/42" {
+		t.Fatalf("notification must be the Issue link only: %v", notifier.messages)
 	}
 }
 

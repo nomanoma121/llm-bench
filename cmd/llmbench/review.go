@@ -48,6 +48,10 @@ func buildReviewService(g *globalFlags, opCfg operator.Config) (*review.Service,
 		Store:    reviewStore{s: mustFileStore(g)},
 		Issues:   iss,
 		Notifier: discord.New(os.Getenv(opCfg.Review.DiscordWebhookEnv)),
+		// Discord receives the Issue link only.
+		IssueURL: func(issue int) string {
+			return fmt.Sprintf("https://github.com/%s/%s/issues/%d", opCfg.Review.Owner, opCfg.Review.Repository, issue)
+		},
 	}, nil
 }
 

@@ -45,6 +45,21 @@ The controller will stop owning permanent publication: it serves an authenticate
 
 The split is implemented: the controller seals artifacts, serves authenticated previews and records the review in the Issue; `adopt` materializes the accepted artifact (with the authorizing vote) into `experiments/<model-id>/<experiment-id>/output/`, and CI publishes on merge. Digests and path checks live in Go, so the site toolchain never re-implements hashing. Publishing to GitHub Pages has not yet been exercised by a real merge.
 
+## 3c. Measurement and optimization (designed in `docs/architecture.md` v1.7 and `docs/optimization.md`, **not implemented**)
+
+The controller stays a single-Run state machine; measurement evidence is a separate sealed artifact and promotion decisions are computed by the harness, not claimed by the Agent.
+
+- [ ] A: measurement identity — record `MetricsDigest`, the frozen `MeasurementProtocol` (snapshot + digest), `RuntimeSpecDigest`, `RuntimeBuildDigest` and `EnvironmentDigest` on the run, without changing the existing `BenchmarkFingerprint`.
+- [ ] B: sealed evidence — `evidence/metrics.json` with schema validation, metric source/trust, measurement validity, size bounds, atomic seal; `GET /v1/runs/{id}/metrics` on the authenticated control API; `llmbench metrics --json`.
+- [ ] C: comparability and the remote Agent CLI — `compare --kind model|runtime`, `submit --remote --request-id`, `status --remote`, `wait`/`list`/`logs`, preflight (local and server-side) and the exit-code contract.
+- [ ] D: promotion policy — operator-owned `PromotionPolicy` (snapshot + digest) and a pure `optimize decide` that returns a verdict with reasons.
+- [ ] W: MeasurementWindow — generalize resource ownership (`OwnerRef`), keep the pause/restore PR held across measurement runs, one `ActiveRunID` via CAS, timeouts and recovery.
+- [ ] E: optimization session — round ledger, operator budgets, Issue intent (`kind: benchmark|optimize`, never a trigger), failure classification and retry as new runs.
+- [ ] F/G: runtime spec and image release — `runtimes/<engine>/<variant>` with spec/build digests and a build cache, plus a main-only trusted builder publishing OCI images pinned by digest.
+- [ ] H: published metrics — adopt evidence into git with manifest v2, render deterministic static SVG in the site build and include metric deltas in review comments.
+
+Explicitly not doing: attempts inside a run, sharing a SandboxClaim across a window, re-running the same run, Agent-controlled promotion, runtime-reported metrics as the primary objective, a single weighted score, always-on profiling.
+
 ## 4. Human evaluation and Agent loop
 
 - [x] Post A/B requests and run links to the originating Issue; record A/B/tie/invalid votes through the CLI (which posts marker comments) and rebuild the vote history from the Issue. There is no vote endpoint on the HTTP API; free-form Issue replies are not parsed as votes.

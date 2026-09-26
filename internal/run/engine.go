@@ -332,10 +332,20 @@ func (e *Engine) stepRunning(ctx context.Context, r *Run) (wait bool, err error)
 	// still own sealed evidence, and MetricsDigest only means "evidence
 	// exists" (docs/optimization.md §5.1).
 	r.Artifacts = out.Artifacts
+	// Provenance is merged, not overwritten: a field the executor does not
+	// produce (empty) must not erase an identity frozen at submit time, such
+	// as the WorkloadDigest computed from the protocol matrix
+	// (docs/optimization.md §5.1).
 	r.MetricsDigest = out.Evidence.Digest
-	r.RuntimeBuildDigest = out.RuntimeBuildDigest
-	r.EnvironmentDigest = out.EnvironmentDigest
-	r.WorkloadDigest = out.WorkloadDigest
+	if out.RuntimeBuildDigest != "" {
+		r.RuntimeBuildDigest = out.RuntimeBuildDigest
+	}
+	if out.EnvironmentDigest != "" {
+		r.EnvironmentDigest = out.EnvironmentDigest
+	}
+	if out.WorkloadDigest != "" {
+		r.WorkloadDigest = out.WorkloadDigest
+	}
 	switch {
 	case execErr != nil:
 		r.ExecutionResult = ResultFailure

@@ -409,10 +409,11 @@ func validatePromotionPolicy(p PromotionPolicy) error {
 		}
 	}
 	// The MVP has no adaptive sampling, so the gray zone is always
-	// inconclusive. Any other action would need a verdict value that does not
-	// exist yet (docs/optimization.md §6.1).
-	if p.GrayZone.Action != "" && p.GrayZone.Action != "inconclusive" {
-		return fmt.Errorf("gray_zone.action %q is not supported in the MVP (only \"inconclusive\")", p.GrayZone.Action)
+	// inconclusive and the value is required: an unset action would leave the
+	// behaviour of an undecided measurement implicit (docs/optimization.md
+	// §6.1).
+	if p.GrayZone.Action != "inconclusive" {
+		return fmt.Errorf("gray_zone.action %q is not supported in the MVP (must be \"inconclusive\")", p.GrayZone.Action)
 	}
 	return nil
 }

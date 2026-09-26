@@ -1087,6 +1087,7 @@ func TestKindSuccessConditions(t *testing.T) {
 			f.engine.Executor = exec
 			r := f.newRun("r1")
 			r.Kind = tc.kind
+			r.WorkloadDigest = "wl-frozen"
 			if _, err := f.engine.Submit(context.Background(), r, nil); err != nil {
 				t.Fatal(err)
 			}
@@ -1107,8 +1108,18 @@ func TestKindSuccessConditions(t *testing.T) {
 			if got.MetricsDigest != tc.out.Evidence.Digest {
 				t.Fatalf("metrics digest = %q, want %q", got.MetricsDigest, tc.out.Evidence.Digest)
 			}
-			if got.RuntimeBuildDigest != tc.out.RuntimeBuildDigest || got.EnvironmentDigest != tc.out.EnvironmentDigest || got.WorkloadDigest != tc.out.WorkloadDigest {
+			// Empty executor values must not erase submit-frozen identity.
+			if got.RuntimeBuildDigest != tc.out.RuntimeBuildDigest || got.EnvironmentDigest != tc.out.EnvironmentDigest {
 				t.Fatalf("provenance not persisted: %+v", got)
+			}
+			// A non-empty executor value may refine the identity; an empty one
+			// must leave the submit-frozen value alone.
+			want := tc.out.WorkloadDigest
+			if want == "" {
+				want = r.WorkloadDigest
+			}
+			if got.WorkloadDigest != want {
+				t.Fatalf("workload digest = %q, want %q", got.WorkloadDigest, want)
 			}
 		})
 	}

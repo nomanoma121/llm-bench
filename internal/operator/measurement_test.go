@@ -26,7 +26,8 @@ func measurementConfig() Config {
 		PromotionPolicies: map[string]PromotionPolicy{"latency": {
 			SchemaVersion: 1, PrimaryMetric: "decode_step_ms", Direction: "min",
 			AbsFloor: 0.3, AllowedSources: []string{"driver", "external_gpu"},
-			Guards: PromotionGuards{MinVRAMHeadroomMiB: 512},
+			Guards:   PromotionGuards{MinVRAMHeadroomMiB: 512},
+			GrayZone: PromotionGrayZone{Action: "inconclusive"},
 		}},
 		SamplingPolicies: map[string]SamplingPolicy{"three-pairs": {
 			SchemaVersion: 1, InitialPairs: 3, MaxPairs: 3, OrderRule: "balanced-randomized-pairs",
@@ -100,6 +101,11 @@ func TestValidationEnforcesMVPConstraints(t *testing.T) {
 		"gray zone beyond mvp": func(c *Config) {
 			p := c.PromotionPolicies["latency"]
 			p.GrayZone = PromotionGrayZone{Action: "needs-more-samples"}
+			c.PromotionPolicies["latency"] = p
+		},
+		"gray zone unset": func(c *Config) {
+			p := c.PromotionPolicies["latency"]
+			p.GrayZone = PromotionGrayZone{}
 			c.PromotionPolicies["latency"] = p
 		},
 		"driver without output boundary": func(c *Config) {

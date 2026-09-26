@@ -522,6 +522,14 @@ func validateManifest(m *Manifest) error {
 	if !found {
 		return fmt.Errorf("%w: index.html is required", errInvalidManifest)
 	}
+	// The sealing contract is single-file and bounded: a manifest claiming
+	// anything else was not produced by adopt and cannot be published.
+	if len(m.Artifacts) != 1 {
+		return fmt.Errorf("%w: the payload must be exactly index.html", errInvalidManifest)
+	}
+	if m.Artifacts[0].Size > provenance.MaxArtifactBytes {
+		return fmt.Errorf("%w: index.html is %d bytes, over the %d byte limit", errInvalidManifest, m.Artifacts[0].Size, provenance.MaxArtifactBytes)
+	}
 	if m.Review != nil {
 		if m.Review.ReviewID == "" || m.Review.VoteCommentID == 0 ||
 			(m.Review.Choice != review.ChoiceA && m.Review.Choice != review.ChoiceB) {

@@ -104,6 +104,10 @@ tar xzf actions-runner-osx-arm64-<version>.tar.gz && rm actions-runner-osx-arm64
 ./svc.sh install && ./svc.sh start
 ```
 
+Deploy-host requirements:
+
+- `upload-pages-artifact` shells out to **GNU tar** (`gtar --hard-dereference`), which macOS does not ship. Install it once on the deploy host with `brew install gnu-tar`; the runner's `PATH` must include `/opt/homebrew/bin`. Without it the deploy job fails with `gtar: command not found`.
+
 Operational notes:
 
 - Pull-request jobs get `contents: read` only; `pages: write` / `id-token: write` exist solely on the `main`-only deploy job.

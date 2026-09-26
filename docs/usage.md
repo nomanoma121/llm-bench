@@ -2,7 +2,7 @@
 
 The Go module lives at the repository root. See [design.md](design.md) for the full workflow.
 
-The control plane validates an experiment, runs a command-backed benchmark locally or in an Agent Sandbox, exposes a chi HTTP API and a Cobra CLI, persists run state, and applies ordered acquire/release hooks. Artifacts are recorded with hashes; there is no screenshot step, so the human A/B comparison uses the raw HTML itself. The controller serves an authenticated **preview** of a run's artifacts from the harness volume; it never publishes anywhere. Permanent publication happens only when a human adopts an artifact and merges it to `main` (see "Adopting and publishing"). The hooks are configured by the controller operator, not by experiment authors. An optional GitOps hook creates pause/restore GitHub PRs and checks the configured Argo CD Application and inference Deployment/Pods.
+The control plane validates an experiment, runs a command-backed benchmark locally or in an Agent Sandbox, exposes a chi HTTP API and a Cobra CLI, persists run state, and applies ordered acquire/release hooks. Outputs are published to a static site (one directory per run) with artifact hashes; there is no screenshot step, so the human A/B comparison uses the published HTML itself. The hooks are configured by the controller operator, not by experiment authors. An optional GitOps hook creates pause/restore GitHub PRs and checks the configured Argo CD Application and inference Deployment/Pods.
 
 From the repository root:
 
@@ -15,7 +15,7 @@ go run ./cmd/llmbench status <run-id>
 
 For Kubernetes-backed state and leader election, add `--coordination-namespace <namespace> --lease-name <name>` to `serve` (both or neither). Run records and target leases then live in ConfigMaps while recipe snapshots and artifacts stay on the harness persistent volume; losing the lease cancels the leader context, stops its workers, and the process re-enters the election. `--kubeconfig <path>` configures out-of-cluster access for both the Sandbox client and this coordination client. The ServiceAccount needs namespaced `get/create/update` on Leases and `get/list/create/update/delete` on ConfigMaps (a target lease is deleted on release). The current Helm chart is values-only: it neither installs this RBAC nor passes these flags. Do not start more than one replica yet: a Lease and versioned records do not alone fence an external GitHub operation or a command already running in a Sandbox after leadership loss.
 
-The HTTP API is bound to `127.0.0.1:8080` by default and refuses a non-loopback address without `LLMBENCH_API_TOKEN`; put TLS in front of it for shared deployments. `POST /v1/runs` accepts a repository-relative experiment path (absolute paths outside the repository and `..` escapes are rejected); `GET /v1/runs/{id}` returns its status. **Candidates are previewed on a separate listener** (`serve --preview-addr`): `GET|HEAD /v1/runs/{id}/artifacts/{path...}` serves files under that run's `output/` directory. That listener deliberately has no bearer auth of its own: put it behind an Ingress that terminates cluster authentication (OIDC and similar). Binding it to a non-loopback address requires the explicit `--preview-public` flag, which asserts that authentication is terminated upstream. Responses carry `Content-Security-Policy: sandbox allow-scripts …`, `X-Content-Type-Options: nosniff` and `Cache-Control: private, no-store`, and paths outside `output/` are refused. The preview URL that the Issue links to is derived from the operator's `preview.base_url`, not stored on the run. There is still no screenshot or rendering endpoint. Local targets are rejected over HTTP unless the operator sets `allow_http_local` on the target AND the API is authenticated. `serve` requires an operator config with explicit target names; see `../examples/server.yaml`. An experiment can only select one of those targets. For Sandbox execution, a full `input_commit` is required and checked against the recipe and prompt. The local runner does not check out the optional commit.
+The HTTP API is bound to `127.0.0.1:8080` by default and refuses a non-loopback address without `LLMBENCH_API_TOKEN`; put TLS in front of it for shared deployments. `POST /v1/runs` accepts a repository-relative experiment path (absolute paths outside the repository and `..` escapes are rejected); `GET /v1/runs/{id}` returns its status including `public_url` once the run has been published. There is no preview endpoint: publication writes the run HTML to the operator-configured site repository and the status returns its URL. Local targets are rejected over HTTP unless the operator sets `allow_http_local` on the target AND the API is authenticated. `serve` requires an operator config with explicit target names; see `../examples/server.yaml`. An experiment can only select one of those targets. For Sandbox execution, a full `input_commit` is required and checked against the recipe and prompt. The local runner does not check out the optional commit.
 
 A recipe may declare sampling conditions under `generation:` (for example `temperature`, `top_p`, `top_k`, `seed`, `max_tokens`). They are frozen into the run snapshot and participate in the BenchmarkFingerprint, so two runs that differ only in a generation parameter are not treated as A/B comparable.
 
@@ -45,7 +45,7 @@ For an automatic Sandbox run, configure an operator target with `sandbox.namespa
 
 ## Issue A/B review
 
-An optional operator-owned `review` block enables the Issue record. It needs `LLMBENCH_GITHUB_TOKEN` with Issue-comment permission, `owner`/`repository`, and **`bot_login`** (required: only comments from that login are interpreted as controller records, so another participant cannot forge a vote). A review additionally needs `preview.base_url` so the Issue comment can link the two previews. Both runs must have succeeded and still have their artifacts on the harness volume; reviewers open the two preview URLs. The marker comment records the run IDs and artifact digests as well as the URLs, so the review history stays meaningful even if a preview URL later stops resolving. Do not enable reviews when the artifacts themselves must stay private.
+An optional operator-owned `review` block enables the Issue record. It needs `LLMBENCH_GITHUB_TOKEN` with Issue-comment permission, `owner`/`repository`, and **`bot_login`** (required: only comments from that login are interpreted as controller records, so another participant cannot forge a vote). Each run carries the `public_url` produced by site publication; the Issue comment links those pages directly. Both runs of a review must already be published, and reviewers open the two published pages. Do not enable site publication or reviews for private benchmark artifacts.
 
 ```yaml
 review:
@@ -55,7 +55,7 @@ review:
   discord_webhook_env: LLMBENCH_DISCORD_WEBHOOK
 ```
 
-The Discord setting is optional; when set, provide that environment variable in the controller and Discord receives only the Issue link. Once both runs have succeeded, kept their artifacts and finished restoration, request and record a review:
+The Discord setting is optional; when set, provide that environment variable in the controller and Discord receives only the Issue link. Once both runs have succeeded, been published and finished restoration, request and record a review:
 
 ```sh
 go run ./cmd/llmbench review request <baseline-run-id> <candidate-run-id> --issue 42 --config examples/server-gitops.yaml
@@ -64,20 +64,3 @@ go run ./cmd/llmbench review status <review-id> --config examples/server-gitops.
 ```
 
 Both runs must be A/B comparable: the recorded BenchmarkFingerprint (prompt, context size, runtime engine/variant, generation conditions such as temperature/seed, target kind, controller version) must match. The recorded model tree digest is informational; when both runs use the same model ID it must be present and equal (guarding against a silent model swap), while cross-model comparisons are allowed. The Issue is the vote history and `review status` rebuilds the votes from its marker comments; a manual free-form reply is not parsed as a vote by the controller. Votes are recorded through the CLI (which posts the marker comment) or by any participant whose comment is authored by `bot_login`; the HTTP API has no vote route. Final experiment notes and PR summary are still written by an Agent, not generated by these commands.
-
-## Adopting and publishing
-
-A run is **not** published when it finishes. Publication is a human decision expressed as a merge:
-
-```sh
-# 1. Look at the previews and vote on the Issue (above).
-# 2. Materialize the accepted artifact into the repository (dry-run first).
-go run ./cmd/llmbench adopt <run-id> --into experiments/<model-id>/<experiment-id>
-go run ./cmd/llmbench adopt <run-id> --into experiments/<model-id>/<experiment-id> --review <review-id> --write
-# 3. Commit that directory with the experiment recipe/README and open a PR.
-# 4. Merging to main runs CI: verify -> site build -> GitHub Pages.
-```
-
-`adopt` copies the run's `output/` directory plus a `manifest.json` (run ID, fingerprint, prompt hash, input commit, model digest, controller version, review ID/URL, and a complete `{path,sha256,size}` inventory). It never decides anything by itself: `--review` only checks that the artifact being adopted is byte-for-byte the one that was reviewed. Re-running it for the same run and the same digests is a no-op; a different content already in place is refused.
-
-CI runs `llmbench adopted verify --root experiments` (every manifest entry exists with a matching hash, every file in `output/` is listed, `index.html` exists, no symlinks or escaping paths) and `llmbench site build --root experiments --out _site`, which publishes only experiments that have a valid `manifest.json`. **Digest and path validation lives in Go**; the site toolchain only renders. The published pages are static and frame the raw generated HTML with `sandbox="allow-scripts"`, so no response header from the host is trusted. Swapping GitHub Pages for another host (for example Cloudflare Pages) is a workflow-only change; the controller is unaffected and needs no write access to any publication host.

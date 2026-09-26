@@ -19,6 +19,7 @@ import (
 	"github.com/nomanoma121/llm-bench/internal/httpapi"
 	"github.com/nomanoma121/llm-bench/internal/kube"
 	"github.com/nomanoma121/llm-bench/internal/operator"
+	"github.com/nomanoma121/llm-bench/internal/preview"
 	"github.com/nomanoma121/llm-bench/internal/run"
 )
 
@@ -80,6 +81,8 @@ func (s *apiService) Status(ctx context.Context, id string) (run.Run, error) {
 
 func newServeCmd(g *globalFlags) *cobra.Command {
 	var configPath, addr string
+	var previewAddr string
+	var previewPublic bool
 	var retryInterval time.Duration
 	var coordNamespace, leaseName string
 	cmd := &cobra.Command{
@@ -92,9 +95,22 @@ func newServeCmd(g *globalFlags) *cobra.Command {
 			if (coordNamespace == "") != (leaseName == "") {
 				return errors.New("serve: --coordination-namespace and --lease-name must be set together")
 			}
+			if previewAddr != "" && !loopbackBind(previewAddr) && !previewPublic {
+				// The preview listener has no bearer auth of its own: it is
+				// meant to sit behind an Ingress that terminates cluster
+				// authentication. Binding it anywhere else requires the
+				// operator to assert that upstream authentication exists.
+				return errors.New("serve: refusing to bind --preview-addr to a non-loopback address without --preview-public")
+			}
+			if previewPublic && previewAddr == "" {
+				return errors.New("serve: --preview-public requires --preview-addr")
+			}
 			opCfg, err := operator.Load(configPath)
 			if err != nil {
 				return err
+			}
+			if previewAddr != "" && opCfg.Preview == nil {
+				return errors.New("serve: --preview-addr requires preview.base_url in the operator configuration")
 			}
 			token := os.Getenv("LLMBENCH_API_TOKEN")
 			if token == "" && !loopbackBind(addr) {
@@ -155,6 +171,20 @@ func newServeCmd(g *globalFlags) *cobra.Command {
 				Handler:           handler,
 				ReadHeaderTimeout: 5 * time.Second,
 			}
+			// The preview listener shares only the run store and the artifact
+			// directory with the controller: no token, no control routes and
+			// no sandbox client (docs/architecture.md §4.9).
+			var previewSrv *http.Server
+			if previewAddr != "" {
+				previewSrv = &http.Server{
+					Addr: previewAddr,
+					Handler: &preview.Handler{
+						Store:        engine.Store,
+						ArtifactsDir: fs.ArtifactsDir,
+					},
+					ReadHeaderTimeout: 5 * time.Second,
+				}
+			}
 
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
@@ -174,8 +204,20 @@ func newServeCmd(g *globalFlags) *cobra.Command {
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				_ = srv.Shutdown(shutdownCtx)
+				if previewSrv != nil {
+					_ = previewSrv.Shutdown(shutdownCtx)
+				}
 			}()
 
+			if previewSrv != nil {
+				go func() {
+					fmt.Fprintf(cmd.OutOrStdout(), "preview listening on %s\n", previewAddr)
+					if err := previewSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+						controllerLogger().Error(err, "preview listener stopped")
+						stop()
+					}
+				}()
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "listening on %s\n", addr)
 			if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 				return err
@@ -186,6 +228,8 @@ func newServeCmd(g *globalFlags) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "operator configuration (required)")
 	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:8080", "HTTP listen address")
+	cmd.Flags().StringVar(&previewAddr, "preview-addr", "", "candidate artifact preview listen address (disabled when empty)")
+	cmd.Flags().BoolVar(&previewPublic, "preview-public", false, "assert that an upstream proxy (Ingress + cluster auth) authenticates --preview-addr")
 	cmd.Flags().DurationVar(&retryInterval, "retry-interval", 30*time.Second, "interval for pending acquire/release retries and dispatch scans")
 	cmd.Flags().StringVar(&coordNamespace, "coordination-namespace", "", "kubernetes namespace for run records, target leases and leader election")
 	cmd.Flags().StringVar(&leaseName, "lease-name", "", "leader election lease name (reserved)")

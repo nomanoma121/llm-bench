@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -48,6 +49,9 @@ func buildReviewService(g *globalFlags, opCfg operator.Config) (*review.Service,
 		Store:    reviewStore{s: mustFileStore(g)},
 		Issues:   iss,
 		Notifier: discord.New(os.Getenv(opCfg.Review.DiscordWebhookEnv)),
+		// Preview URLs are derived from operator configuration: the listen
+		// address cannot be turned into the Ingress URL.
+		PreviewURL: previewURLFunc(opCfg),
 		// Discord receives the Issue link only.
 		IssueURL: func(issue int) string {
 			return fmt.Sprintf("https://github.com/%s/%s/issues/%d", opCfg.Review.Owner, opCfg.Review.Repository, issue)
@@ -64,19 +68,19 @@ func loadRunView(ctx context.Context, store *filestore.Store, id string) (review
 	if r.Phase != run.PhaseSucceeded {
 		return review.RunView{}, fmt.Errorf("review: run %s is not succeeded (phase=%s)", id, r.Phase)
 	}
-	if r.PublicURL == "" {
-		return review.RunView{}, fmt.Errorf("review: run %s is not published yet", id)
+	if r.Artifacts.ArtifactDigest == "" {
+		return review.RunView{}, fmt.Errorf("review: run %s has no sealed artifact yet", id)
 	}
 	var cfg experiment.Config
 	if err := json.Unmarshal([]byte(r.RecipeJSON), &cfg); err != nil {
 		return review.RunView{}, fmt.Errorf("review: decode recipe snapshot of %s: %w", id, err)
 	}
 	return review.RunView{
-		ID:          r.ID,
-		PublicURL:   r.PublicURL,
-		Fingerprint: r.Fingerprint,
-		Model:       cfg.Model,
-		ModelDigest: r.Artifacts.ModelTreeDigest,
+		ID:             r.ID,
+		ArtifactDigest: r.Artifacts.ArtifactDigest,
+		Fingerprint:    r.Fingerprint,
+		Model:          cfg.Model,
+		ModelDigest:    r.Artifacts.ModelTreeDigest,
 	}, nil
 }
 
@@ -206,4 +210,20 @@ func newReviewStatusCmd(g *globalFlags) *cobra.Command {
 	cmd.Flags().StringVar(&configPath, "config", "", "operator configuration (required)")
 	_ = cmd.MarkFlagRequired("config")
 	return cmd
+}
+
+// previewURLFunc renders the external preview URL of a run from operator
+// configuration. It is injected into the review service so review comments
+// link the previews without the URL ever being persisted on a run.
+func previewURLFunc(opCfg operator.Config) func(runID string) string {
+	base := ""
+	if opCfg.Preview != nil {
+		base = strings.TrimRight(opCfg.Preview.BaseURL, "/")
+	}
+	return func(runID string) string {
+		if base == "" {
+			return runID
+		}
+		return base + "/v1/runs/" + runID + "/artifacts/index.html"
+	}
 }

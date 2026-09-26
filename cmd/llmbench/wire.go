@@ -173,6 +173,7 @@ func prepareRun(g *globalFlags, opCfg operator.Config, expPath, commit string) (
 	r := run.Run{
 		ID:                  runID,
 		Target:              cfg.Target,
+		ControllerVersion:   controllerVersion,
 		Experiment:          relPath,
 		InputCommit:         commit,
 		Fingerprint:         fingerprint,

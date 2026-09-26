@@ -186,15 +186,28 @@ func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.Artifacts, error)
 		return run.Artifacts{}, fmt.Errorf("runner: model changed during execution (%s -> %s)", pre.TreeDigest, post.TreeDigest)
 	}
 
-	// 7. Persist artifacts outside the sandbox and hash them at rest.
-	if err := os.MkdirAll(filepath.Join(r.Artifacts.Dir, "output"), 0o755); err != nil {
+	// 7. Persist artifacts outside the sandbox. The payload is defined as the
+	// single file index.html, so a benchmark that produced anything else in
+	// /workspace/output fails here instead of silently losing those files.
+	if _, stderr, code, err := s.Client.Exec(ctx, s.Claim, []string{"python3", "-c", verifySingleOutputScript(sandboxOutput)}, nil, "/"); err != nil || code != 0 {
+		return run.Artifacts{}, fmt.Errorf("runner: verify sandbox output: %v exit=%d: %s", err, code, truncate(string(stderr), 256))
+	}
+	staging := stagingOutput(r.Artifacts.Dir)
+	if err := os.RemoveAll(staging); err != nil {
+		return run.Artifacts{}, err
+	}
+	if err := os.MkdirAll(staging, 0o755); err != nil {
 		return run.Artifacts{}, err
 	}
 	index, err := s.Client.Pull(ctx, s.Claim, sandboxOutput+"/index.html")
 	if err != nil {
 		return run.Artifacts{}, fmt.Errorf("runner: pull index.html: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(r.Artifacts.Dir, "output", "index.html"), index, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(staging, "index.html"), index, 0o644); err != nil {
+		return run.Artifacts{}, err
+	}
+	digest, payload, err := sealOutput(r.Artifacts.Dir, staging)
+	if err != nil {
 		return run.Artifacts{}, err
 	}
 	identityPath := filepath.Join(r.Artifacts.Dir, "model-identity.json")
@@ -208,11 +221,29 @@ func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.Artifacts, error)
 
 	return run.Artifacts{
 		Dir:               r.Artifacts.Dir,
-		IndexSHA256:       sha256Hex(index),
+		IndexSHA256:       payload[0].SHA256,
 		LogSHA256:         sha256Hex(logBody),
 		ModelTreeDigest:   pre.TreeDigest,
 		ModelIdentityPath: identityPath,
+		ArtifactDigest:    digest,
 	}, nil
+}
+
+// verifySingleOutputScript returns the python3 program that fails unless the
+// sandbox output directory contains exactly index.html.
+func verifySingleOutputScript(root string) string {
+	return fmt.Sprintf(`import os, sys
+root = %q
+bad = []
+for dirpath, dirnames, filenames in os.walk(root):
+    for name in filenames:
+        rel = os.path.relpath(os.path.join(dirpath, name), root)
+        if rel != "index.html":
+            bad.append(rel)
+if bad:
+    sys.stderr.write("unexpected output files: " + ",".join(sorted(bad)))
+    sys.exit(3)
+`, root)
 }
 
 // formatInvokeLog records the invoked argv, captured output and exit status.

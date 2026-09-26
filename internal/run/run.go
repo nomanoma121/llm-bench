@@ -98,6 +98,12 @@ type Artifacts struct {
 	LogSHA256         string `json:"log_sha256,omitempty"`
 	ModelTreeDigest   string `json:"model_tree_digest,omitempty"`
 	ModelIdentityPath string `json:"model_identity_path,omitempty"`
+	// ArtifactDigest is the payload digest computed at the moment the artifact
+	// was sealed (docs/architecture.md §4.4). A non-empty value is what makes
+	// the artifact servable by the preview and eligible for review/adopt;
+	// preview, review, adopt and adopted verify all use
+	// provenance.ArtifactDigest instead of re-implementing a hashing rule.
+	ArtifactDigest string `json:"artifact_digest,omitempty"`
 }
 
 // Run is the durable record of one benchmark execution.
@@ -107,6 +113,10 @@ type Run struct {
 	Experiment          string                 `json:"experiment"`
 	InputCommit         string                 `json:"input_commit,omitempty"`
 	Fingerprint         string                 `json:"fingerprint,omitempty"`
+	// ControllerVersion is the version of the binary that submitted the run.
+	// It cannot be recovered from the fingerprint, so it is persisted here for
+	// the adoption manifest.
+	ControllerVersion   string                 `json:"controller_version,omitempty"`
 	RecipeSchemaVersion int                    `json:"recipe_schema_version"`
 	RecipeJSON          string                 `json:"recipe_json"`
 	PromptSHA256        string                 `json:"prompt_sha256"`

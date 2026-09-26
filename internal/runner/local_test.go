@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/nomanoma121/llm-bench/internal/experiment"
+	"github.com/nomanoma121/llm-bench/internal/provenance"
 	"github.com/nomanoma121/llm-bench/internal/run"
 )
 
@@ -56,7 +57,7 @@ func TestLocalExecuteWritesIndexAndHashes(t *testing.T) {
 
 	l := NewLocal(dir)
 	r := artifactRun(dir, recipe(t, []string{"/bin/sh", "-c",
-		`printf '<html></html>' > "$LLMBENCH_OUTPUT_DIR/index.html"; env > "$LLMBENCH_OUTPUT_DIR/env.txt"`}))
+		`printf '<html></html>' > "$LLMBENCH_OUTPUT_DIR/index.html"; env > env.txt`}))
 
 	artifacts, err := l.Execute(context.Background(), r)
 	if err != nil {
@@ -78,7 +79,7 @@ func TestLocalExecuteWritesIndexAndHashes(t *testing.T) {
 		t.Fatal("log hash missing")
 	}
 
-	env, err := os.ReadFile(filepath.Join(dir, "output", "env.txt"))
+	env, err := os.ReadFile(filepath.Join(dir, "env.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +143,7 @@ func TestLocalExecuteAbsolutizesRelativeDirs(t *testing.T) {
 	}
 	l := NewLocal(".") // relative models root
 	r := artifactRun("reldir", recipe(t, []string{"/bin/sh", "-c",
-		`printf 'x' > "$LLMBENCH_OUTPUT_DIR/index.html"; pwd > "$LLMBENCH_OUTPUT_DIR/pwd.txt"; echo "$LLMBENCH_PROMPT_PATH" > "$LLMBENCH_OUTPUT_DIR/pp.txt"`}))
+		`printf 'x' > "$LLMBENCH_OUTPUT_DIR/index.html"; pwd > pwd.txt; echo "$LLMBENCH_PROMPT_PATH" > pp.txt`}))
 	artifacts, err := l.Execute(context.Background(), r)
 	if err != nil {
 		t.Fatal(err)
@@ -150,15 +151,80 @@ func TestLocalExecuteAbsolutizesRelativeDirs(t *testing.T) {
 	if !filepath.IsAbs(artifacts.Dir) {
 		t.Fatalf("artifact dir not absolute: %q", artifacts.Dir)
 	}
-	pwd, _ := os.ReadFile(filepath.Join(tmp, "reldir", "output", "pwd.txt"))
+	pwd, _ := os.ReadFile(filepath.Join(tmp, "reldir", "pwd.txt"))
 	if got := strings.TrimSpace(string(pwd)); !filepath.IsAbs(got) {
 		t.Fatalf("child did not run under the absolute artifact dir: %q", got)
 	}
-	pp, _ := os.ReadFile(filepath.Join(tmp, "reldir", "output", "pp.txt"))
+	pp, _ := os.ReadFile(filepath.Join(tmp, "reldir", "pp.txt"))
 	if got := strings.TrimSpace(string(pp)); !filepath.IsAbs(got) {
 		t.Fatalf("prompt path not absolute: %q", got)
 	}
 	if _, err := os.Stat(filepath.Join(tmp, "reldir", "reldir")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("artifact dir was doubled inside the child")
+	}
+}
+
+func TestLocalExecuteRejectsExtraPayloadFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "input"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "input", "prompt.md"), []byte("p"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l := NewLocal(dir)
+	r := artifactRun(dir, recipe(t, []string{"/bin/sh", "-c",
+		`printf 'x' > "$LLMBENCH_OUTPUT_DIR/index.html"; printf 'y' > "$LLMBENCH_OUTPUT_DIR/app.js"`}))
+	if _, err := l.Execute(context.Background(), r); err == nil {
+		t.Fatal("expected the single-file payload contract to reject app.js")
+	}
+	// Nothing is sealed when the contract fails.
+	if _, err := os.Stat(filepath.Join(dir, "output")); !os.IsNotExist(err) {
+		t.Fatalf("output must not be sealed: %v", err)
+	}
+}
+
+func TestLocalExecuteRejectsReservedManifestName(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "input"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "input", "prompt.md"), []byte("p"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l := NewLocal(dir)
+	r := artifactRun(dir, recipe(t, []string{"/bin/sh", "-c",
+		`printf 'x' > "$LLMBENCH_OUTPUT_DIR/index.html"; printf '{}' > "$LLMBENCH_OUTPUT_DIR/manifest.json"`}))
+	if _, err := l.Execute(context.Background(), r); err == nil {
+		t.Fatal("expected the reserved manifest name to be rejected")
+	}
+}
+
+func TestLocalExecuteRecordsArtifactDigest(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "input"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "input", "prompt.md"), []byte("p"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l := NewLocal(dir)
+	r := artifactRun(dir, recipe(t, []string{"/bin/sh", "-c", `printf '<html></html>' > "$LLMBENCH_OUTPUT_DIR/index.html"`}))
+	artifacts, err := l.Execute(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifacts.ArtifactDigest == "" {
+		t.Fatal("artifact digest must be recorded at seal time")
+	}
+	digest, err := provenance.ArtifactDigest(filepath.Join(dir, "output"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest != artifacts.ArtifactDigest {
+		t.Fatalf("digest = %s, want %s", artifacts.ArtifactDigest, digest)
+	}
+	if artifacts.IndexSHA256 == "" {
+		t.Fatal("index hash must be recorded")
 	}
 }

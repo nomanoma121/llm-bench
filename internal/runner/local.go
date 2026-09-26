@@ -58,7 +58,12 @@ func (l *Local) Execute(ctx context.Context, r run.Run) (run.Artifacts, error) {
 		return run.Artifacts{}, err
 	}
 	promptPath := filepath.Join(artifactDir, "input", "prompt.md")
-	outputDir := filepath.Join(artifactDir, "output")
+	// The benchmark writes into a staging directory; sealOutput validates the
+	// single-file contract, fsyncs it and atomically renames it into place.
+	outputDir := stagingOutput(artifactDir)
+	if err := os.RemoveAll(outputDir); err != nil {
+		return run.Artifacts{}, err
+	}
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return run.Artifacts{}, err
 	}
@@ -95,7 +100,7 @@ func (l *Local) Execute(ctx context.Context, r run.Run) (run.Artifacts, error) {
 	if !info.Mode().IsRegular() {
 		return run.Artifacts{}, errors.New("runner: output/index.html is not a regular file")
 	}
-	indexSum, err := hashFile(indexPath)
+	digest, payload, err := sealOutput(artifactDir, outputDir)
 	if err != nil {
 		return run.Artifacts{}, err
 	}
@@ -104,9 +109,10 @@ func (l *Local) Execute(ctx context.Context, r run.Run) (run.Artifacts, error) {
 		return run.Artifacts{}, err
 	}
 	return run.Artifacts{
-		Dir:         artifactDir,
-		IndexSHA256: indexSum,
-		LogSHA256:   logSum,
+		Dir:            artifactDir,
+		IndexSHA256:    payload[0].SHA256,
+		LogSHA256:      logSum,
+		ArtifactDigest: digest,
 	}, nil
 }
 
@@ -114,10 +120,11 @@ func (l *Local) Execute(ctx context.Context, r run.Run) (run.Artifacts, error) {
 // computed for this run plus generic process lookups. Controller credentials
 // (LLMBENCH_GITHUB_TOKEN and friends) are deliberately not inherited.
 func (l *Local) envFor(r run.Run, cfg experiment.Config, artifactDir, modelsRoot, promptPath string) []string {
+
 	env := []string{
 		"LLMBENCH_RUN_ID=" + r.ID,
 		"LLMBENCH_PROMPT_PATH=" + promptPath,
-		"LLMBENCH_OUTPUT_DIR=" + filepath.Join(artifactDir, "output"),
+		"LLMBENCH_OUTPUT_DIR=" + stagingOutput(artifactDir),
 		"LLMBENCH_MODEL_ID=" + cfg.Model,
 		"LLMBENCH_MODEL_PATH=" + filepath.Join(modelsRoot, "models", cfg.Model),
 		fmt.Sprintf("LLMBENCH_CONTEXT_SIZE=%d", cfg.Runtime.ContextSize),

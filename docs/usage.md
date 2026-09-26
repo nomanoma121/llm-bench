@@ -15,7 +15,11 @@ go run ./cmd/llmbench status <run-id>
 
 For Kubernetes-backed state and leader election, add `--coordination-namespace <namespace> --lease-name <name>` to `serve` (both or neither). Run records and target leases then live in ConfigMaps while recipe snapshots and artifacts stay on the harness persistent volume; losing the lease cancels the leader context, stops its workers, and the process re-enters the election. `--kubeconfig <path>` configures out-of-cluster access for both the Sandbox client and this coordination client. The ServiceAccount needs namespaced `get/create/update` on Leases and `get/list/create/update/delete` on ConfigMaps (a target lease is deleted on release). The current Helm chart is values-only: it neither installs this RBAC nor passes these flags. Do not start more than one replica yet: a Lease and versioned records do not alone fence an external GitHub operation or a command already running in a Sandbox after leadership loss.
 
-The HTTP API is bound to `127.0.0.1:8080` by default and refuses a non-loopback address without `LLMBENCH_API_TOKEN`; put TLS in front of it for shared deployments. `POST /v1/runs` accepts a repository-relative experiment path (absolute paths outside the repository and `..` escapes are rejected); `GET /v1/runs/{id}` returns its status including `public_url` once the run has been published. There is no preview endpoint: publication writes the run HTML to the operator-configured site repository and the status returns its URL. Local targets are rejected over HTTP unless the operator sets `allow_http_local` on the target AND the API is authenticated. `serve` requires an operator config with explicit target names; see `../examples/server.yaml`. An experiment can only select one of those targets. For Sandbox execution, a full `input_commit` is required and checked against the recipe and prompt. The local runner does not check out the optional commit.
+The HTTP API is bound to `127.0.0.1:8080` by default and refuses a non-loopback address without `LLMBENCH_API_TOKEN`; put TLS in front of it for shared deployments. `POST /v1/runs` accepts a repository-relative experiment path (absolute paths outside the repository and `..` escapes are rejected); `GET /v1/runs/{id}` returns its status including the artifact digest and any publication URL.
+
+**Candidate previews** are served by a second, deliberately unauthenticated listener: start it with `--preview-addr <addr>` (and `--preview-public` when it is not loopback). It serves `GET|HEAD /v1/runs/{id}/artifacts/{path...}` from that run's `output/` directory only, and only once the artifact is sealed (a recorded artifact digest). Put it behind an Ingress that terminates cluster authentication (OIDC): the controller does not authenticate preview requests itself, so binding it beyond loopback asserts that upstream authentication exists. Responses carry a sandbox CSP (`sandbox allow-scripts` without `allow-same-origin`, `connect-src 'none'`, `form-action 'none'`), `X-Content-Type-Options: nosniff` and `Cache-Control: private, no-store`; paths outside `output/` are refused, symlinks are refused, and a file may not exceed 8 MiB. The listener shares nothing with the control API: it reads the run record and the artifact directory, never the sandbox client, so it keeps working after the Sandbox is gone. Artifacts are written to a staging directory and atomically renamed at seal time, and a response is only sent after the payload digest has been recomputed with the exact bytes being returned (a mismatch is answered 409).
+
+Local targets are rejected over HTTP unless the operator sets `allow_http_local` on the target AND the API is authenticated. `serve` requires an operator config with explicit target names; see `../examples/server.yaml`. An experiment can only select one of those targets. For Sandbox execution, a full `input_commit` is required and checked against the recipe and prompt. The local runner does not check out the optional commit.
 
 A recipe may declare sampling conditions under `generation:` (for example `temperature`, `top_p`, `top_k`, `seed`, `max_tokens`). They are frozen into the run snapshot and participate in the BenchmarkFingerprint, so two runs that differ only in a generation parameter are not treated as A/B comparable.
 
@@ -45,7 +49,20 @@ For an automatic Sandbox run, configure an operator target with `sandbox.namespa
 
 ## Issue A/B review
 
-An optional operator-owned `review` block enables the Issue record. It needs `LLMBENCH_GITHUB_TOKEN` with Issue-comment permission, `owner`/`repository`, and **`bot_login`** (required: only comments from that login are interpreted as controller records, so another participant cannot forge a vote). Each run carries the `public_url` produced by site publication; the Issue comment links those pages directly. Both runs of a review must already be published, and reviewers open the two published pages. Do not enable site publication or reviews for private benchmark artifacts.
+An optional operator-owned `review` block enables the Issue record. It needs `LLMBENCH_GITHUB_TOKEN` with Issue-comment permission, `owner`/`repository`, **`bot_login`** (required: only comments from that login are interpreted as controller records, so another participant cannot forge a vote) and **`preview.base_url`**, the external preview URL prefix that the Issue comment links to. Both runs must be `succeeded` with a sealed artifact; reviewers open the two previews.
+
+```yaml
+preview:
+  base_url: https://llmbench-preview.example.internal
+```
+
+```yaml
+review:
+  owner: example
+  repository: llm-bench
+  bot_login: bench-app[bot]
+  discord_webhook_env: LLMBENCH_DISCORD_WEBHOOK
+```
 
 ```yaml
 review:

@@ -30,6 +30,14 @@ site:
     _headers: |
       /*
         Content-Security-Policy: default-src 'none'; script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'
+# Candidate previews. The controller serves a run's output/ directory on a
+# second listener (serve --preview-addr, plus --preview-public when it is not
+# loopback) and derives the URLs that review comments link from base_url. Put
+# an Ingress that terminates cluster authentication (OIDC) in front of it; the
+# controller never publishes to a public host.
+preview:
+  base_url: https://llmbench-preview.example.internal
+
 review:
   owner: example-owner
   repository: llm-bench

@@ -8,10 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/google/go-github/v89/github"
 	"golang.org/x/oauth2"
+
+	"github.com/nomanoma121/llm-bench/internal/review"
 )
 
 // Issues posts and searches Issue comments on one repository.
@@ -47,12 +50,14 @@ func (i *Issues) PostComment(ctx context.Context, issue int, body string) error 
 // FindComments implements review.Issues. Only comments authored by the
 // configured bot login are returned: an unset login fails closed instead of
 // accepting every participant's comment as a controller record.
-func (i *Issues) FindComments(ctx context.Context, issue int, marker string) ([]string, error) {
+func (i *Issues) FindComments(ctx context.Context, issue int, marker string) ([]review.Comment, error) {
 	if i.BotLogin == "" {
 		return nil, errors.New("issues: bot_login is required to identify controller comments")
 	}
+	// The GitHub API returns comments in ascending ID order, which is the
+	// canonical order the vote rules rely on; do not reorder them here.
 	opts := &github.IssueListCommentsOptions{ListOptions: github.ListOptions{PerPage: 100}}
-	var out []string
+	var out []review.Comment
 	for {
 		comments, resp, err := i.gh.Issues.ListComments(ctx, i.owner, i.repo, issue, opts)
 		if err != nil {
@@ -66,10 +71,14 @@ func (i *Issues) FindComments(ctx context.Context, issue int, marker string) ([]
 				continue
 			}
 			if strings.Contains(*c.Body, marker) {
-				out = append(out, *c.Body)
+				out = append(out, review.Comment{ID: c.GetID(), Body: *c.Body})
 			}
 		}
 		if resp == nil || resp.NextPage == 0 {
+			// The vote rules take the last valid comment as the decision, so
+			// the canonical order must be enforced here rather than assumed
+			// from the API's paging order.
+			sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 			return out, nil
 		}
 		opts.Page = resp.NextPage

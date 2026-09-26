@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -88,7 +89,18 @@ type Target struct {
 	AllowHTTPLocal bool          `yaml:"allow_http_local" json:"allow_http_local"`
 }
 
-// Site is the static hosting configuration used to publish run outputs.
+// Preview configures the candidate-artifact preview (docs/architecture.md
+// §4.9). The controller serves a run's output/ directory on a separate
+// listener; BaseURL is the external URL that review comments link to, which
+// cannot be derived from the listen address (an Ingress terminates cluster
+// authentication in front of it).
+type Preview struct {
+	BaseURL string `yaml:"base_url" json:"base_url"`
+}
+
+// Site is the deprecated (v1.5) static hosting configuration. It stays until
+// the controller publication lifecycle is removed; new configurations should
+// use Preview and let CI publish adopted artifacts.
 type Site struct {
 	Owner      string            `yaml:"owner" json:"owner"`
 	Repository string            `yaml:"repository" json:"repository"`
@@ -108,7 +120,8 @@ type Review struct {
 // Config is the parsed operator configuration.
 type Config struct {
 	Targets  map[string]Target `yaml:"targets" json:"targets"`
-	Site     *Site             `yaml:"site,omitempty" json:"site,omitempty"`
+	Preview  *Preview          `yaml:"preview,omitempty" json:"preview,omitempty"`
+	Site     *Site             `yaml:"site,omitempty" json:"site,omitempty"` // deprecated, see Site
 	Review   *Review           `yaml:"review,omitempty" json:"review,omitempty"`
 	Defaults Limits            `yaml:"defaults,omitempty" json:"defaults,omitempty"`
 }
@@ -320,9 +333,19 @@ func (c Config) Validate() error {
 			return errors.New("operator: site requires owner, repository, branch and base_url")
 		}
 	}
+	if c.Preview != nil {
+		if err := validatePreviewBaseURL(c.Preview.BaseURL); err != nil {
+			return err
+		}
+	}
 	if c.Review != nil {
 		if c.Review.Owner == "" || c.Review.Repository == "" {
 			return errors.New("operator: review requires owner and repository")
+		}
+		if c.Preview == nil || c.Preview.BaseURL == "" {
+			// Review comments link the preview pages, so the external URL must
+			// be configured: it cannot be derived from the listen address.
+			return errors.New("operator: review requires preview.base_url so comments can link the previews")
 		}
 		if c.Review.BotLogin == "" {
 			// Comments are only trusted when their author is known; an empty
@@ -355,4 +378,25 @@ func validateGitOps(g GitOps) error {
 		errs = append(errs, errors.New("workload.active_replicas must be positive"))
 	}
 	return errors.Join(errs...)
+}
+
+// validatePreviewBaseURL requires an absolute http(s) URL: the value is
+// embedded in Issue comments and handed to reviewers.
+func validatePreviewBaseURL(raw string) error {
+	if raw == "" {
+		return errors.New("operator: preview requires base_url")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("operator: preview base_url is not a URL: %w", err)
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return errors.New("operator: preview base_url must be an absolute http(s) URL")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		// The value is used as a URL prefix: paths are appended to it, so a
+		// query or fragment would swallow the appended path.
+		return errors.New("operator: preview base_url must not contain a query or fragment")
+	}
+	return nil
 }

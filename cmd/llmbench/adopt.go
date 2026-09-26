@@ -18,6 +18,7 @@ import (
 func newAdoptCmd(g *globalFlags) *cobra.Command {
 	var into, reviewID, configPath string
 	var write bool
+	var coordNamespace string
 	cmd := &cobra.Command{
 		Use:   "adopt <run-id>",
 		Short: "Materialize an accepted run artifact into experiments/<model>/<experiment>",
@@ -30,15 +31,18 @@ func newAdoptCmd(g *globalFlags) *cobra.Command {
 			if into == "" {
 				return errors.New("adopt: --into experiments/<model-id>/<experiment-id> is required")
 			}
-			store := mustFileStore(g)
+			runs, artifactsDir, err := runReader(g, coordNamespace)
+			if err != nil {
+				return err
+			}
 			opts := adopt.Options{
 				Root:         g.root,
 				RunID:        args[0],
 				Into:         into,
 				ReviewID:     reviewID,
 				Write:        write,
-				Store:        store,
-				ArtifactsDir: store.ArtifactsDir,
+				Store:        runs,
+				ArtifactsDir: artifactsDir,
 			}
 			if reviewID != "" {
 				if configPath == "" {
@@ -81,6 +85,7 @@ func newAdoptCmd(g *globalFlags) *cobra.Command {
 	cmd.Flags().StringVar(&reviewID, "review", "", "review ID that authorized this artifact (required unless the model has no adoption yet)")
 	cmd.Flags().StringVar(&configPath, "config", "", "operator configuration, needed with --review to read the Issue")
 	cmd.Flags().BoolVar(&write, "write", false, "write the files (default is a dry run)")
+	cmd.Flags().StringVar(&coordNamespace, "coordination-namespace", "", "kubernetes namespace holding run records (defaults to the local file store)")
 	return cmd
 }
 

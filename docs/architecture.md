@@ -592,26 +592,44 @@ type Config struct {
 
 // (v1.7) 測定 protocol と昇格 policy。**どちらも operator 所有**で recipe からは変更できない。
 // 中身の契約は docs/optimization.md §6。snapshot(JSON)と digest の両方を run/session に保存する
+// ExecutionSpec は「candidate が変更できない測定コード」の実行と出力の境界(§optimization §5.4)。
+// driver も collector も同じ契約を使う
+type ExecutionSpec struct {
+    ContentDigest string // 実行物ツリーの digest(version 文字列では不足)
+    ExecMode      string // "sandbox-exec" | "separate-container"
+    OutputMode    string // "stdout-transport"(推奨) | "private-dir"
+}
+
+// WorkloadCase は workload matrix の 1 ケース。WorkloadDigest は実行した matrix 全体の
+// canonical digest であり、部分選択(WorkloadSelector)は将来拡張
+type WorkloadCase struct {
+    Name         string
+    ContextDepth int // 事前充填する KV の深さ(トークン)
+    PromptTokens int // 事前充填に使うプロンプト長
+    DecodeSteps  int // 計測する decode ステップ数
+    Prefill      bool // true なら prefill 計測ケース
+}
+
 type MeasurementProtocol struct {
     SchemaVersion int
-    Driver      struct{ ContentDigest string; Argv []string } // candidate が書けない場所から実行
-    Workload    struct{ Matrix []WorkloadCase }
-    Warmup      struct{ Steps int; DiscardSeconds int }
-    KVFill      string   // 例: "none" | "to:64k" | "to:250k"
-    Repetitions int      // pair 数
-    OrderRule   string   // 例: "balanced-randomized-pairs"(実際の順序と seed は evidence に記録)
-    RuntimeReset string  // 例: "none" | "between-pairs" | "between-runs"(測定条件の一部)
+    Driver        ExecutionSpec
+    DriverArgv    []string
+    Workload      struct{ Matrix []WorkloadCase }
+    Warmup        struct{ Steps int; DiscardSeconds int }
+    KVFill        string // 例: "none" | "to:64k" | "to:250k"
+    Repetitions   int    // pair 数
+    OrderRule     string // 例: "balanced-randomized-pairs"(実際の順序と seed は evidence に記録)
+    RuntimeReset  string // 例: "none" | "between-pairs" | "between-runs"(測定条件の一部)
     RequiredSources []string // promotion に必須の metric source(例: driver, external_gpu)
-    Version     int64    // upstream commit 等の runtime identity(あれば)
-    Collector   []struct {
-        Name          string
-        IntervalMS    int
-        ContentDigest string
-        // 実行と出力の境界(§optimization §5.4)。stdout 直 capture か専用 dir か
-        ExecMode      string // "sandbox-exec" | "separate-container"
-        OutputMode    string // "stdout-transport" | "private-dir"
+    Collector     []struct {
+        Name       string
+        IntervalMS int
+        Spec       ExecutionSpec
     }
-    Validity    struct{ Rules []string } // measurement_valid の判定規則(§optimization §5.5)
+    Validity struct{ Rules []string } // measurement_valid の判定規則(§optimization §5.5)
+    // runtime identity(runtime commit 等)は **protocol に入れない**。
+    // baseline/candidate で must-equal になってしまい runtime 最適化が比較不能になるため、
+    // RuntimeSpecDigest / RuntimeBuildDigest だけが持つ
 }
 // Validate は参照整合を fail-closed で検査する: OptimizationProfile の Protocol/Policy が
 // それぞれ MeasurementProtocols/PromotionPolicies に存在しない場合は設定エラー。
@@ -636,7 +654,6 @@ type OptimizationProfile struct {
     Kind         RunKind // visual | measurement(profile が固定し caller は上書き不可)
     Protocol     string  // MeasurementProtocols のキー(存在しなければ Validate がエラー)
     Policy       string  // PromotionPolicies のキー(存在しなければ Validate がエラー)
-    Policy       string // PromotionPolicies のキー
     MaxRounds    int
     MaxRuns      int
     MaxGPUDuration, MaxWindowDuration, MaxBuildDuration time.Duration

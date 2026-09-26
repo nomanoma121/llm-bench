@@ -460,7 +460,8 @@ required_improvement = max(absolute_floor, relative_floor * baseline_median)
 
 - 既存 `BenchmarkFingerprint` は visual A/B 用として据え置き(変更しない)
 - **`WorkloadDigest`** を新設する。**MVP では workload の部分選択を許さず**、`WorkloadDigest` = 「その run が実行した workload matrix 全体」の canonical digest(protocol の matrix をそのまま実行する)。したがって `SubmitOptions` と `RequestDigest` に workload selector は入れない。部分選択を導入する場合は `WorkloadSelector` と `WorkloadCase` の canonical schema を先に定義してから追加する
-- `MeasurementProtocolDigest` の内訳(schema 版、driver の content digest、workload matrix、warmup、KV 充填手順、反復数、**実行順序の規則**、collector 設定と content digest)は operator 側に置く。**objective は含めない**(`PromotionPolicy` の所属)
+- **`MeasurementProtocolDigest` は canonical snapshot 全体の SHA-256** と定義する(内訳を列挙しない)。内訳を列挙すると typed field を足したときに digest 対象から漏れる事故が起きるため。snapshot に含まれるのは schema 版、driver(ExecutionSpec: content digest・ExecMode・OutputMode・argv)、workload matrix(`WorkloadCase` の canonical 形)、warmup、KV 充填、反復数、実行順序の規則、runtime reset、required sources、collector(ExecutionSpec + interval)、validity 規則。**objective は含めない**(`PromotionPolicy` の所属)。**runtime identity(commit 等)も含めない**(§10)
+- driver と collector は同じ `ExecutionSpec`(content digest / ExecMode / OutputMode)を使う
 - balanced randomization は「規則」が protocol、「実際の AB/BA 順と seed」が evidence と session 台帳に属する
 
 ---

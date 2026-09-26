@@ -213,10 +213,10 @@ func TestSandboxExecutePreparesWorkspaceAndPersistsLog(t *testing.T) {
 		t.Fatalf("invoke log incomplete:\n%s", body)
 	}
 	sum := sha256.Sum256(body)
-	if artifacts.LogSHA256 != hex.EncodeToString(sum[:]) {
+	if artifacts.Artifacts.LogSHA256 != hex.EncodeToString(sum[:]) {
 		t.Fatal("log hash must be computed from the persisted log")
 	}
-	if artifacts.IndexSHA256 == "" || artifacts.ModelTreeDigest == "" {
+	if artifacts.Artifacts.IndexSHA256 == "" || artifacts.Artifacts.ModelTreeDigest == "" {
 		t.Fatalf("artifacts = %+v", artifacts)
 	}
 }

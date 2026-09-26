@@ -83,11 +83,14 @@ type Limits struct {
 
 // Target is one operator-approved execution destination.
 type Target struct {
-	Hooks          []CommandHook `yaml:"hooks" json:"hooks"`
-	GitOps         *GitOps       `yaml:"gitops,omitempty" json:"gitops,omitempty"`
-	Sandbox        *Sandbox      `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
-	Limits         *Limits       `yaml:"limits,omitempty" json:"limits,omitempty"`
-	AllowHTTPLocal bool          `yaml:"allow_http_local" json:"allow_http_local"`
+	// MeasurementProtocols allowlists the v1.7 measurement protocols this
+	// target may use. Empty means measurement runs are unavailable here.
+	MeasurementProtocols []string      `yaml:"measurement_protocols,omitempty" json:"measurement_protocols,omitempty"`
+	Hooks                []CommandHook `yaml:"hooks" json:"hooks"`
+	GitOps               *GitOps       `yaml:"gitops,omitempty" json:"gitops,omitempty"`
+	Sandbox              *Sandbox      `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
+	Limits               *Limits       `yaml:"limits,omitempty" json:"limits,omitempty"`
+	AllowHTTPLocal       bool          `yaml:"allow_http_local" json:"allow_http_local"`
 }
 
 // Preview configures the candidate-artifact preview (docs/architecture.md
@@ -113,6 +116,12 @@ type Config struct {
 	Preview  *Preview          `yaml:"preview,omitempty" json:"preview,omitempty"`
 	Review   *Review           `yaml:"review,omitempty" json:"review,omitempty"`
 	Defaults Limits            `yaml:"defaults,omitempty" json:"defaults,omitempty"`
+	// v1.7 measurement and optimization configuration. All operator-owned:
+	// a recipe cannot select any of these (docs/optimization.md §6).
+	MeasurementProtocols map[string]MeasurementProtocol `yaml:"measurement_protocols,omitempty" json:"measurement_protocols,omitempty"`
+	PromotionPolicies    map[string]PromotionPolicy     `yaml:"promotion_policies,omitempty" json:"promotion_policies,omitempty"`
+	SamplingPolicies     map[string]SamplingPolicy      `yaml:"sampling_policies,omitempty" json:"sampling_policies,omitempty"`
+	OptimizationProfiles map[string]OptimizationProfile `yaml:"optimization_profiles,omitempty" json:"optimization_profiles,omitempty"`
 }
 
 // PlannedHook is one element of the frozen hook plan stored on a run. The
@@ -331,10 +340,8 @@ func (c Config) Validate() error {
 			return err
 		}
 	}
-	if c.Preview != nil {
-		if err := validatePreviewBaseURL(c.Preview.BaseURL); err != nil {
-			return err
-		}
+	if err := c.validateMeasurementConfig(); err != nil {
+		return err
 	}
 	if c.Review != nil {
 		if c.Review.Owner == "" || c.Review.Repository == "" {

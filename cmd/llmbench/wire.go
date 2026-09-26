@@ -84,7 +84,25 @@ func resolveExperimentPath(root, p string) (full, rel string, err error) {
 // needs: recipe snapshot, prompt hash, fingerprint, hook plan and inputs.
 // Both the submit CLI and the HTTP API go through this function; the path is
 // resolved inside the repository root.
+// prepareRun freezes a run for a visual submission (no measurement
+// protocol). SubmissionOptions carries the v1.7 measurement identity; the CLI
+// and HTTP surfaces for it arrive with the Agent CLI work.
 func prepareRun(g *globalFlags, opCfg operator.Config, expPath, commit string) (run.Run, map[string][]byte, error) {
+	return prepareRunWithOptions(g, opCfg, expPath, commit, SubmissionOptions{})
+}
+
+// SubmissionOptions is the operator-validated measurement identity of a
+// submission (docs/optimization.md §9). Empty values mean a plain visual run.
+type SubmissionOptions struct {
+	Profile  string
+	Kind     string
+	Protocol string
+	// RequestID is the idempotency key. The deterministic RunID derivation
+	// lands with the remote submit work; until then it is recorded only.
+	RequestID string
+}
+
+func prepareRunWithOptions(g *globalFlags, opCfg operator.Config, expPath, commit string, opts SubmissionOptions) (run.Run, map[string][]byte, error) {
 	fullPath, relPath, err := resolveExperimentPath(g.root, expPath)
 	if err != nil {
 		return run.Run{}, nil, &httpapi.BadRequestError{Err: err}
@@ -156,6 +174,25 @@ func prepareRun(g *globalFlags, opCfg operator.Config, expPath, commit string) (
 	if err != nil {
 		return run.Run{}, nil, err
 	}
+	// v1.7: resolve and freeze the measurement identity before anything runs.
+	// kind/protocol/policy/sampling come from the operator allowlists; the
+	// recipe cannot select them.
+	sub, err := opCfg.ResolveSubmission(cfg.Target, opts.Profile, opts.Kind, opts.Protocol)
+	if err != nil {
+		return run.Run{}, nil, &httpapi.BadRequestError{Err: err}
+	}
+	var workloadDigest string
+	if sub.ProtocolJSON != "" {
+		var mp operator.MeasurementProtocol
+		if err := json.Unmarshal([]byte(sub.ProtocolJSON), &mp); err != nil {
+			return run.Run{}, nil, fmt.Errorf("submit: decode protocol snapshot: %w", err)
+		}
+		workloadDigest, err = operator.WorkloadDigest(mp.Workload.Matrix)
+		if err != nil {
+			return run.Run{}, nil, err
+		}
+	}
+
 	fingerprint, err := provenance.Fingerprint(provenance.FingerprintInput{
 		Prompt:                 promptBytes,
 		BenchmarkSchemaVersion: benchSchemaVersion,
@@ -170,20 +207,26 @@ func prepareRun(g *globalFlags, opCfg operator.Config, expPath, commit string) (
 	}
 
 	r := run.Run{
-		ID:                  runID,
-		Target:              cfg.Target,
-		ControllerVersion:   controllerVersion,
-		Experiment:          relPath,
-		InputCommit:         commit,
-		Fingerprint:         fingerprint,
-		RecipeSchemaVersion: 1,
-		RecipeJSON:          string(recipeJSON),
-		PromptSHA256:        provenance.SHA256Hex(promptBytes),
-		HookPlan:            plan,
-		HookPlanDigest:      digest,
-		Artifacts:           run.Artifacts{Dir: store.ArtifactsDir(runID)},
-		CreatedAt:           now,
-		UpdatedAt:           now,
+		ID:                        runID,
+		Target:                    cfg.Target,
+		ControllerVersion:         controllerVersion,
+		Kind:                      run.RunKind(sub.Kind),
+		RequestID:                 opts.RequestID,
+		MeasurementProtocolID:     sub.ProtocolID,
+		MeasurementProtocolJSON:   sub.ProtocolJSON,
+		MeasurementProtocolDigest: sub.ProtocolDigest,
+		WorkloadDigest:            workloadDigest,
+		Experiment:                relPath,
+		InputCommit:               commit,
+		Fingerprint:               fingerprint,
+		RecipeSchemaVersion:       1,
+		RecipeJSON:                string(recipeJSON),
+		PromptSHA256:              provenance.SHA256Hex(promptBytes),
+		HookPlan:                  plan,
+		HookPlanDigest:            digest,
+		Artifacts:                 run.Artifacts{Dir: store.ArtifactsDir(runID)},
+		CreatedAt:                 now,
+		UpdatedAt:                 now,
 	}
 	inputs := map[string][]byte{
 		"config.yaml": rawBytes,
@@ -389,19 +432,19 @@ type executorRouter struct {
 }
 
 // Execute implements run.Executor.
-func (r executorRouter) Execute(ctx context.Context, rec run.Run) (run.Artifacts, error) {
+func (r executorRouter) Execute(ctx context.Context, rec run.Run) (run.ExecutionOutputs, error) {
 	if plan := sandboxPlanOf(rec.HookPlan); plan != nil {
 		if r.sandboxClients == nil {
-			return run.Artifacts{}, fmt.Errorf("wire: run %s needs a sandbox executor but none is configured", rec.ID)
+			return run.ExecutionOutputs{}, fmt.Errorf("wire: run %s needs a sandbox executor but none is configured", rec.ID)
 		}
 		target, ok := r.cfg.Targets[rec.Target]
 		if !ok {
 			// Fail closed: without the operator target we would run with no
 			// execution ceiling, no readiness clamp and no model pin (F17).
-			return run.Artifacts{}, fmt.Errorf("wire: run %s targets %q which is no longer configured; refusing to execute without operator limits and model pin", rec.ID, rec.Target)
+			return run.ExecutionOutputs{}, fmt.Errorf("wire: run %s targets %q which is no longer configured; refusing to execute without operator limits and model pin", rec.ID, rec.Target)
 		}
 		if target.Sandbox == nil {
-			return run.Artifacts{}, fmt.Errorf("wire: run %s was submitted for a sandbox target but %q is now a local target; refusing to execute", rec.ID, rec.Target)
+			return run.ExecutionOutputs{}, fmt.Errorf("wire: run %s was submitted for a sandbox target but %q is now a local target; refusing to execute", rec.ID, rec.Target)
 		}
 		exec := &runner.Sandbox{
 			Client: r.sandboxClients.client(plan.Namespace),
@@ -429,7 +472,7 @@ func (r executorRouter) Execute(ctx context.Context, rec run.Run) (run.Artifacts
 		return exec.Execute(ctx, rec)
 	}
 	if target, ok := r.cfg.Targets[rec.Target]; !ok || target.Sandbox != nil {
-		return run.Artifacts{}, fmt.Errorf("wire: run %s is not a local target; refusing to execute it locally", rec.ID)
+		return run.ExecutionOutputs{}, fmt.Errorf("wire: run %s is not a local target; refusing to execute it locally", rec.ID)
 	}
 	return runner.NewLocal(r.g.root).Execute(ctx, rec)
 }

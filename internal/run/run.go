@@ -30,10 +30,10 @@ import (
 type Phase string
 
 const (
-	PhasePending    Phase = "pending"
-	PhaseAcquiring  Phase = "acquiring"
-	PhaseRunning    Phase = "running"
-	PhaseReleasing  Phase = "releasing"
+	PhasePending   Phase = "pending"
+	PhaseAcquiring Phase = "acquiring"
+	PhaseRunning   Phase = "running"
+	PhaseReleasing Phase = "releasing"
 	// PhaseFinalizing is retained only to decode records written before v1.6.
 	// New runs never enter it: releasing goes straight to succeeded or failed,
 	// and a legacy record in this phase migrates to succeeded (§3.1).
@@ -84,6 +84,9 @@ const (
 	LeaseAcquired  LeaseState = "acquired"
 	LeaseReleasing LeaseState = "releasing"
 	LeaseReleased  LeaseState = "released"
+	// LeaseNotApplicable belongs to window-bound runs, which do not own the
+	// target lease (docs/architecture.md §3.1).
+	LeaseNotApplicable LeaseState = "not_applicable"
 )
 
 // HookState is the per-hook progress stored on the run.
@@ -92,6 +95,49 @@ type HookState struct {
 	Phase      HookPhase `json:"phase"`
 	WaitReason string    `json:"wait_reason,omitempty"`
 	Error      string    `json:"error,omitempty"`
+}
+
+// RunKind selects the required output of a run. The state machine is shared;
+// only the success condition differs (docs/optimization.md §3).
+type RunKind string
+
+const (
+	// RunKindVisual requires a sealed visual artifact (output/index.html).
+	RunKindVisual RunKind = "visual"
+	// RunKindMeasurement requires sealed, valid measurement evidence and
+	// creates no visual payload.
+	RunKindMeasurement RunKind = "measurement"
+)
+
+// KindOrDefault maps an empty kind (legacy v1.6 records) to visual. New runs
+// always store a non-empty kind.
+func KindOrDefault(k RunKind) RunKind {
+	if k == "" {
+		return RunKindVisual
+	}
+	return k
+}
+
+// Evidence identifies the sealed measurement evidence of a run. An empty
+// Digest means no evidence exists (a normal state for visual runs); Valid is
+// the measurement_valid flag computed by the harness, so the engine never has
+// to parse the evidence JSON itself.
+type Evidence struct {
+	Path           string   `json:"path,omitempty"`
+	Digest         string   `json:"digest,omitempty"`
+	Valid          bool     `json:"valid,omitempty"`
+	InvalidReasons []string `json:"invalid_reasons,omitempty"`
+}
+
+// ExecutionOutputs is everything one execution produced. The executor returns
+// it as a unit so the engine can persist provenance in the same CAS write as
+// the completion state.
+type ExecutionOutputs struct {
+	Artifacts          Artifacts
+	Evidence           Evidence
+	RuntimeBuildDigest string
+	EnvironmentDigest  string
+	WorkloadDigest     string
 }
 
 // Artifacts identifies the run outputs persisted outside the sandbox.
@@ -111,15 +157,34 @@ type Artifacts struct {
 
 // Run is the durable record of one benchmark execution.
 type Run struct {
-	ID                  string                 `json:"id"`
-	Target              string                 `json:"target"`
-	Experiment          string                 `json:"experiment"`
-	InputCommit         string                 `json:"input_commit,omitempty"`
-	Fingerprint         string                 `json:"fingerprint,omitempty"`
+	ID          string `json:"id"`
+	Target      string `json:"target"`
+	Experiment  string `json:"experiment"`
+	InputCommit string `json:"input_commit,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
 	// ControllerVersion is the version of the binary that submitted the run.
 	// It cannot be recovered from the fingerprint, so it is persisted here for
 	// the adoption manifest.
-	ControllerVersion   string                 `json:"controller_version,omitempty"`
+	ControllerVersion string `json:"controller_version,omitempty"`
+	// ── v1.7 measurement identity(docs/optimization.md §5/§6)──
+	// Kind is always set for new runs; an empty value decodes as legacy visual.
+	Kind          RunKind `json:"kind,omitempty"`
+	RequestID     string  `json:"request_id,omitempty"` // idempotency key; RunID derives from it
+	RequestDigest string  `json:"request_digest,omitempty"`
+	// MeasurementProtocolID/JSON/Digest freeze how this run was measured
+	// (empty when the run carries no protocol).
+	MeasurementProtocolID     string `json:"measurement_protocol_id,omitempty"`
+	MeasurementProtocolJSON   string `json:"measurement_protocol_json,omitempty"`
+	MeasurementProtocolDigest string `json:"measurement_protocol_digest,omitempty"`
+	// WorkloadDigest covers the executed workload matrix, RuntimeSpecDigest
+	// what was meant to be built and RuntimeBuildDigest what actually ran.
+	WorkloadDigest     string `json:"workload_digest,omitempty"`
+	RuntimeSpecDigest  string `json:"runtime_spec_digest,omitempty"`
+	RuntimeBuildDigest string `json:"runtime_build_digest,omitempty"`
+	EnvironmentDigest  string `json:"environment_digest,omitempty"`
+	// MetricsDigest identifies sealed measurement evidence. It is independent
+	// of ArtifactDigest: "evidence exists" is not "the run succeeded".
+	MetricsDigest       string                 `json:"metrics_digest,omitempty"`
 	RecipeSchemaVersion int                    `json:"recipe_schema_version"`
 	RecipeJSON          string                 `json:"recipe_json"`
 	PromptSHA256        string                 `json:"prompt_sha256"`
@@ -167,7 +232,12 @@ type HookSource interface {
 // ExecutionState=invoking; when Execute returns, the artifacts must already be
 // persisted to Artifacts.Dir (with hashes computed at that moment).
 type Executor interface {
-	Execute(ctx context.Context, r Run) (Artifacts, error)
+	// Execute runs the benchmark (or measurement). Callers must persist
+	// ExecutionState=invoking first and apply the execution timeout. The
+	// returned outputs must already be durably written; provenance is stored
+	// in the same CAS write as the completion state, also when Execute
+	// returns an error (a failed run may still own sealed evidence).
+	Execute(ctx context.Context, r Run) (ExecutionOutputs, error)
 }
 
 // RunStore persists run records with compare-and-swap semantics on

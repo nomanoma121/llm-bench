@@ -199,11 +199,11 @@ func (l *eventLog) all() []string {
 type fakeExecutor struct {
 	mu        sync.Mutex
 	calls     int
-	artifacts Artifacts
+	artifacts ExecutionOutputs
 	err       error
 }
 
-func (f *fakeExecutor) Execute(_ context.Context, _ Run) (Artifacts, error) {
+func (f *fakeExecutor) Execute(_ context.Context, _ Run) (ExecutionOutputs, error) {
 	f.mu.Lock()
 	f.calls++
 	f.mu.Unlock()
@@ -237,7 +237,9 @@ func newFixture(t *testing.T, hookNames ...string) *fixture {
 		store:  newFakeStore(),
 		leases: newFakeLeases(),
 		events: &eventLog{},
-		exec:   &fakeExecutor{artifacts: Artifacts{Dir: "/tmp/artifacts", IndexSHA256: "abc"}},
+		exec: &fakeExecutor{artifacts: ExecutionOutputs{Artifacts: Artifacts{
+			Dir: "/tmp/artifacts", IndexSHA256: "abc", ArtifactDigest: "digest",
+		}}},
 	}
 	f.hooks = &fakeHooks{hooks: map[string]Hook{}, events: f.events}
 	for _, name := range hookNames {
@@ -756,7 +758,7 @@ type gateExecutor struct {
 	started  chan struct{}
 }
 
-func (g *gateExecutor) Execute(ctx context.Context, _ Run) (Artifacts, error) {
+func (g *gateExecutor) Execute(ctx context.Context, _ Run) (ExecutionOutputs, error) {
 	if g.started != nil {
 		select {
 		case <-g.started:
@@ -771,9 +773,9 @@ func (g *gateExecutor) Execute(ctx context.Context, _ Run) (Artifacts, error) {
 	}()
 	select {
 	case <-g.gate:
-		return Artifacts{Dir: "/tmp/x"}, nil
+		return ExecutionOutputs{Artifacts: Artifacts{Dir: "/tmp/x", ArtifactDigest: "digest"}}, nil
 	case <-ctx.Done():
-		return Artifacts{}, ctx.Err()
+		return ExecutionOutputs{}, ctx.Err()
 	}
 }
 
@@ -943,10 +945,10 @@ type blockingExecutor struct {
 	release chan struct{}
 }
 
-func (b *blockingExecutor) Execute(_ context.Context, _ Run) (Artifacts, error) {
+func (b *blockingExecutor) Execute(_ context.Context, _ Run) (ExecutionOutputs, error) {
 	close(b.started)
 	<-b.release
-	return Artifacts{Dir: "/tmp/x"}, nil
+	return ExecutionOutputs{Artifacts: Artifacts{Dir: "/tmp/x", ArtifactDigest: "digest"}}, nil
 }
 
 func TestRunWaitsForWorkersOnCancel(t *testing.T) {
@@ -1021,4 +1023,115 @@ func TestLegacyFinalizingRecordWithoutReleasedLeaseIsRepaired(t *testing.T) {
 	if got.LeaseState != LeaseReleased {
 		t.Fatalf("lease = %s, want released", got.LeaseState)
 	}
+}
+
+// TestKindSuccessConditions pins the v1.7 rule that the engine, not the
+// executor's nil error, decides whether the required output exists
+// (docs/optimization.md §5.1).
+func TestKindSuccessConditions(t *testing.T) {
+	cases := []struct {
+		name      string
+		kind      RunKind
+		out       ExecutionOutputs
+		wantPhase Phase
+	}{
+		{
+			name:      "visual with artifact succeeds",
+			kind:      RunKindVisual,
+			out:       ExecutionOutputs{Artifacts: Artifacts{Dir: "/tmp/x", ArtifactDigest: "d"}},
+			wantPhase: PhaseSucceeded,
+		},
+		{
+			name:      "visual without artifact fails",
+			kind:      RunKindVisual,
+			out:       ExecutionOutputs{Artifacts: Artifacts{Dir: "/tmp/x"}},
+			wantPhase: PhaseFailed,
+		},
+		{
+			name: "visual with invalid evidence still succeeds",
+			kind: RunKindVisual,
+			out: ExecutionOutputs{
+				Artifacts: Artifacts{Dir: "/tmp/x", ArtifactDigest: "d"},
+				Evidence:  Evidence{Digest: "m", Valid: false, InvalidReasons: []string{"collector gap"}},
+			},
+			wantPhase: PhaseSucceeded,
+		},
+		{
+			name:      "measurement without evidence fails",
+			kind:      RunKindMeasurement,
+			out:       ExecutionOutputs{},
+			wantPhase: PhaseFailed,
+		},
+		{
+			name: "measurement with invalid evidence fails",
+			kind: RunKindMeasurement,
+			out: ExecutionOutputs{
+				Evidence: Evidence{Digest: "m", Valid: false, InvalidReasons: []string{"foreign process"}},
+			},
+			wantPhase: PhaseFailed,
+		},
+		{
+			name: "measurement with valid evidence succeeds",
+			kind: RunKindMeasurement,
+			out: ExecutionOutputs{
+				Evidence:           Evidence{Digest: "m", Valid: true},
+				RuntimeBuildDigest: "rb", EnvironmentDigest: "env", WorkloadDigest: "wl",
+			},
+			wantPhase: PhaseSucceeded,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, "a")
+			exec := &recordingExecutor{out: tc.out}
+			f.engine.Executor = exec
+			r := f.newRun("r1")
+			r.Kind = tc.kind
+			r.WorkloadDigest = "wl-frozen"
+			if _, err := f.engine.Submit(context.Background(), r, nil); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := f.engine.Drain(ctx, "r1"); err != nil {
+				t.Fatal(err)
+			}
+			got, err := f.store.LoadRun(ctx, "r1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Phase != tc.wantPhase {
+				t.Fatalf("phase = %s (want %s) wait=%q", got.Phase, tc.wantPhase, got.WaitReason)
+			}
+			// Provenance is stored regardless of the outcome: MetricsDigest
+			// only means "evidence exists".
+			if got.MetricsDigest != tc.out.Evidence.Digest {
+				t.Fatalf("metrics digest = %q, want %q", got.MetricsDigest, tc.out.Evidence.Digest)
+			}
+			// Empty executor values must not erase submit-frozen identity.
+			if got.RuntimeBuildDigest != tc.out.RuntimeBuildDigest || got.EnvironmentDigest != tc.out.EnvironmentDigest {
+				t.Fatalf("provenance not persisted: %+v", got)
+			}
+			// A non-empty executor value may refine the identity; an empty one
+			// must leave the submit-frozen value alone.
+			want := tc.out.WorkloadDigest
+			if want == "" {
+				want = r.WorkloadDigest
+			}
+			if got.WorkloadDigest != want {
+				t.Fatalf("workload digest = %q, want %q", got.WorkloadDigest, want)
+			}
+		})
+	}
+}
+
+// recordingExecutor returns fixed outputs and records the run it saw.
+type recordingExecutor struct {
+	out ExecutionOutputs
+	r   Run
+}
+
+func (e *recordingExecutor) Execute(_ context.Context, r Run) (ExecutionOutputs, error) {
+	e.r = r
+	return e.out, nil
 }

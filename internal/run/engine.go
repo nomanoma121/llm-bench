@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -325,15 +326,40 @@ func (e *Engine) stepRunning(ctx context.Context, r *Run) (wait bool, err error)
 			defer cancel()
 		}
 	}
-	artifacts, execErr := e.Executor.Execute(exCtx, *r)
+	out, execErr := e.Executor.Execute(exCtx, *r)
 	r.ExecutionState = ExecCompleted
-	if execErr != nil {
+	// Provenance is persisted even when execution failed: a failed run may
+	// still own sealed evidence, and MetricsDigest only means "evidence
+	// exists" (docs/optimization.md §5.1).
+	r.Artifacts = out.Artifacts
+	// Provenance is merged, not overwritten: a field the executor does not
+	// produce (empty) must not erase an identity frozen at submit time, such
+	// as the WorkloadDigest computed from the protocol matrix
+	// (docs/optimization.md §5.1).
+	r.MetricsDigest = out.Evidence.Digest
+	if out.RuntimeBuildDigest != "" {
+		r.RuntimeBuildDigest = out.RuntimeBuildDigest
+	}
+	if out.EnvironmentDigest != "" {
+		r.EnvironmentDigest = out.EnvironmentDigest
+	}
+	if out.WorkloadDigest != "" {
+		r.WorkloadDigest = out.WorkloadDigest
+	}
+	switch {
+	case execErr != nil:
 		r.ExecutionResult = ResultFailure
 		r.WaitReason = fmt.Sprintf("execute failed: %v", execErr)
-	} else {
-		r.ExecutionResult = ResultSuccess
-		r.WaitReason = ""
-		r.Artifacts = artifacts
+	default:
+		if reason := successViolation(*r, out); reason != "" {
+			// The executor reported success, but the kind's required outputs
+			// are missing: success must not be inferred from a nil error.
+			r.ExecutionResult = ResultFailure
+			r.WaitReason = reason
+		} else {
+			r.ExecutionResult = ResultSuccess
+			r.WaitReason = ""
+		}
 	}
 	r.Phase = PhaseReleasing
 	return false, e.save(ctx, r)
@@ -510,4 +536,28 @@ func sleep(ctx context.Context, d time.Duration) error {
 	case <-t.C:
 		return nil
 	}
+}
+
+// successViolation reports why an apparently successful execution does not
+// satisfy its kind's success condition, or "" when it does. The engine owns
+// this check so a buggy or optimistic executor cannot mark a run succeeded
+// without the artifact (visual) or valid evidence (measurement) it promises
+// (docs/optimization.md §5.1, §14 phase A).
+func successViolation(r Run, out ExecutionOutputs) string {
+	switch KindOrDefault(r.Kind) {
+	case RunKindMeasurement:
+		if out.Evidence.Digest == "" {
+			return "measurement run finished without sealed evidence"
+		}
+		if !out.Evidence.Valid {
+			return "measurement evidence is not valid: " + strings.Join(out.Evidence.InvalidReasons, "; ")
+		}
+	case RunKindVisual:
+		if out.Artifacts.ArtifactDigest == "" {
+			return "visual run finished without a sealed artifact"
+		}
+		// A visual run that also carries a protocol still only requires the
+		// artifact: invalid evidence must not fail the visual result.
+	}
+	return ""
 }

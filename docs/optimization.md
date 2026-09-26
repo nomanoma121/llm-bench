@@ -226,10 +226,11 @@ runs/<run-id>/
 ```
 
 - **sealed evidence の authoritative writer は harness**。Sandbox には `raw-measurement.json` を書かせ、harness が `PullLimited` で回収 → validate → normalize → canonical JSON → fsync → atomic rename → `MetricsDigest` を計算して Run に保存する
-- Executor の戻り型は `Artifacts` ではなく **`ExecutionOutputs{Artifacts, EvidencePath, RuntimeBuildDigest, EnvironmentDigest}`** とし、`ExecCompleted` の保存と同じ CAS で Run へ反映する(そうしないと measurement executor が確定した digest を保存する経路が無い)
+- Executor の戻り型は `Artifacts` ではなく **`ExecutionOutputs{Artifacts, Evidence{Path,Digest}, RuntimeBuildDigest, EnvironmentDigest, WorkloadDigest}`** とし、`ExecCompleted` の保存と同じ CAS で Run へ反映する(§architecture §3.2 の定義が正)。**`Execute` が error を返しても返却済みの sealed Evidence は保存する**
 - `MetricsDigest` は「sealed bytes の SHA-256」(canonical JSON を harness が生成する)。**`MetricsDigest != ""` は「evidence が存在する」ことだけを意味し、成功を意味しない**
-- 実行が失敗(OOM/Xid/correctness 失敗/collector 欠測)しても、**取得できた evidence は seal してよい**(`measurement_valid=false` と `invalid_reasons` を持たせる)
-- `measurement` run の成功条件は「**valid な evidence が存在する**」こと。invalid/infra 由来の evidence しか無い run を使った `decide` は `inconclusive` を返す(§6.3)
+- 実行が失敗しても、**取得できた evidence は seal してよい**(`measurement_valid` と `invalid_reasons` を持たせる)
+- `measurement` run の成功条件は「**valid な evidence が存在する**」こと。validity の判定基準は §5.5 の表が正であり、**correctness 失敗・候補起因 OOM/Xid は validity を落とさない**(valid evidence 上の reject)。invalid/infra 由来の evidence しか無い run を使った `decide` は `inconclusive` を返す(§6.3)
+- **`ExecutionResult` の決定規則(measurement)**: valid な測定が得られたら `success`(correctness 失敗や候補起因 OOM は *測定結果* であって Execute の error にしない)。測定チャネル/infra の失敗は `failure` とし、取得済み evidence があれば seal して保存する。これにより「Run の成功」と「promotion の accept」が分離する
 - `output/` に evidence を置かない(single-file 契約と衝突する)
 
 ### 5.2 スキーマ(versioned)
@@ -348,7 +349,15 @@ SubmitOptions:
   measurement_protocol: <operator-owned-id>
 ```
 
-server 側は operator allowlist(`targets.<id>.measurement_protocols` / `optimization_profiles`)に照合してから protocol snapshot を固定する。allowlist に無い protocol 名は 400。optimization では operator の `optimization_profiles` が protocol と policy を bind する:
+規則:
+
+| 入力 | 要求 |
+|---|---|
+| `kind: measurement` | `measurement_protocol` **必須**。target の allowlist に無ければ 400 |
+| `kind: visual` | `measurement_protocol` は任意(付ければ visual + evidence) |
+| profile 経由 | profile が `kind` と `protocol` を固定し、**caller は上書きできない**。省略時の既定も profile が決める |
+
+server 側は operator の `measurement_protocols`(本体)と `targets.<id>.measurement_protocols`(allowlist)に照合してから snapshot を固定する。optimization では operator の `optimization_profiles` が protocol と policy を bind する:
 
 ```yaml
 optimization_profiles:
@@ -369,6 +378,13 @@ optimization_profiles:
 func LoadDecisionInput(ctx, store, baselineRunIDs, candidateRunIDs []string) (DecisionInput, error)
 func Decide(in DecisionInput) Verdict   // 純関数。VerdictDigest はここから決定論的に決まる
 ```
+
+**「期待される欠落」と「破損」を分離する**:
+
+| 状況 | 扱い |
+|---|---|
+| 失敗 run / infra 障害で evidence が無い(記録された `MetricsDigest` も空) | 正常。`DecisionInput` の `EvidencePresent=false` → `Decide` は `inconclusive` |
+| `MetricsDigest` は記録済みなのに file が無い / digest 不一致 / malformed | **`LoadDecisionInput` がエラー(fail closed)**。判定不能と混同しない |
 
 `DecisionInput` には comparability gate に必要な provenance と sealed metrics を**すべて**含める(store を内部で読む `Decide` は純関数ではない):
 

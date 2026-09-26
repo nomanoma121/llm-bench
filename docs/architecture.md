@@ -234,7 +234,7 @@ Phase:  pending ──▶ acquiring ──▶ running ──▶ releasing ──
 - `ExecutionResult = none | success | failure`
 - `ExecutionState = not_started | invoking | completed` — **実行本体の write-ahead**。`invoking` を保存してから Execute を呼ぶ。復帰時に `invoking` だった場合は**自動再実行しない**(実行の再現性がないため `ExecutionResult=failure`(interrupted)として releasing へ進む。§10.1 の将来拡張を除く)
 - `HookState = not_started | acquiring | acquired | releasing | released` (+ `WaitReason`, `Error`)
-- `LeaseState = acquiring | acquired | releasing | released` — target 排他(TargetLease)の取得・解放**両側**が write-ahead
+- `LeaseState = acquiring | acquired | releasing | released | not_applicable` — target 排他(TargetLease)の取得・解放**両側**が write-ahead。`not_applicable` は window-bound Run 専用(§3.1 の owner 別不変条件)
 - 旧 `awaiting_acquire` は「`acquiring` + 該当 hook が `acquiring` + WaitReason」、旧 `needs_restore` は「`releasing` + 該当 hook の Error」として**派生ラベル**として status 表示にのみ現れる
 
 **write-ahead 原則(全外部効果に適用)**: 外部呼び出しの**前に**「これから行う」状態を永続化し、成功後に完了状態を永続化する。クラッシュが呼び出しと保存の間で起きても、再開時は「進行中」状態のステップを冪等に再試行する。**例外がベンチ実行本体(Execute)で、こちらは冪等でないため `invoking` からの復帰は再実行ではなく失敗とする。**
@@ -433,7 +433,7 @@ loop:
     #   - missing / target 不一致 / closing / closed → 恒久エラー(ErrPending にしない)
     #   ActiveRunID を CAS で自分にする → run-scoped hook のみ acquire
     if r.LeaseState == acquiring:          # write-ahead 済(submit 時)。
-      err := leases.AcquireTargetLease(r.Target, r.ID)
+      err := leases.AcquireTargetLease(r.Target, OwnerRef{Kind: "run", ID: r.ID})
       - ErrLeaseBusy → save(WaitReason="target busy")、interval 後再試行
       - その他の error → save(ExecutionResult=failure, Phase=releasing)
         # 取得が実は成功していた曖昧ケースも、冪等な ReleaseTargetLease が回収する
@@ -480,8 +480,11 @@ loop:
     #     lease も GitOps restore も Window が所有するため何も解放しない。
     #     ActiveRunID の CAS 解放が成功した後のみ terminal へ進む
     window.ActiveRunID を CAS で空にする
-    - 成功 → 次へ
-    - 失敗(他 owner が入っている等) → ErrPending として interval 再試行
+    - StoreVersion conflict → window を再読込して再試行(競合した保存に対応する外部効果は実行しない)
+    - ActiveRunID == 自分の run ID → 空にする(成功)
+    - ActiveRunID == ""           → clear 後のクラッシュとして成功扱い
+    - ActiveRunID == 別の run ID  → **恒久エラーとして fail closed**(ownership 破損。
+                                    待機して隠してはならない)
     # どちらの経路も、復元責務が完了した保存後のみ分岐する(公開の成否は run の終了条件ではない):
     - ExecutionResult == failure → **failed**
     - ExecutionResult == success  → **succeeded**
@@ -578,6 +581,45 @@ type Config struct {
     Preview *Preview
     Review  *Review
     Defaults Limits      // target が省略した場合の既定上限
+    // (v1.7) 測定 protocol と最適化 profile は operator 所有。recipe からは選べない
+    MeasurementProtocols map[string]MeasurementProtocol // allowlist 本体(snapshot の元)
+    OptimizationProfiles map[string]OptimizationProfile // protocol と policy と budget の束
+}
+
+// (v1.7) 測定 protocol と昇格 policy。**どちらも operator 所有**で recipe からは変更できない。
+// 中身の契約は docs/optimization.md §6。snapshot(JSON)と digest の両方を run/session に保存する
+type MeasurementProtocol struct {
+    SchemaVersion int
+    Driver      struct{ ContentDigest string; Argv []string } // candidate が書けない場所から実行
+    Workload    struct{ Matrix []WorkloadCase }
+    Warmup      struct{ Steps int; DiscardSeconds int }
+    KVFill      string   // 例: "none" | "to:64k" | "to:250k"
+    Repetitions int      // pair 数
+    OrderRule   string   // 例: "balanced-randomized-pairs"(実際の順序と seed は evidence に記録)
+    Collector   []struct{ Name string; IntervalMS int; ContentDigest string }
+    Validity    struct{ Rules []string } // measurement_valid の判定規則(§optimization §5.5)
+}
+type PromotionPolicy struct {
+    SchemaVersion int
+    PrimaryMetric string   // 例: decode_step_ms
+    Direction     string   // "min" | "max"
+    AbsFloor      float64
+    RelFloor      float64
+    NoiseMultiple float64  // paired MAD に対する係数(診断用。MVP は床のみ)
+    Guards        struct {
+        PrefillRegressionLimit float64
+        MinVRAMHeadroomMiB     int // 既定 512
+        CorrectnessPredicates  []string
+    }
+    AllowedSources []string // promotion に使える metric source(harness/driver/external_gpu)
+}
+type OptimizationProfile struct {
+    Protocol     string // MeasurementProtocols のキー
+    Policy       string // PromotionPolicies のキー
+    MaxRounds    int
+    MaxRuns      int
+    MaxGPUDuration, MaxWindowDuration, MaxBuildDuration time.Duration
+    MaxInfraRetries int
 }
 
 // hook 計画は 3 契約に分かれ、それぞれが digest を持つ。順序の定義はこの 3 箇所に集約する:
@@ -605,7 +647,9 @@ type GitOpsPlan struct {
     Owner, Repository, BaseBranch, FilePath string
     YAMLPath []string
     ActiveValue, PausedValue string
-    PauseBranch, RestoreBranch string // 決定論的: llmbench/{pause,restore}-<runID>
+    PauseBranch, RestoreBranch string // 決定論的: llmbench/{pause,restore}-<owner.ID>
+                                      //   standalone Run → runID、MeasurementWindow → windowID
+                                      //   (crash recovery で外部 PR を再発見する identity)
     AppNamespace, AppName string
     WorkloadNamespace, Deployment string
     ActiveReplicas int
@@ -623,6 +667,8 @@ type Preview struct {
     // v1.6 では operator 設定にしない(変更要求が出たら設定化する)
 }
 type Target struct {
+    // (v1.7) この target で使ってよい measurement protocol 名。空なら measurement run 不可
+    MeasurementProtocols []string
     Hooks   []CommandHook // {Name, Acquire []string, Release []string} argv。両方必須
     GitOps  *GitOps
     Sandbox *Sandbox
@@ -806,7 +852,7 @@ func Fingerprint(in FingerprintInput) string // canonical JSON → sha256
 
 ### 4.11 httpapi(chi)
 
-- `POST /v1/runs` `{experiment, input_commit?}` → 202 `{run_id}`。実験が allowlist target を選んでいるかは operator 設定で検証
+- `POST /v1/runs` `{experiment, input_commit?, kind?, measurement_protocol?, request_id?}` → 202 `{run_id}`。実験が allowlist target を選んでいるかは operator 設定で検証。`kind`/`measurement_protocol` は operator の allowlist に照合し(`measurement` は protocol 必須)、`request_id` 指定時は `RunID` を決定論的に導出する(§optimization §9.1)
 - `GET|HEAD /v1/runs/{id}/artifacts/{path...}` は **control API ではなく別リスナ**(§4.9)。ここには bearer 認証を掛けず、Ingress 側で認証する
 - **local target への HTTP 経由 submit は、operator が `AllowHTTPLocal: true` を明示した場合のみ許可(既定拒否)**。`LLMBENCH_API_TOKEN` 未設定時は loopback bind のみとし、local target は常に拒否
 - `GET /v1/runs/{id}` → Run 全体(Phase/HookState/LeaseState/ExecutionState/Artifacts)。**公開 URL は返さない**(恒久公開は controller の責務外。preview URL は `preview.base_url` から導出する)

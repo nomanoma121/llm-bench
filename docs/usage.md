@@ -107,7 +107,8 @@ tar xzf actions-runner-osx-arm64-<version>.tar.gz && rm actions-runner-osx-arm64
 Operational notes:
 
 - Pull-request jobs get `contents: read` only; `pages: write` / `id-token: write` exist solely on the `main`-only deploy job.
-- Fork pull requests are **failed explicitly** by the first step (a skipped job counts as a successful required check, so skipping would be fail-open). A user-owned private repository cannot disable forking through the API, and the container limit is what actually contains such code, so this rejection is the merge-gate control.
+- Fork pull requests do not run workflows at all: `run_workflows_from_fork_pull_requests` is disabled for this private repository (`gh api -X PUT repos/<owner>/<repo>/actions/permissions/fork-pr-workflows-private-repos -F run_workflows_from_fork_pull_requests=false`). Because no `verify` check is produced, branch protection blocks such a pull request from merging. The explicit reject step in the workflow is a second line of defense: a skipped job would count as a successful required check, and `pull_request` runs the workflow definition from the pull request, so neither the skip nor the step alone is a gate.
+- `allow_forking` itself cannot be changed on a user-owned private repository (the API returns 422); the setting above is the supported control.
 - `actions/setup-go` installs the toolchain named by `go.mod` and caching is disabled on self-hosted runners (the module cache is local; saving it to the Actions cache hangs the post step).
 - `verify` is a **required** status check on `main`, so pull requests cannot merge while the verify runner is down. Keep the container loop running, or stop requiring the check when the runner is decommissioned.
 - After changing a runner's labels, restart its service: a running listener only re-reads labels when it opens a new session, otherwise jobs stay queued.

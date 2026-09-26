@@ -76,33 +76,42 @@ Both runs must be A/B comparable: the recorded BenchmarkFingerprint (prompt, con
 
 ## CI runner
 
-Publication CI (`.github/workflows/pages.yml`) runs on a **self-hosted runner** labelled `llm-bench`, so it does not consume hosted Actions minutes. Register it once on the machine that will build the site:
+Publication CI (`.github/workflows/pages.yml`) runs on **self-hosted runners** so it does not consume hosted Actions minutes, and pull-request code never runs on the host that holds the deployment credentials.
+
+| Job | Label | Where it runs |
+|-----|-------|---------------|
+| `verify` (pull requests, `main` pushes) | `llm-bench-verify` | a **disposable Linux container** (`--ephemeral`, one container per job) |
+| `deploy` (`main` only) | `llm-bench-deploy` | the host, only for merged code |
+
+### Verify runner (container)
+
+`~/.local/bin/llm-bench-verify-runner.sh` loops: it mints a registration token and starts one ephemeral `ghcr.io/actions/actions-runner` container per job, mounting only its own work directory. It is kept alive by the LaunchAgent `~/Library/LaunchAgents/dev.llmbench.verify-runner.plist` and logs to `~/Library/Logs/llm-bench-verify-runner.log`.
+
+- The loop needs a GitHub token with `administration: write` (to request runner registration tokens) in `~/.config/llm-bench/github-token`, mode `600`. Refresh it with `gh auth token > ~/.config/llm-bench/github-token`.
+- Restart the agent after editing the script: `launchctl unload ~/Library/LaunchAgents/dev.llmbench.verify-runner.plist && launchctl load ~/Library/LaunchAgents/dev.llmbench.verify-runner.plist`.
+- Pull-request code therefore sees a fresh container each time and cannot write to the host's runner directories or the deploy runner's environment.
+
+### Deploy runner (host)
+
+Register it once on the host that will publish:
 
 ```sh
-# 1. Fetch a registration token (or use Settings → Actions → Runners → New runner).
 TOKEN=$(gh api -X POST repos/<owner>/<repo>/actions/runners/registration-token --jq .token)
-
-# 2. Download and configure the runner with the extra label the workflow needs.
-mkdir -p ~/actions-runner-llm-bench && cd ~/actions-runner-llm-bench
+mkdir -p ~/actions-runner-llm-bench-deploy && cd ~/actions-runner-llm-bench-deploy
 curl -sLO https://github.com/actions/runner/releases/download/v<version>/actions-runner-osx-arm64-<version>.tar.gz
 tar xzf actions-runner-osx-arm64-<version>.tar.gz && rm actions-runner-osx-arm64-<version>.tar.gz
-# Repeat once per label: --labels llm-bench-verify and --labels llm-bench-deploy
-./config.sh --url https://github.com/<owner>/<repo> --token "$TOKEN" --labels llm-bench-verify --unattended --replace
-
-# 3. Keep it running across logins (macOS LaunchAgent; use ./svc.sh with systemd elsewhere).
+./config.sh --url https://github.com/<owner>/<repo> --token "$TOKEN" --labels llm-bench-deploy --unattended --replace
 ./svc.sh install && ./svc.sh start
 ```
 
-Two runners are registered with distinct labels: **`llm-bench-verify`** for pull requests and **`llm-bench-deploy`** for the `main`-only deploy job. Keeping them separate means a pull request never runs in the job that holds `pages: write` / `id-token: write`.
-
 Operational notes:
 
-- Pull-request code is untrusted. The verify job runs with `contents: read` only, and it is guarded so that it runs **only for pull requests from this repository**. A user-owned private repository cannot disable forking through the API, so this guard is the mechanical control: a fork pull request never executes here (and cannot satisfy the required `verify` check, so it cannot merge).
-- The two labels are a configuration boundary, not a machine boundary. On a single host, code from a same-repository pull request shares the operating system with the deploy job. If you add collaborators whose pull requests you do not fully trust, register `llm-bench-verify` on a **separate host or VM**, or run ephemeral runners that are discarded after each job.
-- Labels on the deploy runner: register it with `--labels llm-bench-deploy` (the verify runner uses `--labels llm-bench-verify`). Change a runner's labels under Settings → Actions → Runners, or with `gh api -X PUT repos/<owner>/<repo>/actions/runners/<id>/labels -f 'labels[]=llm-bench-verify'`. **Restart the runner service afterwards** (`./svc.sh stop && ./svc.sh start`): the listener only re-reads its labels when it opens a new session, so a running runner keeps advertising the old set and jobs stay queued.
-- `actions/setup-go` installs the toolchain named by `go.mod`; the runner also needs network access to github.com and the Go module proxy, plus disk space for the module and build caches.
-- `verify` is a **required** status check on `main`, so pull requests cannot merge while the runner is offline. Keep the machine running, or stop requiring the check when the runner is decommissioned.
-- To decommission it: `./svc.sh stop && ./svc.sh uninstall` and remove it under Settings → Actions → Runners.
+- Pull-request jobs get `contents: read` only; `pages: write` / `id-token: write` exist solely on the `main`-only deploy job.
+- Fork pull requests are **failed explicitly** by the first step (a skipped job counts as a successful required check, so skipping would be fail-open). A user-owned private repository cannot disable forking through the API, and the container limit is what actually contains such code, so this rejection is the merge-gate control.
+- `actions/setup-go` installs the toolchain named by `go.mod` and caching is disabled on self-hosted runners (the module cache is local; saving it to the Actions cache hangs the post step).
+- `verify` is a **required** status check on `main`, so pull requests cannot merge while the verify runner is down. Keep the container loop running, or stop requiring the check when the runner is decommissioned.
+- After changing a runner's labels, restart its service: a running listener only re-reads labels when it opens a new session, otherwise jobs stay queued.
+- Decommission: `./svc.sh stop && ./svc.sh uninstall` for the deploy runner, `launchctl unload ~/Library/LaunchAgents/dev.llmbench.verify-runner.plist` for the container loop, then remove both under Settings → Actions → Runners.
 
 ## Publication gate
 

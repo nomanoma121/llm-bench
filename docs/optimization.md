@@ -1,5 +1,7 @@
 # llm-bench 測定・最適化設計(v0.1 / architecture v1.7 の一部)
 
+> **この文書は履歴である(未実装のまま凍結)。現在の実装仕様は `docs/mvp.md`。**MVP では「Agent が自分で結果を見て採否を判断する」方針を採り、harness は測定と事実の提示までを担う。本設計のうち Phase B の `internal/measurement` と Phase C の `compare` だけを MVP に取り込み、W / D / E / F / G / H は実装しない。
+
 > この文書は `docs/architecture.md`(v1.7)の一部を成す詳細設計である。**未実装**であり、実装は §14 のフェーズ(A〜H)で段階的に行う。
 > 参照: `docs/design.md`(要件)・`docs/architecture.md`(blueprint)・`docs/plan.md`(進捗)。
 

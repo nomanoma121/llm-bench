@@ -1,10 +1,14 @@
 # Agent instructions
 
-Read `docs/design.md` and `docs/plan.md` before changing the workflow. Keep experiments scoped to `experiments/<model-id>/<experiment-id>/`; do not modify another model's runtime variant as a side effect. Only human-accepted artifacts belong in `experiments/<model-id>/<experiment-id>/output/`: materialize them with `llmbench adopt` (which records `manifest.json` with digests and the authorizing Issue decision), never by editing HTML by hand. That directory is the only input of the publishing CI, and the only publication gate is a merge to `main`; the controller must not write to any publication host.
+The current workflow authority is `docs/mvp.md` (MVP architecture, job spec, CLI contract) together with `docs/plan.md` §4 (implementation order). `docs/architecture.md` (v1.6/v1.7) and `docs/optimization.md` describe a superseded design: keep them as history and do not implement the v1.7 phases C–H (MeasurementWindow, promotion policy, optimization sessions, published metrics) unless the operator asks. The MVP does not preserve compatibility with the old specification — optimise the code for the two MVP paths instead.
 
-Do not start a run merely because an Issue or PR changed. A run requires an explicit request. Treat `config.yaml` as an execution recipe, not authority to manage cluster resources. Only operator-controlled target configuration may select GPU leases, inference pause/restore, Agent Sandbox pools, or GitOps manifest paths. There is no SSH executor.
+The controller runs as a single-replica Deployment and keeps an in-flight job in memory; job state lives in Issue labels. Do not add a ConfigMap run store, leader election, or an Agent-facing HTTP API. Do not create an Agent Pod: an existing DSH deployment owns conversation and session state, and the controller only binds and rebinds the GPU Sandbox to it.
 
-Restoration is mandatory after every acquired hook, including failed runs. Never report an experiment complete while restoration is pending. The Issue is the canonical human A/B evaluation record; Discord may only notify and link to it.
+Frozen for the MVP (do not extend, delete only after the MVP runs end to end): `llmbench adopt` and the artifact materialization flow below, `internal/httpapi`/`serve`, `internal/preview`, `internal/adopt`, `internal/sitebuild`, `internal/review`, `internal/discord`, and `.github/workflows/pages.yml`. When they are removed, this paragraph goes with them. Until then: only human-accepted artifacts belong in `experiments/<model-id>/<experiment-id>/output/`, materialized with `llmbench adopt`, never by editing HTML by hand.
+
+An explicit run request is an open Issue carrying `llmbench:benchmark` or `llmbench:optimize`. Never start a run because a PR changed, or because an unlabeled Issue was edited. Treat the JobSpec in the Issue body as an execution recipe, not as authority to manage cluster resources. Only operator-controlled configuration may select GPU leases, inference pause/restore, Agent Sandbox pools, runtime/model allowlists, or GitOps manifest paths. There is no SSH executor; the Sandbox is reached through `llmbench sandbox exec|cp|shell` over the Agent Sandbox port-forward transport.
+
+Restoration is mandatory after every acquired hook, including failed runs. Never report a job complete while restoration is pending. In the MVP the PR is the result and the Issue holds the request plus one link comment; do not treat the Issue as a vote history.
 
 The existing experiment and benchmark files are placeholders. Do not replace them with example data. Use `examples/` for local smoke tests.
 
@@ -13,7 +17,8 @@ The existing experiment and benchmark files are placeholders. Do not replace the
 The Go module is rooted at the repository root. Packages are organised by what they provide; interfaces are declared at the point of use:
 
 - `cmd/llmbench`: Cobra commands and the composition root (`wire.go`). Commands stay thin; wiring lives in one place.
-- `internal/experiment`, `internal/operator`: pure configuration parsing and validation (experiment recipes vs. operator-owned, privileged settings).
+- `internal/job`: the JobSpec parsed from an Issue body, validated by one implementation shared by the CLI and the controller. `internal/runtime`: runtime adapters (llama.cpp, FreeToken) used by the in-Sandbox `llmbench benchmark`. `internal/githubapp`: GitHub App authentication and installation tokens. `internal/measurement` and `internal/provenance` own the result schema, digests and canonicalization.
+- `internal/experiment`, `internal/operator`: pure configuration parsing and validation (`internal/experiment` is the frozen visual recipe; the MVP job spec lives in `internal/job`).
 - `internal/run`: the run state machine and `Engine`. Declares `Hook`/`HookSource`/`Executor`/`Finalizer`/`RunStore`/`LeaseStore` and the write-ahead state types. No SDK imports.
 - `internal/runner`: benchmark execution strategies (local, sandbox) and the publication finalizer.
 - `internal/hook`, `internal/gitops`, `internal/sandbox`, `internal/kube`, `internal/issues`, `internal/pages`, `internal/discord`, `internal/filestore`, `internal/provenance`: external effects as implementations of interfaces declared by their consumers. SDKs stay in these packages (and in the composition root).

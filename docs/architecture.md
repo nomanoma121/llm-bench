@@ -1,5 +1,7 @@
 # llm-bench コントローラ実装設計書(v1.7.0)
 
+> **この文書は履歴である(v1.6/v1.7 の設計)。現在の実装仕様は `docs/mvp.md`。**MVP は本設計のうち visual 公開経路(preview / adopt / sitebuild / review)と、v1.7 の C〜H(MeasurementWindow / PromotionPolicy による自動採否 / OptimizationSession / 公開 metrics)を実装しない。本設計から流用するのは `internal/measurement`(evidence スキーマ)/ `internal/provenance`(digest)/ GitOps pause-restore / Agent Sandbox client / Kubernetes Lease / write-ahead と mandatory restore の規律である。
+
 > この文書は `docs/design.md`(ドメイン要件)・`docs/usage.md`(機能仕様)・`AGENTS.md`(規約)を実装に落とすための設計 blueprint である。
 > ChatGPT 等の外部レビューに単体で渡せるよう、背景要件から実装方針までを自己完結して記述する。
 > ステータス: v1.7.0 — v1.6 の実装(main マージ済み)に対し、**測定と最適化の設計を追加**した。詳細は `docs/optimization.md`(測定 evidence、`RunKind`、MeasurementWindow、PromotionPolicy、OptimizationSession、runtime 供給網、Agent CLI 契約)。**v1.7 の内容は未実装**であり、実装は §6 のフェーズ 12〜19 で行う。v1.7 は resource ownership の不変条件を 1 つ変更する(§3.6 / §7)。実装状況は §2.5、変更は §11。

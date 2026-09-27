@@ -141,7 +141,7 @@ func (a freeToken) Complete(ctx context.Context, req Request) (Completion, error
 	}
 	var out Completion
 	var sb strings.Builder
-	var first time.Duration
+	var first, last time.Duration
 	err = streamSSE(ctx, resp, func(data []byte) error {
 		var chunk openAIDelta
 		if err := json.Unmarshal(data, &chunk); err != nil {
@@ -157,6 +157,7 @@ func (a freeToken) Complete(ctx context.Context, req Request) (Completion, error
 				// reasoning token or visible text.
 				first = time.Since(start)
 			}
+			last = time.Since(start)
 			// One step per stream chunk. A chunk is not guaranteed to be one
 			// token, so steps drive the series shape only.
 			out.Steps = append(out.Steps, Step{Index: len(out.Steps), At: time.Since(start)})
@@ -176,7 +177,13 @@ func (a freeToken) Complete(ctx context.Context, req Request) (Completion, error
 	}
 	out.Content = sb.String()
 	out.TTFT = first
-	out.Total = time.Since(start)
+	// The measurement ends at the last produced token, not when the stream
+	// closes: the final usage chunk arrives after it, and counting that
+	// latency would understate the decode rate.
+	out.Total = last
+	if out.Total == 0 {
+		out.Total = time.Since(start)
+	}
 	// CompletionTokens comes from the usage block only: it counts reasoning
 	// and visible tokens, which is what the decode rate has to be derived
 	// from. Counting stream chunks would overstate the rate for a reasoning

@@ -138,8 +138,8 @@ type Sampling struct {
 	Seed        *int64   `yaml:"seed,omitempty" json:"seed,omitempty"`
 }
 
-// MetricConcurrency returns the request concurrency, applying the default.
-func (w Workload) MetricConcurrency() int {
+// EffectiveConcurrency returns the request concurrency, applying the default.
+func (w Workload) EffectiveConcurrency() int {
 	if w.Concurrency <= 0 {
 		return DefaultConcurrency
 	}

@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -352,14 +353,41 @@ func samplingOf(w job.Workload) (temperature, topP *float64, seed *int64) {
 }
 
 // workloadDigest identifies what was measured beyond the model: the cases with
-// their token budgets, sampling and repeats, and the collector set. Two runs
-// whose workload digests differ answered different questions, even if their
-// prompts happen to be identical.
+// their token budgets and effective repeat counts, the effective concurrency,
+// the sampling, and the collector set. Two runs whose workload digests differ
+// answered different questions, even if their prompts happen to be identical.
+//
+// It hashes the *effective* workload rather than the raw spec: repeats 0 and
+// repeats 1 are the same measurement, a collector list in another order is the
+// same set, and how a prompt was delivered (a file path or inline text) is not
+// part of the workload identity — the bytes are, and those are recorded in
+// Inputs.Prompts.
 func workloadDigest(spec job.Spec) (string, error) {
-	b, err := json.Marshal(struct {
-		Workload   job.Workload    `json:"workload"`
-		Collectors []job.Collector `json:"collectors"`
-	}{spec.Workload, spec.Metrics.Collectors})
+	type canonicalCase struct {
+		Name      string `json:"name"`
+		MaxTokens int    `json:"max_tokens"`
+		Repeats   int    `json:"repeats"`
+	}
+	canonical := struct {
+		Cases       []canonicalCase `json:"cases"`
+		Concurrency int             `json:"concurrency"`
+		Sampling    *job.Sampling   `json:"sampling,omitempty"`
+		Collectors  []string        `json:"collectors"`
+	}{
+		Concurrency: spec.Workload.EffectiveConcurrency(),
+		Sampling:    spec.Workload.Sampling,
+		Collectors:  make([]string, 0, len(spec.Metrics.Collectors)),
+	}
+	for _, c := range spec.Workload.Cases {
+		canonical.Cases = append(canonical.Cases, canonicalCase{
+			Name: c.Name, MaxTokens: c.MaxTokens, Repeats: c.RepeatCount(),
+		})
+	}
+	for _, c := range spec.Metrics.Collectors {
+		canonical.Collectors = append(canonical.Collectors, string(c))
+	}
+	sort.Strings(canonical.Collectors)
+	b, err := json.Marshal(canonical)
 	if err != nil {
 		return "", fmt.Errorf("benchmark: workload digest: %w", err)
 	}

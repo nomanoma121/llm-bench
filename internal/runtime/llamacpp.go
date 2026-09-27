@@ -125,7 +125,7 @@ func (a llamaCpp) Complete(ctx context.Context, req Request) (Completion, error)
 	}
 	var out Completion
 	var sb strings.Builder
-	first := time.Duration(0)
+	first, last := time.Duration(0), time.Duration(0)
 	err = streamSSE(ctx, resp, func(data []byte) error {
 		var chunk llamaChunk
 		if err := json.Unmarshal(data, &chunk); err != nil {
@@ -135,6 +135,7 @@ func (a llamaCpp) Complete(ctx context.Context, req Request) (Completion, error)
 			if first == 0 {
 				first = time.Since(start)
 			}
+			last = time.Since(start)
 			// Steps are observed stream chunks, not tokens: they drive the
 			// shape of the decode series, never a token count.
 			out.Steps = append(out.Steps, Step{Index: len(out.Steps), At: time.Since(start)})
@@ -151,7 +152,13 @@ func (a llamaCpp) Complete(ctx context.Context, req Request) (Completion, error)
 	}
 	out.Content = sb.String()
 	out.TTFT = first
-	out.Total = time.Since(start)
+	// The measurement ends at the last produced token, not when the stream
+	// closes: the final timings chunk arrives after it, and counting that
+	// latency would understate the decode rate.
+	out.Total = last
+	if out.Total == 0 {
+		out.Total = time.Since(start)
+	}
 	// CompletionTokens comes from the runtime's `timings` only. A stream chunk
 	// is not guaranteed to be one token, so counting chunks would silently
 	// invent a decode rate; a missing count stays 0 and the caller treats the

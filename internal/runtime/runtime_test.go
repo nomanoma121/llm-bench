@@ -387,3 +387,61 @@ escaped{path="a\\b\"c"} 3
 		t.Fatalf("escaped label = %q", samples[2].Labels["path"])
 	}
 }
+
+// slowTail serves the streamed chunks with a long pause before the final
+// accounting chunk, which is what a real runtime does: it reports usage after
+// the last token. The measured end must be the last token, not the pause.
+func slowTail(events []string, tailDelay time.Duration) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		for i, e := range events {
+			if i == len(events)-1 {
+				time.Sleep(tailDelay)
+			} else {
+				time.Sleep(3 * time.Millisecond)
+			}
+			fmt.Fprintf(w, "data: %s\n\n", e)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}
+}
+
+func TestCompletionEndsAtTheLastToken(t *testing.T) {
+	const tail = 120 * time.Millisecond
+	cases := []struct {
+		engine  string
+		handler http.HandlerFunc
+	}{
+		{"llamacpp", slowTail([]string{
+			`{"content":"a"}`,
+			`{"content":"b"}`,
+			`{"content":"","stop":true,"timings":{"prompt_n":1,"predicted_n":2,"predicted_ms":6}}`,
+		}, tail)},
+		{"freetoken", slowTail([]string{
+			`{"choices":[{"delta":{"content":"a"}}]}`,
+			`{"choices":[{"delta":{"content":"b"}}]}`,
+			`{"choices":[{"delta":{}}],"usage":{"prompt_tokens":1,"completion_tokens":2}}`,
+		}, tail)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.engine, func(t *testing.T) {
+			a := newAdapter(t, tc.engine, tc.handler)
+			got, err := a.Complete(context.Background(), Request{Prompt: "hi", MaxTokens: 8})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Total >= tail {
+				t.Fatalf("Total %s includes the accounting delay (%s)", got.Total, tail)
+			}
+			if got.TTFT <= 0 || got.Total < got.TTFT {
+				t.Fatalf("timings = ttft %s total %s", got.TTFT, got.Total)
+			}
+			if got.DecodeTokensPerSecond() <= 0 {
+				t.Fatal("decode rate was not derived")
+			}
+		})
+	}
+}

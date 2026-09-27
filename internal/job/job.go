@@ -176,6 +176,13 @@ type Constraints struct {
 	Models      []string
 	OutputRoots []string
 	MaxRounds   int
+	// ReservedArgs are the flags the runtime adapter owns: the model path, the
+	// listen address, the metrics and log destinations, the config file. A
+	// spec that sets one is rejected rather than filtered, because silently
+	// dropping an argument would hide a request to point the runtime
+	// somewhere else. The adapter declares the list, so this package stays
+	// independent of it.
+	ReservedArgs []string
 }
 
 // Parse decodes a job spec. Unknown fields are rejected so that a typo fails
@@ -236,6 +243,9 @@ func (s Spec) ValidateConstraints(c Constraints) error {
 	for i, a := range s.Runtime.Args {
 		if a == "" {
 			add("runtime.args[%d] is empty", i)
+		}
+		if flag := argFlag(a); flag != "" && c.reserves(flag) {
+			add("runtime.args[%d] sets %s, which the runtime adapter owns and a job spec may not change", i, flag)
 		}
 	}
 	switch {
@@ -393,6 +403,32 @@ func (s Spec) Digest() (string, error) {
 	}
 	sum := sha256.Sum256(b)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// reserves reports whether the adapter owns the flag. The comparison ignores
+// the number of leading dashes, so "-m", "--m" and "-m=..." all match one
+// entry.
+func (c Constraints) reserves(flag string) bool {
+	trimmed := strings.TrimLeft(flag, "-")
+	for _, r := range c.ReservedArgs {
+		if strings.TrimLeft(r, "-") == trimmed {
+			return true
+		}
+	}
+	return false
+}
+
+// argFlag returns the flag part of an argument ("--ctx-size=4096" and
+// "--ctx-size" both give "--ctx-size"), or "" when the argument is a bare
+// value.
+func argFlag(arg string) string {
+	if !strings.HasPrefix(arg, "-") {
+		return ""
+	}
+	if i := strings.IndexByte(arg, '='); i >= 0 {
+		return arg[:i]
+	}
+	return arg
 }
 
 // checkAllowed enforces an operator allowlist. An empty list means the

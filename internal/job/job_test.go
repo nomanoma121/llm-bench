@@ -144,6 +144,41 @@ func TestValidateConstraints(t *testing.T) {
 	}
 }
 
+func TestReservedArgsCannotBeOverridden(t *testing.T) {
+	reserved := Constraints{ReservedArgs: []string{"--model", "-m", "--host", "--port", "--metrics", "--log-file"}}
+	tests := []struct {
+		name string
+		args []string
+		want bool // true means the spec must be rejected
+	}{
+		{"model path", []string{"--model", "/other/model.gguf"}, true},
+		{"short model flag", []string{"-m", "/other/model.gguf"}, true},
+		{"equals form", []string{"--model=/other/model.gguf"}, true},
+		{"listen address", []string{"--host", "0.0.0.0"}, true},
+		{"metrics endpoint", []string{"--metrics", "/dev/null"}, true},
+		{"tuning", []string{"-ngl", "99", "--ctx-size=4096", "-c", "4096"}, false},
+		{"bare value that looks like a flag", []string{"-ngl", "--model"}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := mutateSpec(validSpec(KindBenchmark), func(s *Spec) { s.Runtime.Args = tc.args })
+			err := s.ValidateConstraints(reserved)
+			if tc.want && err == nil {
+				t.Fatalf("args %v were accepted", tc.args)
+			}
+			if !tc.want && err != nil {
+				t.Fatalf("args %v were rejected: %v", tc.args, err)
+			}
+		})
+	}
+	// Without the operator list there is nothing to reserve, so the same
+	// spec validates: the adapter owns the list, not this package.
+	s := mutateSpec(validSpec(KindBenchmark), func(s *Spec) { s.Runtime.Args = []string{"--host", "0.0.0.0"} })
+	if err := s.Validate(); err != nil {
+		t.Fatalf("unconstrained validation rejected args: %v", err)
+	}
+}
+
 func TestParseRejectsUnknownFields(t *testing.T) {
 	_, err := Parse(strings.NewReader("kind: benchmark\nnope: 1\n"))
 	if !errors.Is(err, ErrInvalid) {

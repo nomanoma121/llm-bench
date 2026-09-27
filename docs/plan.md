@@ -68,7 +68,7 @@ Explicitly not doing: attempts inside a run, sharing a SandboxClaim across a win
 
 - [x] `internal/job`: JobSpec の parse / validate(CLI と Controller が同一コードを共有、unknown field は拒否)+ `llmbench job validate|init` + GitHub Issue Form(`.github/ISSUE_TEMPLATE/`)。
 - [x] `internal/runtime` + `llmbench benchmark`: runtime adapter(llamacpp / freetoken)、runtime 起動と readiness、case ごとの計測、collector(harness / runtime / nvidia)、`experiments/<model-id>/<job-id>/` への `jobspec.yaml` / `result.json` / `series.jsonl` / `README.md` / `raw/` 出力、`--push` での commit / push。
-- [ ] `llmbench compare`: baseline と candidate の中央値・delta・`valid`・`comparable`(+理由)・prefill 回帰・VRAM 差分を**事実としてのみ**返す(採否は返さない)。
+- [x] `llmbench compare`: baseline と candidate の metric delta・`measurement_valid`・`comparable`(+理由)を**事実としてのみ**返す(採否は返さない)。
 - [ ] GitHub App 認証(`internal/githubapp`): private key から JWT → installation token(キャッシュ + 期限前更新)+ Issue polling + push 済みブランチからの PR 作成 + リンクコメント。
 - [ ] Controller 薄版(`llmbench controller`, Deployment): Issue poll → JobSpec 検証 → claim ラベル → Lease → GitOps pause → SandboxClaim → Sandbox 内 `llmbench benchmark --push` → PR → claim 削除 → restore → release → 完了ラベル。startup と定期の recovery、write-ahead、mandatory restore、同一 job を再実行しない規律。ConfigMap store と leader election は作らない。
 - [ ] Helm chart: controller Deployment / RBAC / GitHub App Secret / gpuLease / gitops / sandbox / models / runtimeImages / dsh option。

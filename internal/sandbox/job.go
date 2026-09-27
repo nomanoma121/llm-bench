@@ -3,6 +3,9 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"io"
+
+	sandboxsdk "sigs.k8s.io/agent-sandbox/clients/go/sandbox"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -136,10 +139,61 @@ func (c *Client) AnnotateJobClaim(ctx context.Context, jobID string, annotations
 }
 
 // JobExec runs a command in the job's current sandbox.
-func (c *Client) JobExec(ctx context.Context, jobID string, argv []string, env map[string]string) ([]byte, []byte, int, error) {
+func (c *Client) JobExec(ctx context.Context, jobID string, argv []string, env map[string]string, cwd string) ([]byte, []byte, int, error) {
 	name, err := c.FindJobClaim(ctx, jobID)
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	return c.Exec(ctx, name, argv, env, "")
+	return c.Exec(ctx, name, argv, env, cwd)
+}
+
+// JobPut writes a file into the job's sandbox.
+func (c *Client) JobPut(ctx context.Context, jobID, remotePath string, content io.Reader) error {
+	name, err := c.FindJobClaim(ctx, jobID)
+	if err != nil {
+		return err
+	}
+	return c.Put(ctx, name, content, remotePath)
+}
+
+// JobPull copies a file out of the job's sandbox.
+func (c *Client) JobPull(ctx context.Context, jobID, remotePath string, w io.Writer) error {
+	name, err := c.FindJobClaim(ctx, jobID)
+	if err != nil {
+		return err
+	}
+	content, err := c.Pull(ctx, name, remotePath)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(content)
+	return err
+}
+
+// FileEntry is one entry of a sandbox directory listing.
+type FileEntry struct {
+	Name  string
+	Size  int64
+	IsDir bool
+}
+
+// JobList lists a directory in the job's sandbox.
+func (c *Client) JobList(ctx context.Context, jobID, dir string) ([]FileEntry, error) {
+	name, err := c.FindJobClaim(ctx, jobID)
+	if err != nil {
+		return nil, err
+	}
+	sb, err := c.sandboxHandle(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := sb.List(ctx, dir)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: list %s: %w", dir, err)
+	}
+	out := make([]FileEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, FileEntry{Name: e.Name, Size: e.Size, IsDir: e.Type == sandboxsdk.FileTypeDirectory})
+	}
+	return out, nil
 }

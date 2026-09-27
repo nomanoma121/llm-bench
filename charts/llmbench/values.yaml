@@ -44,3 +44,91 @@ sandbox:
       memory: 8Gi
     limits:
       memory: 32Gi
+
+# --- MVP (docs/mvp.md §9) ---
+# The frozen harness/sandbox values above belong to the v1.6 visual flow; the
+# MVP controller reads the block below.
+mvp:
+  enabled: true
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  # The repository the controller polls and opens result pull requests in.
+  repository: ""
+  defaultBranch: main
+
+  # Issue labels. They must all be distinct: if a terminal label equalled the
+  # claim label, finishing a job would remove the label it just added.
+  labels:
+    benchmark: llmbench:benchmark
+    optimize: llmbench:optimize
+    claimed: llmbench:claimed
+    done: llmbench:done
+    failed: llmbench:failed
+
+  # One global GPU. The lease is both the ownership record and the job mutex,
+  # and its annotations are the durable phase of the in-flight job.
+  lease:
+    namespace: llmbench
+    name: gpu
+    durationSeconds: 1800
+
+  # The shared inference workload the controller pauses while it holds the GPU.
+  gitops:
+    owner: ""
+    repository: ""
+    baseBranch: main
+    filePath: ""
+    yamlPath: []
+    activeValue: "1"
+    pausedValue: "0"
+    application:
+      namespace: argocd
+      name: ""
+    workload:
+      namespace: ""
+      deployment: ""
+      activeReplicas: 1
+
+  # The Agent Sandbox pool the measurement runs in, and the argv prefix that
+  # runs the CLI inside the sandbox image.
+  sandbox:
+    namespace: llmbench
+    warmPool: ""
+    llmbench: [llmbench]
+
+  # The model allowlist. A digest pins the weights; without one the benchmark
+  # marks the run invalid because it cannot prove what it measured.
+  models: []
+
+  # The runtime allowlists a job may choose from.
+  engines: [llamacpp, freetoken]
+  images: []
+  outputRoots: [experiments]
+  maxRounds: 20
+
+  # The controller authenticates as a GitHub App installation. The private key
+  # stays in the controller Pod and is never handed to a sandbox.
+  githubApp:
+    appId: 0
+    installationId: 0
+    existingSecret: ""
+    privateKeyKey: private-key.pem
+    baseUrl: ""
+
+  pollIntervalSeconds: 15
+  recoveryIntervalSeconds: 60
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+  nodeSelector: {}
+  tolerations: []
+  # Extra environment variables for the controller container (never secrets).
+  extraEnv: []
+

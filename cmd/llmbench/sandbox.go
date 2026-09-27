@@ -19,6 +19,7 @@ func newSandboxCmd(g *globalFlags) *cobra.Command {
 		Short: "Manual Agent Sandbox operations (claims attach by run ID)",
 	}
 	cmd.PersistentFlags().StringVar(&namespace, "namespace", "default", "namespace holding the SandboxClaims")
+	cmd.AddCommand(newSandboxJobCmd(g))
 	cmd.AddCommand(
 		sandboxAcquireCmd(g, &namespace),
 		sandboxRunCmd(g, &namespace),

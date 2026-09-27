@@ -134,3 +134,48 @@ go run ./cmd/llmbench metrics <run-id>
 ## Publication gate
 
 The controller never publishes. Publishing is triggered by a merge to `main`, so the repository must protect `main`: require pull requests (no direct pushes) and keep force pushes and branch deletion disabled. With that in place, "the artifact is on `main`" and "a human accepted it" are the same statement, which is what the published site claims.
+
+## MVP: Issue から PR まで(docs/mvp.md)
+
+```sh
+# 1. 設定する(モデル・allowlist・lease・pause 対象・sandbox)
+cp examples/operator-mvp.yaml operator.yaml
+$EDITOR operator.yaml
+
+# 2. Controller を入れる(単一 replica。run store も leader election も無い)
+helm upgrade --install llmbench charts/llmbench \
+  --set mvp.image.repository=ghcr.io/<owner>/llmbench \
+  --set mvp.repository=<owner>/llm-bench \
+  --set mvp.githubApp.existingSecret=llmbench-github-app \
+  --set mvp.gitops.owner=<owner> --set mvp.gitops.repository=manifests \
+  --set mvp.gitops.filePath=apps/inference/deployment.yaml \
+  --set mvp.gitops.application.name=inference \
+  --set mvp.gitops.workload.namespace=llmbench \
+  --set mvp.gitops.workload.deployment=llama-server \
+  --set mvp.sandbox.warmPool=gpu-sandbox
+
+# 3. 要求は Issue(GitHub Issue Form が JobSpec を埋める)。ローカルで先に検証できる
+llmbench job init --kind benchmark > job.yaml
+llmbench job validate job.yaml
+#    Issue を作る → ラベル llmbench:benchmark が付く → Controller が拾う
+
+# 4. 進行を見る(Controller のログ、Issue のラベル claimed/done/failed)
+kubectl -n llmbench logs deploy/llmbench-llmbench -f
+
+# 5. 結果は PR。事実の比較は CLI(採否は Agent / 人間が決める)
+llmbench compare --kind runtime experiments/<model>/<baseline> experiments/<model>/<candidate>
+```
+
+Agent(optimization)から sandbox を触るときは、job id を指定するだけでよい。
+sandbox が差し替わっても次の呼び出しが新しい sandbox を見つける(rebind は discovery):
+
+```sh
+llmbench sandbox job exec <job-id> -- ls -la /workspace
+llmbench sandbox job push <job-id> ./patch.diff /workspace/patch.diff
+llmbench sandbox job pull <job-id> /workspace/out.txt ./out.txt
+llmbench job done --job <job-id> --status complete --branch llmbench/<job-id> --commit <sha>
+```
+
+一時停止と復元は GitOps の PR を通す。pause の PR がマージされるまで Controller は
+待ち、restore の PR がマージされて Argo が同期し workload が戻るまで **GPU Lease を
+手放さない**(Lease を離すのは復元が完了してから)。

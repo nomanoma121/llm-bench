@@ -12,12 +12,12 @@ import (
 	"github.com/nomanoma121/llm-bench/internal/job"
 )
 
-func newJobCmd() *cobra.Command {
+func newJobCmd(g *globalFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "job",
 		Short: "Validate and render MVP job specs (the request carried by an Issue)",
 	}
-	cmd.AddCommand(newJobValidateCmd(), newJobInitCmd())
+	cmd.AddCommand(newJobValidateCmd(), newJobInitCmd(), newJobDoneCmd(nil))
 	return cmd
 }
 

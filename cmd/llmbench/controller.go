@@ -246,7 +246,7 @@ func (s *sandboxAdapter) Ensure(ctx context.Context, jobID string) error {
 }
 
 func (s *sandboxAdapter) Exec(ctx context.Context, jobID string, argv []string, env map[string]string) ([]byte, error) {
-	stdout, stderr, code, err := s.client.JobExec(ctx, jobID, argv, env)
+	stdout, stderr, code, err := s.client.JobExec(ctx, jobID, argv, env, "")
 	if err != nil {
 		return nil, err
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,10 +17,12 @@ import (
 )
 
 type fakeService struct {
-	submitted []string
-	run       run.Run
-	submitErr error
-	statusErr error
+	metrics    []byte
+	metricsErr error
+	submitted  []string
+	run        run.Run
+	submitErr  error
+	statusErr  error
 }
 
 func (f *fakeService) Submit(_ context.Context, experimentPath, _ string) (run.Run, error) {
@@ -28,6 +31,13 @@ func (f *fakeService) Submit(_ context.Context, experimentPath, _ string) (run.R
 		return run.Run{}, f.submitErr
 	}
 	return f.run, nil
+}
+
+func (f *fakeService) Metrics(_ context.Context, _ string) ([]byte, error) {
+	if f.metricsErr != nil {
+		return nil, f.metricsErr
+	}
+	return f.metrics, nil
 }
 
 func (f *fakeService) Status(_ context.Context, _ string) (run.Run, error) {
@@ -42,6 +52,24 @@ func serve(t *testing.T, svc RunService, token string) *httptest.Server {
 	srv := httptest.NewServer((&Server{Service: svc, Token: token}).Handler())
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// get performs an unauthenticated GET and returns the response.
+func get(t *testing.T, url, token string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
 }
 
 func TestSubmitRequiresAuthWhenTokenSet(t *testing.T) {
@@ -223,5 +251,53 @@ func TestDerivedLabels(t *testing.T) {
 	}
 	if NewStatusView(r2).DerivedLabel != "needs_restore" {
 		t.Fatal("needs_restore label missing")
+	}
+}
+
+func TestMetricsEndpoint(t *testing.T) {
+	body := []byte(`{"schema_version":1,"run_id":"r1","kind":"measurement","protocol":{"id":"p","digest":"d"},"measurement_valid":true,"metrics":[{"name":"decode_step_ms","value":17.7,"unit":"ms/step","source":"driver"}]}`)
+
+	f := &fakeService{run: run.Run{ID: "r1", Phase: run.PhaseSucceeded, MetricsDigest: "m"}, metrics: body}
+	ts := serve(t, f, "secret")
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/runs/r1/metrics", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("content type = %q", got)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	if string(got) != string(body) {
+		t.Fatalf("body = %s", got)
+	}
+
+	// Evidence is on the authenticated control API only.
+	if rec := get(t, ts.URL+"/v1/runs/r1/metrics", ""); rec.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d", rec.StatusCode)
+	}
+
+	// A run without evidence is 404, as is an unknown run.
+	f2 := &fakeService{run: run.Run{ID: "r2"}, metricsErr: ErrNoEvidence}
+	ts2 := serve(t, f2, "")
+	if rec := get(t, ts2.URL+"/v1/runs/r2/metrics", ""); rec.StatusCode != http.StatusNotFound {
+		t.Fatalf("no-evidence status = %d", rec.StatusCode)
+	}
+	f3 := &fakeService{metricsErr: run.ErrNotFound}
+	ts3 := serve(t, f3, "")
+	if rec := get(t, ts3.URL+"/v1/runs/missing/metrics", ""); rec.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing status = %d", rec.StatusCode)
+	}
+
+	// Corruption is a server error, never a silent empty answer.
+	f4 := &fakeService{metricsErr: errors.New("digest mismatch")}
+	ts4 := serve(t, f4, "")
+	if rec := get(t, ts4.URL+"/v1/runs/r4/metrics", ""); rec.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("corrupt status = %d", rec.StatusCode)
 	}
 }

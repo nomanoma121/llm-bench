@@ -10,7 +10,10 @@ import (
 	"strings"
 	"testing"
 
+	"encoding/json"
 	"github.com/nomanoma121/llm-bench/internal/experiment"
+	"github.com/nomanoma121/llm-bench/internal/measurement"
+	"github.com/nomanoma121/llm-bench/internal/operator"
 	"github.com/nomanoma121/llm-bench/internal/provenance"
 	"github.com/nomanoma121/llm-bench/internal/run"
 )
@@ -226,5 +229,148 @@ func TestLocalExecuteRecordsArtifactDigest(t *testing.T) {
 	}
 	if artifacts.Artifacts.IndexSHA256 == "" {
 		t.Fatal("index hash must be recorded")
+	}
+}
+
+// protocolRun freezes a driver-based protocol on a run: the driver prints the
+// raw measurement to stdout, which is the harness's trusted channel.
+func protocolRun(t *testing.T, r run.Run, driverArgv []string, required []string) run.Run {
+	t.Helper()
+	p := operator.MeasurementProtocol{
+		SchemaVersion: 1,
+		Driver: operator.ExecutionSpec{
+			ContentDigest: "sha256:driver", ExecMode: "sandbox-exec", OutputMode: "stdout-transport",
+		},
+		DriverArgv:      driverArgv,
+		Workload:        operator.MeasurementWorkload{Matrix: []operator.WorkloadCase{{Name: "decode", DecodeSteps: 10}}},
+		RequiredSources: required,
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.MeasurementProtocolID = "longctx"
+	r.MeasurementProtocolJSON = string(b)
+	r.MeasurementProtocolDigest = "pd"
+	return r
+}
+
+func TestLocalMeasurementRunSealsDriverEvidence(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "input"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "input", "prompt.md"), []byte("p"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l := NewLocal(dir)
+	r := artifactRun(dir, recipe(t, []string{"/bin/sh", "-c", "exit 1"}))
+	r.Kind = run.RunKindMeasurement
+	r = protocolRun(t, r, []string{"/bin/sh", "-c", `printf '%s' '{"metrics":[{"name":"decode_step_ms","value":17.71,"unit":"ms/step","labels":{"depth":"64k"},"samples":385}]}'`}, []string{"driver"})
+
+	// The recipe's invoke must not run for a measurement run: it exits 1 and
+	// would fail the run if it did.
+	out, err := l.Execute(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Artifacts.ArtifactDigest != "" {
+		t.Fatal("a measurement run must not seal a visual artifact")
+	}
+	if out.Evidence.Digest == "" || !out.Evidence.Valid {
+		t.Fatalf("evidence = %+v", out.Evidence)
+	}
+	e, err := measurement.Verify(out.Evidence.Path, out.Evidence.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Kind != "measurement" || e.Protocol.ID != "longctx" || e.Protocol.Digest != "pd" {
+		t.Fatalf("identity = %+v", e)
+	}
+	var harnessWall, driverStep bool
+	for _, m := range e.Metrics {
+		switch m.Name {
+		case "decode_step_ms":
+			driverStep = true
+			if m.Source != measurement.SourceDriver {
+				t.Fatalf("driver metric source = %q", m.Source)
+			}
+		case "wall_clock_ms":
+			harnessWall = true
+			if m.Source != measurement.SourceHarness {
+				t.Fatalf("harness metric source = %q", m.Source)
+			}
+		}
+	}
+	if !harnessWall || !driverStep {
+		t.Fatalf("metrics = %+v", e.Metrics)
+	}
+}
+
+func TestLocalUnusableDriverOutputSealsInvalidEvidence(t *testing.T) {
+	cases := map[string]struct {
+		driver   []string
+		required []string
+	}{
+		"junk output":             {driver: []string{"/bin/sh", "-c", "printf nonsense"}, required: []string{"driver"}},
+		"driver fails":            {driver: []string{"/bin/sh", "-c", "exit 3"}, required: []string{"driver"}},
+		"required source missing": {driver: []string{"/bin/sh", "-c", "exit 0"}, required: []string{"driver"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(dir, "input"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "input", "prompt.md"), []byte("p"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			l := NewLocal(dir)
+			r := artifactRun(dir, recipe(t, []string{"/bin/sh", "-c", "exit 0"}))
+			r.Kind = run.RunKindMeasurement
+			r = protocolRun(t, r, tc.driver, tc.required)
+
+			out, err := l.Execute(context.Background(), r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.Evidence.Digest == "" || out.Evidence.Valid {
+				t.Fatalf("expected sealed but invalid evidence: %+v", out.Evidence)
+			}
+			if len(out.Evidence.InvalidReasons) == 0 {
+				t.Fatal("an invalid measurement must carry a reason")
+			}
+		})
+	}
+}
+
+func TestLocalVisualRunWithProtocolAlsoSealsEvidence(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "input"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "input", "prompt.md"), []byte("p"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l := NewLocal(dir)
+	r := artifactRun(dir, recipe(t, []string{"/bin/sh", "-c", `printf '<html/>' > "$LLMBENCH_OUTPUT_DIR/index.html"`}))
+	r = protocolRun(t, r, []string{"/bin/sh", "-c", `printf '%s' '{"metrics":[{"name":"wall_clock_ms","value":1,"unit":"ms"}]}'`}, []string{"driver"})
+
+	out, err := l.Execute(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Artifacts.ArtifactDigest == "" {
+		t.Fatal("a visual run must still seal its artifact")
+	}
+	if out.Evidence.Digest == "" || !out.Evidence.Valid {
+		t.Fatalf("a visual run with a protocol must carry evidence: %+v", out.Evidence)
+	}
+	e, err := measurement.Verify(out.Evidence.Path, out.Evidence.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Kind != "visual" {
+		t.Fatalf("kind = %q", e.Kind)
 	}
 }

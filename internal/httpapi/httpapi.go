@@ -27,7 +27,14 @@ type RunService interface {
 	Submit(ctx context.Context, experimentPath, inputCommit string) (run.Run, error)
 	// Status loads a run record.
 	Status(ctx context.Context, id string) (run.Run, error)
+	// Metrics returns the sealed measurement evidence of a run. Servable only
+	// when the run is sealed and the recorded digest still matches the bytes
+	// on disk (docs/optimization.md §5.1).
+	Metrics(ctx context.Context, id string) ([]byte, error)
 }
+
+// ErrNoEvidence reports a run without sealed measurement evidence.
+var ErrNoEvidence = errors.New("httpapi: run has no sealed evidence")
 
 // Server is the HTTP API server.
 type Server struct {
@@ -94,6 +101,9 @@ func (s *Server) Handler() http.Handler {
 		r.Use(s.authorize)
 		r.Post("/runs", s.postRun)
 		r.Get("/runs/{id}", s.getRun)
+		// Evidence lives on the authenticated control API, never on the
+		// preview listener: measurements are not part of the visual payload.
+		r.Get("/runs/{id}/metrics", s.getMetrics)
 	})
 	return mux
 }
@@ -188,4 +198,22 @@ func (s *Server) log() logr.Logger {
 		return logr.Discard()
 	}
 	return s.Log
+}
+
+// getMetrics serves the sealed measurement evidence as JSON.
+func (s *Server) getMetrics(w http.ResponseWriter, req *http.Request) {
+	id := chi.URLParam(req, "id")
+	body, err := s.Service.Metrics(req.Context(), id)
+	switch {
+	case errors.Is(err, run.ErrNotFound), errors.Is(err, ErrNoEvidence):
+		writeError(w, http.StatusNotFound, "no evidence for this run")
+		return
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "could not read evidence")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }

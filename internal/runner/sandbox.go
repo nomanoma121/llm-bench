@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nomanoma121/llm-bench/internal/experiment"
+	"github.com/nomanoma121/llm-bench/internal/measurement"
 	"github.com/nomanoma121/llm-bench/internal/provenance"
 	"github.com/nomanoma121/llm-bench/internal/run"
 )
@@ -75,6 +76,7 @@ const (
 	sandboxOutput    = "/workspace/output"
 	sandboxModels    = "/models"
 	sandboxTar       = "/workspace/src.tar"
+	sandboxEvidence  = "/workspace/evidence"
 )
 
 // Execute implements run.Executor. The caller (engine) has already persisted
@@ -164,8 +166,25 @@ func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.ExecutionOutputs,
 		}
 	}
 
+	// A measurement run does not run the recipe's invoke: the trusted driver
+	// replaces it and its stdout is the measurement channel
+	// (docs/optimization.md §3/§5.4).
+	if runKind(r) == run.RunKindMeasurement {
+		invokeStarted := time.Now()
+		stdout, driverErr := s.runDriver(ctx, r, cfg, env)
+		evidence, err := sealEvidence(r, r.Artifacts.Dir, time.Since(invokeStarted), stdout, driverErr)
+		if err != nil {
+			return run.ExecutionOutputs{}, err
+		}
+		if err := s.writeModelIdentity(pre, r.Artifacts.Dir); err != nil {
+			return run.ExecutionOutputs{}, err
+		}
+		return run.ExecutionOutputs{Evidence: evidence}, nil
+	}
+
 	// 5. Invoke. The log is persisted on the harness side because the sandbox
 	// (and its filesystem) is removed at release time.
+	invokeStarted := time.Now()
 	stdout, stderr, code, execErr := s.Client.Exec(ctx, s.Claim, cfg.Invoke.Argv, env, sandboxSrc)
 	logBody := formatInvokeLog(cfg.Invoke.Argv, stdout, stderr, code, execErr)
 	logPath := filepath.Join(r.Artifacts.Dir, "invoke.log")
@@ -187,6 +206,8 @@ func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.ExecutionOutputs,
 	if post.TreeDigest != pre.TreeDigest {
 		return run.ExecutionOutputs{}, fmt.Errorf("runner: model changed during execution (%s -> %s)", pre.TreeDigest, post.TreeDigest)
 	}
+
+	wallClock := time.Since(invokeStarted)
 
 	// 7. Persist artifacts outside the sandbox. The payload is defined as the
 	// single file index.html, so a benchmark that produced anything else in
@@ -214,23 +235,64 @@ func (s *Sandbox) Execute(ctx context.Context, r run.Run) (run.ExecutionOutputs,
 	if err != nil {
 		return run.ExecutionOutputs{}, err
 	}
+	if err := s.writeModelIdentity(pre, r.Artifacts.Dir); err != nil {
+		return run.ExecutionOutputs{}, err
+	}
 	identityPath := filepath.Join(r.Artifacts.Dir, "model-identity.json")
-	identityJSON, err := json.MarshalIndent(pre, "", "  ")
-	if err != nil {
-		return run.ExecutionOutputs{}, err
-	}
-	if err := os.WriteFile(identityPath, identityJSON, 0o644); err != nil {
-		return run.ExecutionOutputs{}, err
-	}
 
-	return run.ExecutionOutputs{Artifacts: run.Artifacts{
+	out := run.ExecutionOutputs{Artifacts: run.Artifacts{
 		Dir:               r.Artifacts.Dir,
 		IndexSHA256:       payload[0].SHA256,
 		LogSHA256:         sha256Hex(logBody),
 		ModelTreeDigest:   pre.TreeDigest,
 		ModelIdentityPath: identityPath,
 		ArtifactDigest:    digest,
-	}}, nil
+	}}
+	if needsEvidence(r) {
+		stdout, driverErr := s.runDriver(ctx, r, cfg, env)
+		evidence, err := sealEvidence(r, r.Artifacts.Dir, wallClock, stdout, driverErr)
+		if err != nil {
+			return run.ExecutionOutputs{}, err
+		}
+		out.Evidence = evidence
+	}
+	return out, nil
+}
+
+// writeModelIdentity records the model tree digest observed inside the
+// sandbox.
+func (s *Sandbox) writeModelIdentity(pre provenance.ModelIdentity, artifactDir string) error {
+	b, err := json.MarshalIndent(pre, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(artifactDir, "model-identity.json"), b, 0o644)
+}
+
+// runDriver executes the frozen driver argv inside the sandbox and captures
+// its stdout over the sandboxd transport. The driver is the harness's trusted
+// measurement code: the candidate cannot replace it, and because the numbers
+// travel on the transport channel rather than through a path the candidate can
+// write, it cannot forge them either (docs/optimization.md §5.4).
+func (s *Sandbox) runDriver(ctx context.Context, r run.Run, cfg experiment.Config, env map[string]string) ([]byte, error) {
+	argv, err := driverArgv(r)
+	if err != nil {
+		return nil, err
+	}
+	if len(argv) == 0 {
+		return nil, nil
+	}
+	stdout, stderr, code, execErr := s.Client.Exec(ctx, s.Claim, argv, env, sandboxSrc)
+	if execErr != nil {
+		return nil, fmt.Errorf("driver %v transport: %v: %s", argv, execErr, truncate(string(stderr), 256))
+	}
+	if code != 0 {
+		return nil, fmt.Errorf("driver %v failed with exit %d: %s", argv, code, truncate(string(stderr), 256))
+	}
+	if len(stdout) > measurement.MaxEvidenceBytes {
+		return nil, fmt.Errorf("driver output is %d bytes, over the %d byte limit", len(stdout), measurement.MaxEvidenceBytes)
+	}
+	return stdout, nil
 }
 
 // verifySingleOutputScript returns the python3 program that fails unless the

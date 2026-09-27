@@ -4,6 +4,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/nomanoma121/llm-bench/internal/experiment"
 	"github.com/nomanoma121/llm-bench/internal/run"
@@ -68,6 +70,23 @@ func (l *Local) Execute(ctx context.Context, r run.Run) (run.ExecutionOutputs, e
 		return run.ExecutionOutputs{}, err
 	}
 
+	// A measurement run produces evidence instead of a visual payload: the
+	// single-file contract applies to visual runs only, and the driver — not
+	// the recipe's invoke — is what the harness measures with
+	// (docs/optimization.md §3/§5.4).
+	if runKind(r) == run.RunKindMeasurement {
+		started := time.Now()
+		stdout, driverErr := l.runDriver(ctx, r, artifactDir, cfg, modelsRoot, promptPath)
+		if ctx.Err() != nil {
+			return run.ExecutionOutputs{}, fmt.Errorf("runner: execution interrupted: %w", ctx.Err())
+		}
+		evidence, err := sealEvidence(r, artifactDir, time.Since(started), stdout, driverErr)
+		if err != nil {
+			return run.ExecutionOutputs{}, err
+		}
+		return run.ExecutionOutputs{Evidence: evidence}, nil
+	}
+
 	cmd := exec.CommandContext(ctx, cfg.Invoke.Argv[0], cfg.Invoke.Argv[1:]...)
 	cmd.Dir = artifactDir
 	cmd.Env = l.envFor(r, cfg, artifactDir, modelsRoot, promptPath)
@@ -82,7 +101,9 @@ func (l *Local) Execute(ctx context.Context, r run.Run) (run.ExecutionOutputs, e
 	cmd.Stderr = logFile
 	fmt.Fprintf(logFile, "$ %s\n", cfg.Invoke.Argv)
 
+	started := time.Now()
 	runErr := cmd.Run()
+	wallClock := time.Since(started)
 	fmt.Fprintf(logFile, "[exit: %v]\n", runErr)
 
 	if ctx.Err() != nil {
@@ -108,12 +129,22 @@ func (l *Local) Execute(ctx context.Context, r run.Run) (run.ExecutionOutputs, e
 	if err != nil {
 		return run.ExecutionOutputs{}, err
 	}
-	return run.ExecutionOutputs{Artifacts: run.Artifacts{
+	out := run.ExecutionOutputs{Artifacts: run.Artifacts{
 		Dir:            artifactDir,
 		IndexSHA256:    payload[0].SHA256,
 		LogSHA256:      logSum,
 		ArtifactDigest: digest,
-	}}, nil
+	}}
+	// A visual run with a protocol also carries harness evidence.
+	if needsEvidence(r) {
+		stdout, driverErr := l.runDriver(ctx, r, artifactDir, cfg, modelsRoot, promptPath)
+		evidence, err := sealEvidence(r, artifactDir, wallClock, stdout, driverErr)
+		if err != nil {
+			return run.ExecutionOutputs{}, err
+		}
+		out.Evidence = evidence
+	}
+	return out, nil
 }
 
 // envFor builds the child environment from an allowlist: LLMBENCH_* variables
@@ -144,4 +175,35 @@ func hashFile(path string) (string, error) {
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+// runDriver executes the frozen driver argv and returns its stdout. The driver
+// is the harness's trusted measurement code: the candidate runtime cannot
+// replace it or its output channel (docs/optimization.md §5.4). A protocol
+// without a driver yields no output, which the protocol's required sources
+// then reject.
+func (l *Local) runDriver(ctx context.Context, r run.Run, artifactDir string, cfg experiment.Config, modelsRoot, promptPath string) ([]byte, error) {
+	argv, err := driverArgv(r)
+	if err != nil {
+		return nil, err
+	}
+	if len(argv) == 0 {
+		return nil, nil
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Dir = artifactDir
+	cmd.Env = l.envFor(r, cfg, artifactDir, modelsRoot, promptPath)
+	logPath := filepath.Join(artifactDir, "driver.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		return nil, err
+	}
+	defer logFile.Close()
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = logFile
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("driver %v failed: %w", argv, err)
+	}
+	return stdout.Bytes(), nil
 }

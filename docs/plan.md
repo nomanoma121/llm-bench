@@ -73,7 +73,9 @@ Explicitly not doing: attempts inside a run, sharing a SandboxClaim across a win
 - [x] Controller 薄版(`llmbench controller`, Deployment): Issue poll → JobSpec 検証 → claim ラベル → Lease → GitOps pause → SandboxClaim → Sandbox 内 `llmbench benchmark --push` → PR → claim 削除 → restore → release → 完了ラベル。startup と定期の recovery、write-ahead、mandatory restore、同一 job を再実行しない規律。ConfigMap store と leader election は作らない。
 - [x] Helm chart: controller Deployment / RBAC / GitHub App Secret / gpuLease / gitops / sandbox / models / runtimeImages / dsh option。
 - [x] Agent / DSH 連携: 既存 DSH deployment を参照し、Sandbox の bind / rebind と `llmbench sandbox job exec|push|pull|ls`(port-forward transport)・`llmbench job done` を提供する。conversation も session も llm-bench は持たない。
-- [ ] 実データで `result.json` / `compare` の形式を調整し、凍結した visual 経路(httpapi / serve / preview / adopt / sitebuild / review / discord / pages workflow)を削除する。
+- [x] MVP の2経路を **in-process end-to-end テスト**(`internal/e2e`)で固定した: Issue → Controller → 計測 → 成果物の push → PR → ラベル/lease 解放、および2つの結果の `compare`。
+- [ ] **実クラスタでの e2e**(GPU node / Agent Sandbox / GitOps pause・restore / DSH)。このリポジトリからは検証できないので、オペレータの作業として残る。
+- [ ] 実データで `result.json` / `compare` の形式を調整し、凍結した visual 経路(httpapi / serve / preview / adopt / sitebuild / review / discord / pages workflow)を削除する。**削除は実クラスタで MVP が end to end に動いた後**(AGENTS.md)。
 
 ## 4b. Human evaluation and Agent loop (v1.6/v1.7, frozen for MVP)
 

@@ -159,7 +159,7 @@ func Push(ctx context.Context, o PushOptions) (PushCommits, error) {
 	// The token travels in an HTTP header rather than in the remote URL, so it
 	// cannot leak through the checkout's configuration or through an error we
 	// print. The header itself is never logged.
-	if _, err := o.git(ctx, nil, "-c", o.authHeader(), "push", remote, "HEAD:refs/heads/"+o.Branch); err != nil {
+	if _, err := o.gitAuth(ctx, "push", remote, "HEAD:refs/heads/"+o.Branch); err != nil {
 		return PushCommits{}, err
 	}
 	o.logf("pushed %s (%s) to %s", o.Branch, short(head), remote)
@@ -195,26 +195,40 @@ func (o PushOptions) allowed(name string) bool {
 	return false
 }
 
-// defaultBranch asks the remote which branch is its default, falling back to
-// the local HEAD when the remote has not been fetched.
+// defaultBranch asks the remote itself which branch is its default. Reading a
+// cached refs/remotes/<remote>/HEAD would be stale, and falling back to the
+// local branch would silently accept a push to a remote default that changed.
 func (o PushOptions) defaultBranch(ctx context.Context, remote string) (string, error) {
-	if out, err := o.git(ctx, nil, "symbolic-ref", "--short", "refs/remotes/"+remote+"/HEAD"); err == nil {
-		return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out), remote+"/")), nil
+	out, err := o.gitAuth(ctx, "ls-remote", "--symref", remote, "HEAD")
+	if err != nil {
+		return "", err
 	}
-	if out, err := o.git(ctx, nil, "rev-parse", "--abbrev-ref", "HEAD"); err == nil && !strings.HasPrefix(strings.TrimSpace(out), "HEAD") {
-		return strings.TrimSpace(out), nil
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 3 && fields[0] == "ref:" && strings.HasPrefix(fields[1], "refs/heads/") && fields[2] == "HEAD" {
+			return strings.TrimPrefix(fields[1], "refs/heads/"), nil
+		}
 	}
-	return "", nil
+	return "", fmt.Errorf("benchmark: push: %s did not report its default branch; refusing to guess", remote)
 }
 
 // remoteBranchExists asks the remote, so a leftover branch from an earlier run
 // is caught before the push rather than by a rejected push.
 func (o PushOptions) remoteBranchExists(ctx context.Context, remote, branch string) (bool, error) {
-	out, err := o.git(ctx, nil, "ls-remote", "--heads", remote, branch)
+	// The query needs the token too: a private repository rejects an
+	// unauthenticated ls-remote, and a failed check would look like "the
+	// branch does not exist".
+	out, err := o.gitAuth(ctx, "ls-remote", "--heads", remote, branch)
 	if err != nil {
 		return false, err
 	}
 	return strings.TrimSpace(out) != "", nil
+}
+
+// gitAuth runs a git command that talks to the remote, so it carries the
+// authorization header. The header never appears in a log line.
+func (o PushOptions) gitAuth(ctx context.Context, args ...string) (string, error) {
+	return o.git(ctx, nil, append([]string{"-c", o.authHeader()}, args...)...)
 }
 
 func (o PushOptions) authHeader() string {

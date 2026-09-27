@@ -156,6 +156,7 @@ func Run(ctx context.Context, cfg Config, adapter runtime.Adapter, seams Seams) 
 	}
 
 	state := newRunState(cfg, adapter, seams, cfg.Spec.Metrics.Collectors)
+	state.probeEnvironment(context.WithoutCancel(ctx))
 
 	proc, err := state.startRuntime(ctx)
 	if err != nil {
@@ -164,16 +165,24 @@ func Run(ctx context.Context, cfg Config, adapter runtime.Adapter, seams Seams) 
 	defer state.stopRuntime(context.WithoutCancel(ctx), proc)
 
 	if err := state.waitReady(ctx); err != nil {
-		if errors.Is(err, runtime.ErrUnavailable) {
+		switch {
+		case ctx.Err() != nil:
+			// The job was cancelled while waiting, not the runtime failing.
+			return Outcome{}, fmt.Errorf("%w: %w", ErrAborted, ctx.Err())
+		case errors.Is(err, runtime.ErrUnavailable):
 			return Outcome{}, fmt.Errorf("%w: %w", ErrNoResult, err)
+		default:
+			return Outcome{}, fmt.Errorf("%w: %w", ErrTimeout, err)
 		}
-		return Outcome{}, fmt.Errorf("%w: %w", ErrTimeout, err)
 	}
-	inputs, err := state.resolveInputs()
-	if err != nil {
+	if err := state.resolveInputs(); err != nil {
 		return Outcome{}, err
 	}
-	state.setInputs(inputs)
+	if strings.TrimSpace(cfg.ModelDigest) == "" {
+		// Without a pinned digest the result cannot prove which weights were
+		// measured, so the measurement is not comparable even though it ran.
+		state.invalidate("no model digest is pinned, so the measured weights cannot be identified")
+	}
 	stopSampling := state.startSampling(ctx)
 	// One reading of every requested collector before the workload, so a short
 	// job still has a value for each source the operator asked for.
@@ -342,20 +351,22 @@ func samplingOf(w job.Workload) (temperature, topP *float64, seed *int64) {
 	return w.Sampling.Temperature, w.Sampling.TopP, w.Sampling.Seed
 }
 
-// prompt resolves the case prompt: an inline prompt_text, or a file read from
-// the repository root. A missing file is a case error, not a job failure: the
-// rest of the cases still produce evidence.
+// prompt returns the frozen prompt bytes of a case. The bytes were read once,
+// so what the harness digests and what it sends are the same string.
 func (s *runState) prompt(c job.Case) string {
-	text, err := s.promptBytes(c)
-	if err != nil {
-		s.recordCaseError(c.Name, 0, s.seams.Now().Sub(s.start), err)
+	s.mu.Lock()
+	text, ok := s.prompts[c.Name]
+	s.mu.Unlock()
+	if !ok {
+		s.recordCaseError(c.Name, 0, s.seams.Now().Sub(s.start), fmt.Errorf("prompt for case %q could not be read", c.Name))
 		return ""
 	}
 	return text
 }
 
-// promptBytes returns the exact bytes a case measures.
-func (s *runState) promptBytes(c job.Case) (string, error) {
+// readPrompt resolves the case prompt: an inline prompt_text, or a file read
+// from the repository root.
+func (s *runState) readPrompt(c job.Case) (string, error) {
 	if c.PromptText != "" {
 		return c.PromptText, nil
 	}
@@ -366,28 +377,33 @@ func (s *runState) promptBytes(c job.Case) (string, error) {
 	return string(b), nil
 }
 
-// resolveInputs freezes what the job will measure: the resolved model and the
-// digest of every prompt's bytes. It is computed from the same bytes the
-// measurement sends, so it cannot drift from what ran.
-func (s *runState) resolveInputs() (measurement.Inputs, error) {
+// resolveInputs freezes what the job will measure: the resolved model, the
+// digest of every prompt's bytes, and the bytes themselves. The measurement
+// sends exactly the frozen bytes, so the recorded digest cannot describe
+// something other than what ran even if the prompt file changes mid-run.
+func (s *runState) resolveInputs() error {
 	in := measurement.Inputs{
 		ModelID:     s.cfg.Spec.Model.ID,
 		ModelPath:   s.cfg.ModelPath,
 		ModelDigest: s.cfg.ModelDigest,
 		Prompts:     map[string]string{},
 	}
+	prompts := map[string]string{}
 	for _, c := range s.cfg.Spec.Workload.Cases {
-		text, err := s.promptBytes(c)
+		text, err := s.readPrompt(c)
 		if err != nil {
-			// The case will fail on its own; the input section simply cannot
-			// claim a digest it could not read.
+			// The case fails on its own; the input section cannot claim a
+			// digest it could not read.
 			continue
 		}
+		prompts[c.Name] = text
 		in.Prompts[c.Name] = measurement.Digest([]byte(text))
 	}
-	// A prompt that cannot be read leaves its case to fail on its own; the
-	// run still produces evidence that says so rather than aborting.
-	return in, nil
+	s.mu.Lock()
+	s.prompts = prompts
+	s.inputs = in
+	s.mu.Unlock()
+	return nil
 }
 
 // buildResult assembles the canonical document from the recorded samples.

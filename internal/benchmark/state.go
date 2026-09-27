@@ -49,6 +49,10 @@ type runState struct {
 	invalidReasons []string
 	currentCase    string
 	inputs         measurement.Inputs
+	prompts        map[string]string
+	// env is the machine identity, captured by a dedicated probe so workload
+	// samples cannot inflate it.
+	env measurement.Environment
 
 	// digests the result recorded, copied back after sealing so the generated
 	// README prints the same values the result carries.
@@ -169,6 +173,49 @@ func (s *runState) recordCaseError(name string, repeat int, at time.Duration, er
 	s.addReasonLocked(fmt.Sprintf("case %q repeat %d failed: %v", name, repeat, err))
 }
 
+// probeEnvironment records the machine identity once, independently of the
+// collectors: the environment is part of the result's identity, so it must not
+// depend on whether the job asked for the nvidia collector, and it must not be
+// derived from workload samples (one GPU sampled ten times is still one GPU).
+func (s *runState) probeEnvironment(ctx context.Context) {
+	if s.seams.GPU == nil {
+		return
+	}
+	sample, raw, err := s.sampleGPU(ctx)
+	// The probe is best-effort: a machine without nvidia-smi produces a result
+	// with no environment, which is a fact worth recording rather than a
+	// failure. GPU driver/model identity does not change during a run.
+	_ = err
+	_ = raw
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err != nil {
+		return
+	}
+	counts := map[string]int{}
+	var order []string
+	env := measurement.Environment{Driver: sample.Driver}
+	for _, dev := range sample.GPUs {
+		if _, seen := counts[dev.Model]; !seen {
+			order = append(order, dev.Model)
+		}
+		counts[dev.Model]++
+	}
+	sort.Strings(order)
+	for _, model := range order {
+		env.GPUs = append(env.GPUs, measurement.GPU{Model: model, Count: counts[model]})
+	}
+	s.env = env
+}
+
+// sampleGPU calls the GPU reader with its own deadline, so a stuck nvidia-smi
+// cannot block the sampler (and therefore the run) forever.
+func (s *runState) sampleGPU(ctx context.Context) (GPUSample, []string, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, s.seams.ProbeTimeout)
+	defer cancel()
+	return s.seams.GPU.Sample(probeCtx)
+}
+
 // collectRuntime samples the runtime's own metrics. They are kept as samples
 // only, never as a summary metric: llama.cpp exposes process-lifetime counters
 // and FreeToken exposes sliding-window rates, so a single number read after a
@@ -178,7 +225,7 @@ func (s *runState) collectRuntime(ctx context.Context) {
 	if !s.wants(job.CollectorRuntime) {
 		return
 	}
-	metrics, err := s.adapter.Metrics(ctx)
+	metrics, err := s.sampleRuntime(ctx)
 	at := s.seams.Now().Sub(s.start)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -202,6 +249,14 @@ func (s *runState) collectRuntime(ctx context.Context) {
 	s.collectorSeen[job.CollectorRuntime]++
 }
 
+// sampleRuntime calls the adapter's metrics endpoint with its own deadline: a
+// runtime that stops answering a scrape must not hang the sampler.
+func (s *runState) sampleRuntime(ctx context.Context) ([]measurement.Metric, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, s.seams.ProbeTimeout)
+	defer cancel()
+	return s.adapter.Metrics(probeCtx)
+}
+
 // collectGPU samples the GPU once. Sampling runs periodically while the cases
 // run, which is what makes a peak and a mean meaningful: one reading taken
 // after a case would report an idle utilization and miss the peak.
@@ -209,7 +264,7 @@ func (s *runState) collectGPU(ctx context.Context) {
 	if s.seams.GPU == nil {
 		return
 	}
-	sample, raw, err := s.seams.GPU.Sample(ctx)
+	sample, raw, err := s.sampleGPU(ctx)
 	at := s.seams.Now().Sub(s.start)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -236,10 +291,8 @@ func (s *runState) collectGPU(ctx context.Context) {
 }
 
 // startSampling runs the GPU and runtime collectors periodically until stop is
-// called. The identity probe (GPU model and driver) happens once before the
-// loop so the environment section does not depend on the collector.
+// called.
 func (s *runState) startSampling(ctx context.Context) (stop func()) {
-	s.collectGPU(ctx)
 	if !s.wants(job.CollectorGPU) && !s.wants(job.CollectorRuntime) {
 		return func() {}
 	}
@@ -544,26 +597,7 @@ func (s *runState) environment() measurement.Environment {
 }
 
 func (s *runState) environmentLocked() measurement.Environment {
-	counts := map[string]int{}
-	var order []string
-	driver := ""
-	for _, g := range s.gpu {
-		if driver == "" {
-			driver = g.Driver
-		}
-		for _, dev := range g.GPUs {
-			if _, seen := counts[dev.Model]; !seen {
-				order = append(order, dev.Model)
-			}
-			counts[dev.Model]++
-		}
-	}
-	env := measurement.Environment{Driver: driver}
-	sort.Strings(order)
-	for _, model := range order {
-		env.GPUs = append(env.GPUs, measurement.GPU{Model: model, Count: counts[model]})
-	}
-	return env
+	return s.env
 }
 
 // seriesJSONL renders the raw samples, one JSON object per line, in the order

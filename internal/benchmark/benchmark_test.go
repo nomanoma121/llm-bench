@@ -608,3 +608,68 @@ func TestReadinessProbeIsBounded(t *testing.T) {
 		t.Fatalf("probes = %d: the loop stopped after the first probe", probes)
 	}
 }
+
+func TestEnvironmentIsNotInflatedBySamples(t *testing.T) {
+	// One GPU sampled many times is still one GPU, and the environment comes
+	// from the identity probe rather than from workload samples.
+	h := newHarness(t, llamaOK(2), nil, nil, nil)
+	outcome := h.run(t)
+	env := outcome.Result.Environment
+	if len(env.GPUs) != 1 || env.GPUs[0].Count != 1 {
+		t.Fatalf("environment = %+v", env)
+	}
+	if env.Driver != "580.1" {
+		t.Fatalf("driver = %q", env.Driver)
+	}
+}
+
+func TestUnpinnedModelDigestInvalidatesTheRun(t *testing.T) {
+	h := newHarness(t, llamaOK(2), func(s *job.Spec) {
+		s.Metrics.Collectors = []job.Collector{job.CollectorHarness}
+	}, nil, nil)
+	outcome, err := Run(context.Background(), Config{
+		Spec: h.spec, JobID: "j", RepoRoot: h.repoRoot, OutputDir: h.dir, ModelPath: "/models/x",
+		RequestTimeout: time.Second, SampleInterval: time.Millisecond,
+	}, h.adapter(t), Seams{Starter: h.starter, GPU: h.gpu, Now: time.Now, ProbeTimeout: 250 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Result.MeasurementValid {
+		t.Fatal("a run without a pinned model digest was reported valid")
+	}
+	if !strings.Contains(strings.Join(outcome.Result.InvalidReasons, " "), "model digest") {
+		t.Fatalf("reasons = %v", outcome.Result.InvalidReasons)
+	}
+}
+
+func TestPromptBytesAreFrozenBeforeMeasuring(t *testing.T) {
+	// The file changes between resolving the inputs and measuring: the run
+	// must send and digest the same bytes.
+	var h harness
+	h = newHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			fmt.Fprint(w, `{"status":"ok"}`)
+		case "/completion":
+			if err := os.WriteFile(filepath.Join(h.repoRoot, "prompts", "p.txt"), []byte("changed"), 0o644); err != nil {
+				t.Errorf("rewrite prompt: %v", err)
+			}
+			fmt.Fprint(w, `data: {"content":"x","stop":true,"timings":{"prompt_n":1,"predicted_n":1,"predicted_ms":1}}`+"\n\n")
+		default:
+			fmt.Fprint(w, "")
+		}
+	}, func(s *job.Spec) {
+		s.Metrics.Collectors = []job.Collector{job.CollectorHarness}
+		s.Workload.Cases = []job.Case{{Name: "file", Prompt: "prompts/p.txt", MaxTokens: 4, Repeats: 1}}
+	}, nil, nil)
+	if err := os.MkdirAll(filepath.Join(h.repoRoot, "prompts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.repoRoot, "prompts", "p.txt"), []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outcome := h.run(t)
+	if got := outcome.Result.Inputs.Prompts["file"]; got != measurement.Digest([]byte("original")) {
+		t.Fatalf("prompt digest = %q, want the frozen original bytes", got)
+	}
+}

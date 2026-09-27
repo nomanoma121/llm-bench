@@ -34,7 +34,7 @@ func exitCode(err error) int {
 		return 2
 	case errors.Is(err, benchmark.ErrTimeout):
 		return 11
-	case errors.Is(err, benchmark.ErrNoResult):
+	case errors.Is(err, benchmark.ErrNoResult), errors.Is(err, benchmark.ErrAborted):
 		return 10
 	default:
 		return 1

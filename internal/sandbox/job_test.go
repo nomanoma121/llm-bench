@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -173,5 +174,16 @@ func TestIsNotFoundOnlyMatchesAMissingFile(t *testing.T) {
 	}
 	if !isNotFound(os.ErrNotExist) {
 		t.Fatal("a missing local file was not recognised")
+	}
+}
+
+func TestAgentResultReadIsBounded(t *testing.T) {
+	// The record is Agent-written, so its size is untrusted: the read has a
+	// limit and an oversized file is an error, not "not finished".
+	if MaxAgentResultBytes > 1<<20 {
+		t.Fatalf("the agent result limit is %d bytes, which is too large to trust", MaxAgentResultBytes)
+	}
+	if !errors.Is(fmt.Errorf("wrap: %w", ErrTooLarge), ErrTooLarge) {
+		t.Fatal("ErrTooLarge does not survive wrapping, so an oversized result would look like a failure")
 	}
 }

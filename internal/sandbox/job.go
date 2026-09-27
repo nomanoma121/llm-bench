@@ -149,6 +149,11 @@ func (c *Client) FindJobClaim(ctx context.Context, jobID string) (string, error)
 	}
 }
 
+// MaxAgentResultBytes bounds the completion record. The file lives inside the
+// Agent's sandbox, so its size is untrusted input: reading it without a limit
+// would let a huge file exhaust the controller's memory.
+const MaxAgentResultBytes = 64 << 10
+
 // AgentResultPath is where the Agent records that it finished. The result is a
 // file inside its own sandbox rather than an annotation on the claim: the
 // Agent's ServiceAccount is read-only for claims, so it cannot rewrite the
@@ -195,12 +200,18 @@ func (c *Client) ReadAgentResult(ctx context.Context, jobID string) (AgentResult
 	if err != nil {
 		return AgentResult{}, false, err
 	}
-	payload, err := c.Pull(ctx, name, AgentResultPath)
+	payload, err := c.PullLimited(ctx, name, AgentResultPath, MaxAgentResultBytes)
 	if err != nil {
-		if isNotFound(err) {
+		switch {
+		case isNotFound(err):
 			return AgentResult{}, false, nil
+		case errors.Is(err, ErrTooLarge):
+			// An oversized record is not "not finished": it is a record that
+			// must not be trusted, and saying so is the honest answer.
+			return AgentResult{}, false, fmt.Errorf("sandbox: the agent result exceeds %d bytes", MaxAgentResultBytes)
+		default:
+			return AgentResult{}, false, fmt.Errorf("sandbox: read the agent result: %w", err)
 		}
-		return AgentResult{}, false, fmt.Errorf("sandbox: read the agent result: %w", err)
 	}
 	var result AgentResult
 	if err := json.Unmarshal(bytes.TrimSpace(payload), &result); err != nil {

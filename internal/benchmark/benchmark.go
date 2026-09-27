@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -351,6 +352,48 @@ func samplingOf(w job.Workload) (temperature, topP *float64, seed *int64) {
 	return w.Sampling.Temperature, w.Sampling.TopP, w.Sampling.Seed
 }
 
+// workloadDigest identifies what was measured beyond the model: the cases with
+// their token budgets and effective repeat counts, the effective concurrency,
+// the sampling, and the collector set. Two runs whose workload digests differ
+// answered different questions, even if their prompts happen to be identical.
+//
+// It hashes the *effective* workload rather than the raw spec: repeats 0 and
+// repeats 1 are the same measurement, a collector list in another order is the
+// same set, and how a prompt was delivered (a file path or inline text) is not
+// part of the workload identity — the bytes are, and those are recorded in
+// Inputs.Prompts.
+func workloadDigest(spec job.Spec) (string, error) {
+	type canonicalCase struct {
+		Name      string `json:"name"`
+		MaxTokens int    `json:"max_tokens"`
+		Repeats   int    `json:"repeats"`
+	}
+	canonical := struct {
+		Cases       []canonicalCase `json:"cases"`
+		Concurrency int             `json:"concurrency"`
+		Sampling    *job.Sampling   `json:"sampling,omitempty"`
+		Collectors  []string        `json:"collectors"`
+	}{
+		Concurrency: spec.Workload.EffectiveConcurrency(),
+		Sampling:    spec.Workload.Sampling,
+		Collectors:  make([]string, 0, len(spec.Metrics.Collectors)),
+	}
+	for _, c := range spec.Workload.Cases {
+		canonical.Cases = append(canonical.Cases, canonicalCase{
+			Name: c.Name, MaxTokens: c.MaxTokens, Repeats: c.RepeatCount(),
+		})
+	}
+	for _, c := range spec.Metrics.Collectors {
+		canonical.Collectors = append(canonical.Collectors, string(c))
+	}
+	sort.Strings(canonical.Collectors)
+	b, err := json.Marshal(canonical)
+	if err != nil {
+		return "", fmt.Errorf("benchmark: workload digest: %w", err)
+	}
+	return measurement.Digest(b), nil
+}
+
 // prompt returns the frozen prompt bytes of a case. The bytes were read once,
 // so what the harness digests and what it sends are the same string.
 func (s *runState) prompt(c job.Case) string {
@@ -382,11 +425,16 @@ func (s *runState) readPrompt(c job.Case) (string, error) {
 // sends exactly the frozen bytes, so the recorded digest cannot describe
 // something other than what ran even if the prompt file changes mid-run.
 func (s *runState) resolveInputs() error {
+	workloadDigest, err := workloadDigest(s.cfg.Spec)
+	if err != nil {
+		return err
+	}
 	in := measurement.Inputs{
-		ModelID:     s.cfg.Spec.Model.ID,
-		ModelPath:   s.cfg.ModelPath,
-		ModelDigest: s.cfg.ModelDigest,
-		Prompts:     map[string]string{},
+		ModelID:        s.cfg.Spec.Model.ID,
+		ModelPath:      s.cfg.ModelPath,
+		ModelDigest:    s.cfg.ModelDigest,
+		Prompts:        map[string]string{},
+		WorkloadDigest: workloadDigest,
 	}
 	prompts := map[string]string{}
 	for _, c := range s.cfg.Spec.Workload.Cases {

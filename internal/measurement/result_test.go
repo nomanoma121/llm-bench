@@ -19,9 +19,10 @@ func validResult(t *testing.T) Result {
 		SeriesDigest:      SeriesDigest([]byte("{\"name\":\"decode\"}\n")),
 		TrustLevel:        TrustUnverifiedDriver,
 		Inputs: Inputs{
-			ModelID:   "qwen38-27b",
-			ModelPath: "/models/qwen38-27b",
-			Prompts:   map[string]string{"short": strings.Repeat("e", 64)},
+			ModelID:        "qwen38-27b",
+			ModelPath:      "/models/qwen38-27b",
+			Prompts:        map[string]string{"short": strings.Repeat("e", 64)},
+			WorkloadDigest: strings.Repeat("f", 64),
 		},
 		Metrics: []Metric{
 			{Name: "decode_tok_per_s", Value: 45.1, Unit: "tok/s", Source: SourceHarness, Samples: 3},
@@ -191,6 +192,7 @@ func TestResultValidateRejects(t *testing.T) {
 		{"trust level", func(r *Result) { r.TrustLevel = "trusted" }, "trust_level"},
 		{"missing inputs", func(r *Result) { r.Inputs.ModelPath = "" }, "inputs.model_path"},
 		{"bad prompt digest", func(r *Result) { r.Inputs.Prompts = map[string]string{"c": "nope"} }, "inputs.prompts"},
+		{"bad workload digest", func(r *Result) { r.Inputs.WorkloadDigest = "w1" }, "inputs.workload_digest"},
 		{"validity disagreement", func(r *Result) { r.InvalidReasons = []string{"x"} }, "disagree"},
 		{"no metrics but valid", func(r *Result) { r.Metrics = nil }, "at least one metric"},
 		{"collector gap while valid", func(r *Result) {
@@ -284,7 +286,7 @@ func TestInputsArePartOfTheIdentity(t *testing.T) {
 		t.Fatal("result_digest ignores the resolved model path")
 	}
 	c := validResult(t)
-	c.Inputs.Prompts = map[string]string{"short": strings.Repeat("f", 64)}
+	c.Inputs.Prompts = map[string]string{"short": strings.Repeat("a", 64)}
 	final, err = c.Finalize()
 	if err != nil {
 		t.Fatal(err)

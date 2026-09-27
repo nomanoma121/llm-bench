@@ -53,6 +53,10 @@ type Inputs struct {
 	// Prompts maps a case name to the digest of the prompt bytes that case
 	// actually measured.
 	Prompts map[string]string `json:"prompts,omitempty"`
+	// WorkloadDigest identifies the workload itself: the cases, their sampling
+	// and the collector set. The job spec digest cannot serve this purpose
+	// because a runtime comparison is expected to change runtime arguments.
+	WorkloadDigest string `json:"workload_digest"`
 }
 
 // Result is the canonical measurement document for one MVP job.
@@ -137,6 +141,9 @@ func (r Result) Validate() error {
 		if strings.TrimSpace(name) == "" || !isHexDigest(d) {
 			return fmt.Errorf("%w: inputs.prompts[%q] is not a case name with a sha256 digest", ValidationError, name)
 		}
+	}
+	if !isHexDigest(r.Inputs.WorkloadDigest) {
+		return fmt.Errorf("%w: inputs.workload_digest %q is not a sha256 digest", ValidationError, r.Inputs.WorkloadDigest)
 	}
 	if err := validateMeasurements(r.Metrics, r.Series, r.Collectors, r.MeasurementValid); err != nil {
 		return err

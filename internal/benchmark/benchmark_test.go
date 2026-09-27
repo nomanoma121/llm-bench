@@ -583,6 +583,22 @@ func TestRunReportsTheResolvedInputs(t *testing.T) {
 	if in.Prompts["inline"] != measurement.Digest([]byte("hello")) {
 		t.Fatalf("prompt digest = %q", in.Prompts["inline"])
 	}
+	if in.WorkloadDigest == "" {
+		t.Fatal("the workload digest was not recorded")
+	}
+	// A different workload (here a different token budget) must produce a
+	// different digest: the comparison relies on it.
+	other, err := workloadDigest(func() job.Spec {
+		o := h.spec
+		o.Workload.Cases = []job.Case{{Name: "inline", PromptText: "hello", MaxTokens: 8, Repeats: 1}}
+		return o
+	}())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other == in.WorkloadDigest {
+		t.Fatal("the workload digest ignores the token budget")
+	}
 }
 
 func TestReadinessProbeIsBounded(t *testing.T) {
@@ -716,5 +732,67 @@ func TestRequiredCollectorNeedsAWorkloadSample(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(outcome.Result.InvalidReasons, " "), "no sample while the workload ran") {
 		t.Fatalf("reasons = %v", outcome.Result.InvalidReasons)
+	}
+}
+
+func TestWorkloadDigestIsCanonical(t *testing.T) {
+	base := func() job.Spec {
+		return job.Spec{
+			Kind:  job.KindBenchmark,
+			Model: job.Model{ID: "m"},
+			Runtime: job.Runtime{
+				Engine: "llamacpp", Image: "img", Ready: job.Ready{Port: 1},
+			},
+			Workload: job.Workload{
+				Cases: []job.Case{{Name: "c", Prompt: "a.txt", MaxTokens: 8, Repeats: 1}},
+			},
+			Metrics: job.Metrics{Collectors: []job.Collector{job.CollectorHarness, job.CollectorRuntime}},
+			Output:  job.Output{Dir: "experiments/m"},
+		}
+	}
+	digest := func(s job.Spec) string {
+		t.Helper()
+		d, err := workloadDigest(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	want := digest(base())
+
+	// Defaults spelled out are the same workload.
+	s := base()
+	s.Workload.Cases[0].Repeats = 0
+	s.Workload.Concurrency = 1
+	if got := digest(s); got != want {
+		t.Error("repeats 0 / concurrency 1 differ from repeats 1 / concurrency 0")
+	}
+	// The collector list is a set.
+	s = base()
+	s.Metrics.Collectors = []job.Collector{job.CollectorRuntime, job.CollectorHarness}
+	if got := digest(s); got != want {
+		t.Error("collector order changed the workload digest")
+	}
+	// How the prompt was delivered is not part of the workload identity; the
+	// bytes are recorded in Inputs.Prompts.
+	s = base()
+	s.Workload.Cases[0].Prompt = ""
+	s.Workload.Cases[0].PromptText = "same bytes"
+	if got := digest(s); got != want {
+		t.Error("the prompt source form changed the workload digest")
+	}
+	// A real change does move it.
+	for _, mutate := range []func(*job.Spec){
+		func(s *job.Spec) { s.Workload.Cases[0].MaxTokens = 9 },
+		func(s *job.Spec) { s.Workload.Cases[0].Repeats = 2 },
+		func(s *job.Spec) { s.Workload.Cases[0].Name = "other" },
+		func(s *job.Spec) { s.Metrics.Collectors = []job.Collector{job.CollectorHarness} },
+		func(s *job.Spec) { v := 0.0; s.Workload.Sampling = &job.Sampling{Temperature: &v} },
+	} {
+		s := base()
+		mutate(&s)
+		if digest(s) == want {
+			t.Errorf("a workload change did not move the digest: %+v", s.Workload)
+		}
 	}
 }

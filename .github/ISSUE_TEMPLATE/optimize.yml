@@ -1,0 +1,73 @@
+name: Optimization run
+description: Hand the GPU sandbox to an Agent that iterates on a runtime and opens a PR
+title: "[optimize] "
+labels: ["llmbench:optimize"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The controller only starts a run for Issues that carry the
+        `llmbench:optimize` label **and** contain a valid job spec below.
+
+        An optimization job borrows the GPU sandbox and keeps it until the
+        Agent finishes, so it holds the global GPU lease and the inference
+        pause for much longer than a benchmark job. Set `budget.max_rounds`
+        accordingly.
+
+        Prepare and check the spec locally first:
+
+        ```sh
+        llmbench job init --kind optimize > job.yaml
+        $EDITOR job.yaml
+        llmbench job validate job.yaml
+        ```
+
+        The Agent decides whether a candidate is worth keeping. The controller
+        only measures and reports facts, and the PR is reviewed by a human.
+  - type: textarea
+    id: jobspec
+    attributes:
+      label: Job spec
+      description: The ```yaml block the controller reads. `source` is required for optimize.
+      render: yaml
+      value: |
+        kind: optimize
+        model:
+          id: REPLACE-model-id
+        runtime:
+          engine: llamacpp
+          image: REPLACE-image@sha256:REPLACE-digest
+          args: []
+          ready:
+            port: 8080
+            path: /health
+            timeout_seconds: 300
+        workload:
+          cases:
+            - name: short
+              prompt: prompts/short.txt
+              max_tokens: 256
+              repeats: 3
+          concurrency: 1
+          sampling:
+            temperature: 0
+            seed: 1
+        metrics:
+          collectors: [harness, runtime, nvidia]
+        source:
+          repo: REPLACE-owner/REPLACE-runtime-repo
+          ref: main
+        budget:
+          max_rounds: 20
+        output:
+          dir: experiments/REPLACE-model-id
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Context for the human reviewer and for the Agent. The controller ignores text outside the yaml block.
+      placeholder: What to try, what to leave alone, what "better" means here, ...
+    validations:
+      required: false

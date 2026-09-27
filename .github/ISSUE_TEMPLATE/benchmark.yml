@@ -1,0 +1,65 @@
+name: Benchmark run
+description: Measure a model and runtime once, then open a PR with the result
+title: "[benchmark] "
+labels: ["llmbench:benchmark"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The controller only starts a run for Issues that carry the
+        `llmbench:benchmark` label **and** contain a valid job spec below.
+        Editing the Issue afterwards does not start another run.
+
+        Prepare and check the spec locally first:
+
+        ```sh
+        llmbench job init --kind benchmark > job.yaml
+        $EDITOR job.yaml
+        llmbench job validate job.yaml
+        ```
+
+        The spec may only choose from operator-owned allowlists (runtime
+        images, models, output directories). GPU leases, pause targets and
+        manifest paths are operator configuration and are rejected here.
+  - type: textarea
+    id: jobspec
+    attributes:
+      label: Job spec
+      description: The ```yaml block the controller reads. Keep the field names unchanged.
+      render: yaml
+      value: |
+        kind: benchmark
+        model:
+          id: REPLACE-model-id
+        runtime:
+          engine: llamacpp
+          image: REPLACE-image@sha256:REPLACE-digest
+          args: []
+          ready:
+            port: 8080
+            path: /health
+            timeout_seconds: 300
+        workload:
+          cases:
+            - name: short
+              prompt: prompts/short.txt
+              max_tokens: 256
+              repeats: 3
+          concurrency: 1
+          sampling:
+            temperature: 0
+            seed: 1
+        metrics:
+          collectors: [harness, runtime, nvidia]
+        output:
+          dir: experiments/REPLACE-model-id
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Context for the human reviewer. The controller ignores text outside the yaml block.
+      placeholder: Why this model, what changed since the last measurement, ...
+    validations:
+      required: false

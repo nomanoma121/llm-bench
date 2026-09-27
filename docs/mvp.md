@@ -77,6 +77,7 @@ llm-bench Controller (Deployment, outbound only, メモリ + Issue ラベル)
   - 種別: `llmbench:benchmark` / `llmbench:optimize`
   - 状態: `llmbench:claimed`(処理中)/ `llmbench:done` / `llmbench:failed`
 - 人手の介入は Issue の close とラベル付けのみ。**run は明示的な要求(`llmbench:*` ラベルの付いた Issue)でのみ開始する**。PR や Issue の編集だけでは開始しない。
+- 種別ラベル(`llmbench:benchmark` / `llmbench:optimize`)と状態ラベル(`claimed` / `done` / `failed`)は Controller が起動時に作成する。状態ラベルはジョブ状態の正本なので、人間が手で外さない。
 - 成果物は PR。Issue へは**リンクコメント 1 件**だけ返す(計測値の貼り付けはしない)。
 
 ### 3.2 JobSpec

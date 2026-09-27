@@ -31,7 +31,7 @@ benchmark なら Sandbox 内の llmbench を実行し、optimization なら外�
 | Controller の実行形態 | クラスタ常駐 **Deployment(1 replica)** |
 | GPU 同時実行数 | **1**。`coordination.k8s.io/v1` の Lease 1 本で global ownership を持つ |
 | 既存 GPU workload の扱い | GitOps manifest の pause / restore(マージ待ち)。既存実装を流用 |
-| ジョブ状態の持ち方 | **メモリ + Issue ラベル**。ConfigMap store と leader election は**使わない**(必要になったら戻す) |
+| ジョブ状態の持ち方 | **メモリ + GPU Lease の annotation(永続 phase)+ Issue ラベル(人間向けのミラー)**。ConfigMap store と leader election は**使わない** |
 | HTTP API | MVP の経路に置かない。既存 `serve` は freeze(削除は後続 PR) |
 | Agent / DSH | **既存デプロイを使う**。llm-bench は Sandbox を貸し出し、bind / rebind とライフサイクルだけを持つ。Helm の option で参照 |
 | Agent → Sandbox | `llmbench sandbox exec|cp|shell`(Agent Sandbox SDK の port-forward transport)。ssh は実装しない |
@@ -73,11 +73,11 @@ llm-bench Controller (Deployment, outbound only, メモリ + Issue ラベル)
 ### 3.1 Issue が正本
 
 - Issue Form(`.github/ISSUE_TEMPLATE/benchmark.yml` / `optimize.yml`)で本文に **fenced YAML ブロック**を 1 つ生成する。Controller は本文中の最初の ` ```yaml ` ブロックだけを JobSpec として読む。
-- ラベルで種別と状態を持つ。**ラベルがジョブの永続状態**である。
+- ラベルは種別と、人間が読むための粗い状態を持つ。** durable な phase は GPU Lease の annotation が正本**(§6.1)。
   - 種別: `llmbench:benchmark` / `llmbench:optimize`
-  - 状態: `llmbench:claimed`(処理中)/ `llmbench:done` / `llmbench:failed`
+  - 状態(ミラー): `llmbench:claimed`(処理中)/ `llmbench:done` / `llmbench:failed`
 - 人手の介入は Issue の close とラベル付けのみ。**run は明示的な要求(`llmbench:*` ラベルの付いた Issue)でのみ開始する**。PR や Issue の編集だけでは開始しない。
-- 種別ラベル(`llmbench:benchmark` / `llmbench:optimize`)と状態ラベル(`claimed` / `done` / `failed`)は Controller が起動時に作成する。状態ラベルはジョブ状態の正本なので、人間が手で外さない。
+- 種別ラベルと状態ラベルは Controller が起動時に作成する。状態ラベルは Lease の phase の写しなので、人間が手で外しても次の resync で戻る。
 - 成果物は PR。Issue へは**リンクコメント 1 件**だけ返す(計測値の貼り付けはしない)。
 
 ### 3.2 JobSpec
@@ -89,7 +89,7 @@ model:
 runtime:
   engine: llamacpp                  # adapter 名(operator の allowlist と一致すること)
   image: ghcr.io/example/llama.cpp:cuda13-b4xxx   # operator allowlist と一致すること
-  args: ["-ngl", "99", "-c", "4096"]
+  args: ["-ngl", "99", "-c", "4096"]   # user-tunable な flag だけ。adapter 所有の flag は拒否される(§3.4)
   ready: {port: 8080, path: /health, timeout_seconds: 300}
 workload:
   cases:
@@ -117,6 +117,14 @@ output:
 
 - job id: `YYYY-MM-DD-issue<NNN>`(同日再実行は `-r2`, `-r3`)
 - 出力先: `<output.dir>/<job id>/`
+
+### 3.4 `runtime.args` の権限分離
+
+`image` と `model` を operator allowlist で縛っても、`runtime.args` に任意の flag を書ければ **adapter が管理する設定を上書きできる**(別の model path を指す、listen アドレスを変える、metrics / log の出力を消す、config ファイルを差し替える)。したがって:
+
+- **adapter が所有する flag**(model path、listen host/port、metrics endpoint、log 出力、config ファイル、runtime の識別情報)は **JobSpec から設定できない**。runtime adapter がその一覧を宣言し、`internal/job` の `Constraints.ReservedArgs` として CLI と Controller の両方で**拒否**する(unknown field と同じ fail-closed)。
+- JobSpec の `args` に書けるのは **tuning 系**(`-ngl`、`-c`、batch、thread 数など)だけ。
+- adapter が組み立てる argv は「adapter 所有の必須引数 + spec の tuning 引数」の順で、必須引数を spec が上書きできないことを保証する。
 
 ---
 
@@ -153,16 +161,22 @@ runtime adapter が持つのは次の 3 点だけ:
 
 ### 4.3 出力(`<output.dir>/<job id>/`)
 
-| ファイル | 内容 | digest 対象 |
+| ファイル | 内容 | digest |
 |---|---|---|
-| `jobspec.yaml` | 受理した JobSpec の凍結コピー(operator 適用後の解決済み値も含む) | ○ |
-| `result.json` | canonical な結果。metrics / series の要約 / environment / runtime / collectors / validity + `result_digest` | ○(`result_digest` 自身は除く) |
-| `series.jsonl` | per-request / per-step の生サンプル(1 行 1 サンプル) | ○ |
+| `jobspec.yaml` | 受理した JobSpec の凍結コピー(operator 適用後の解決済み値も含む) | `jobspec_digest` |
+| `result.json` | canonical な結果。metrics / series の要約 / environment / runtime / collectors / validity + 下記の digest | `result_digest` |
+| `series.jsonl` | per-request / per-step の生サンプル(1 行 1 サンプル、計測順に追記) | `series_digest` |
 | `README.md` | 人間向け要約(自動生成) | × |
 | `raw/` | runtime ログ、nvidia-smi 生出力など | × |
 
 - `result.json` は v1.7 設計の measurement スキーマ(`metric` / `series` / `collectors` / `environment` / `runtime`)を流用する。`internal/measurement` が既に実装・テスト済み。
-- **identity は `result_digest`**(canonical payload の SHA-256)。baseline と candidate の比較、PR の記述、後続の追跡はこの digest で行う。
+- **digest は `result.json` の中に閉じる**(外部ファイルの digest を各自で計算し直さなくても identity が決まる):
+  - `jobspec_digest` = canonical な JobSpec(`internal/job.Digest()`)の SHA-256。operator が解決した値も含めた実効 spec の digest。
+  - `series_digest` = `series.jsonl` の全バイトの SHA-256。**計測順を固定**し、後から並べ替えられないようにする。
+  - `result_digest` = `jobspec_digest` と `series_digest` を**含む** canonical な `result.json` payload(`result_digest` 自身を除く)の SHA-256。
+  - したがって **`jobspec.yaml` や `series.jsonl` を書き換えると `series_digest` → `result_digest` が変わり、identity が変わる**(「digest 対象」の矛盾はここで閉じる)。
+- **identity は `result_digest`**。baseline と candidate の比較、PR の記述、後続の追跡はこの digest で行う。
+- **trust level を記録する**: driver の隔離(候補が書けない場所からの実行と `Driver.ContentDigest` の実行時検証)は F で行うため、それまでの結果には `provenance.trust_level`(例 `unverified-driver`)を書く。後から「この結果はどの程度信頼できるか」が変に読み替えられないようにする。
 - `raw/` と `README.md` は digest の対象外(後から再生成・追記できる)。
 
 ---
@@ -190,36 +204,56 @@ runtime adapter が持つのは次の 3 点だけ:
 
 ### 6.1 ループ
 
-Deployment 1 replica。in-flight job はメモリに 1 つだけ持つ。状態は Issue ラベルから再構成できる。
+Deployment 1 replica。in-flight job はメモリに 1 つだけ持つ。**durable な phase は GPU Lease の annotation** に書く(§6.2)。
 
 ```
 poll(open な `llmbench:benchmark|optimize` Issue で、状態ラベルが無いもの)
-  → validate(JobSpec)                      失敗: コメント + `llmbench:failed`
-  → claim(`llmbench:claimed` を付ける)      失敗＝他が処理中なので skip
-  → Lease acquire(global GPU ownership)
+  → validate(JobSpec)                        失敗: コメント + `llmbench:failed`
+  → **Lease acquire**(global GPU ownership)   失敗＝他が処理中なので次の poll で
+      holderIdentity = job id、annotation = JobSpec digest + Issue 番号
+  → **claim は Lease 取得後に行う**: Issue に `llmbench:claimed` を付け、
+      付けられたか read-back で確認(Lease がジョブ取得の排他なので、
+      Lease を持っている Pod 以外は claim しない)
   → GitOps pause(PR → マージ待ち → Synced 確認)
-  → SandboxClaim ensure Ready
-  → bind(optimize のときだけ Agent に sandbox 情報を渡す)
+  → SandboxClaim ensure Ready(label: `llmbench.io/job-id=<job id>`)
   → benchmark: Sandbox 内で `llmbench benchmark --push` を exec し、branch/SHA を受領
-    optimize:  Agent の完了(commit/push)を待つ
+    optimize:  Agent の完了を SandboxClaim の annotation で観測(§8)
   → PR 作成(push 済みブランチから)
   → SandboxClaim delete
   → GitOps restore(PR → マージ待ち)
-  → Lease release
+  → Lease release(phase = released を書いてから削除。ここで job 完了)
   → `llmbench:done` + コメント(PR リンク)
 ```
 
-### 6.2 規律
+### 6.2 durable な phase(Lease annotation)
 
-- **すべての段は再実行可能**。外部効果の前に「何をしようとしているか」を残す(write-ahead)。
+`claimed` / `done` / `failed` だけでは、exec の前か後か・push 済みか・pause PR が merge 済みか・PR を作ったか、を区別できない。区別できないまま recovery すると「invoking からは再実行しない」という規則を守れない。そこで **GPU Lease の annotation を 1 ジョブ分の write-ahead 記録**として使う(新しい Kubernetes リソースも ConfigMap store も作らない。Lease は元々 GPU 所有権のために取得する):
+
+| annotation | 意味 |
+|---|---|
+| `llmbench.io/phase` | `acquired` → `paused` → `sandbox_ready` → `executing` → `executed` → `pr_open` → `claim_deleted` → `restored` → `released` |
+| `llmbench.io/job-id` / `llmbench.io/issue` | 対象 |
+| `llmbench.io/jobspec-digest` | 受理した JobSpec(再実行要求の同一性判定) |
+| `llmbench.io/branch` / `llmbench.io/commit` | push 済みの成果(`executed` 以降) |
+| `llmbench.io/pause-pr` | pause / restore の PR 番号(マージ確認待ちの対象) |
+| `llmbench.io/attempt` | Sandbox replacement の世代(§6.4) |
+
+- 各 phase は**外部効果の前に**書く(意図を先に記録し、効果は冪等にする)。
+- `executing` で落ちた場合、その外の効果(exec)を再実行したかどうか分からないので **再実行しない**。restore / release だけを行い、失敗として記録する。
+- Issue の状態ラベル(`claimed` / `done` / `failed`)は **人間向けのミラー**であり、phase の写しを resync で貼り直すだけ。
+
+### 6.3 規律
+
+- **すべての段は再実行可能**。外部効果の前に phase を書き、効果自体は冪等にする。
 - **restore は必ず通す**。benchmark が失敗しても、timeout でも、Controller が再起動しても restore と release に到達する。restore が終わるまで job を完了扱いにしない。
-- **同じ job を再実行しない**。中断(invoking 中の状態)から復帰した場合は再実行せず failure として記録する。
-- Sandbox が死んだ場合は **attempt を破棄して replacement で最初から再実行**する(benchmark)。optimize では Agent session を維持したまま rebind する。
+- **同じ job を再実行しない**。phase が `executing` の状態で復帰した場合は再実行せず failure として記録する。
+- Sandbox が死んだ場合は **attempt を破棄して replacement で最初から再実行**する(benchmark。`attempt` annotation を進める)。optimize では Agent session を維持したまま rebind する(§8)。
 
-### 6.3 recovery
+### 6.4 recovery
 
-- startup と定期(既定 60s)に、未完了 job について **Lease / SandboxClaim / Sandbox status / GitOps pause state / Agent Pod / Issue ラベル**を照合し、到達可能な段から再開する。
-- メモリが消えても復帰できること: 「いまどの段か」は Kubernetes の状態と Issue ラベルから再構成する。ConfigMap store も leader election も作らない。
+- startup と定期(既定 60s)に、未完了 job について **Lease(phase)/ SandboxClaim / Sandbox status / GitOps pause state / Agent Pod / Issue ラベル**を照合し、phase の次の段から再開する。
+- メモリが消えても復帰できること: 「いまどの段か」は **Lease の phase** から決まる。ConfigMap store も leader election も作らない。
+- Lease は失効・再取得できてしまうので、**Lease を持っていても annotation の `job-id` が自分の解いている job と一致しない場合は何もしない**(rollout 中に旧 Pod が新しい job に手を出さないための確認)。
 - controller-runtime ベースの reconciler は作らない。小さなループで足りる。
 
 ---
@@ -229,6 +263,7 @@ poll(open な `llmbench:benchmark|optimize` Issue で、状態ラベルが無い
 - **GitHub App** を使う。private key は Controller の Secret のみ。JWT(RS256)→ installation token(キャッシュし、期限前に更新)を発行する。対象 repo は 1 つ固定。
 - Controller の用途: Issue の poll / ラベル / コメント / PR 作成。
 - Sandbox に渡すのは **短命 installation token のみ**(単一 repo の `contents: write`)。private key は絶対に渡さない。Agent Pod にも渡さない。
+- **installation token は branch-scoped ではない**。optimize の Sandbox で Agent が自由にコマンドを実行できる以上、token を読んで任意ブランチに push できる。したがって **default branch はリポジトリ側で保護する**: PR 必須、force push 禁止、admin bypass 無効、GitHub App が直接 push できない設定(ruleset で bypass リストに入れない)。これは MVP の必須要件であり、Sandbox に token を渡す前提条件である。
 - outbound のみ。webhook、public endpoint は作らない。
 - Git 操作(`commit` / `push`)は **Sandbox 内の `llmbench`** が行う。PR 作成は Controller が行う(GitHub API の credential を Controller に閉じ込める)。
 
@@ -238,6 +273,16 @@ poll(open な `llmbench:benchmark|optimize` Issue で、状態ラベルが無い
 
 - llm-bench は **Agent Pod を作らない**。既存の DSH deployment を Helm の option で参照する(session 用 PVC は DSH 側の共通 1 本)。
 - Controller の責務は「Sandbox を用意し、Agent に bind する」ことと「Sandbox が置き換わったら rebind する」ことだけ。
+
+### 8.1 bind / rebind の契約(HTTP API を作らない代わり)
+
+- **Sandbox の解決**: 各 SandboxClaim は `llmbench.io/job-id=<job id>` ラベルを持つ。Agent Pod の `llmbench sandbox exec|cp|shell <job id>` は、Kubernetes API から**その label の current claim を毎回 discovery** して port-forward transport を張る。
+  - Agent Pod の ServiceAccount に必要な権限は、同じネームスペースの `sandboxclaims` の `get` / `list` と、その claim に対する pod の port-forward だけ。
+  - **rebind は discovery の結果が変わること**そのもの。Sandbox が置き換わったら、次に `llmbench sandbox ...` を呼んだ時点で新しい claim が見つかる。Controller から Agent Pod へ接続情報を push する必要はない。
+  - 同じ `job-id` の claim が 2 つ見つかった場合は**エラー**(replacement の途中で古い claim が残っている状態)。
+- **Agent の完了検知**: Agent は最後に `llmbench job done --status complete|failed` を実行し、**SandboxClaim の annotation**(`llmbench.io/agent-result`, `llmbench.io/branch`, `llmbench.io/commit`)に書く。Controller はその annotation を観測して PR 作成に進む。
+  - push 前に落ちた場合は annotation が無いまま claim が消える/時間切れになる → Controller は attempt を破棄して失敗として扱う(optimize の途中結果を PR にしない)。
+  - Agent Pod の権限は annotation の patch までで、Lease や GitOps には触れない。
 - Agent は `llmbench sandbox exec|cp|shell` で Sandbox 内の workspace を編集・実行する(port-forward transport)。ssh は実装しない。
 - conversation / agent loop / tool history / session resume は **DSH が持つ**。llm-bench は conversation store を作らない。
 - 途中の失敗 attempt は DSH の session history に残す。llm-bench は optimization log を保存しない。

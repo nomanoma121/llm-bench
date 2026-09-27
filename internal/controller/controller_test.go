@@ -143,12 +143,17 @@ func (l *fakeLease) Release(_ context.Context, holder string) error {
 	}
 	l.live = false
 	l.released = true
+	// The real lease keeps the record but clears the holder; a released record
+	// must never be picked up by a later recovery pass.
+	l.record.Holder = ""
+	l.record.Phase = lease.PhaseReleased
 	return nil
 }
 
 func (l *fakeLease) Get(context.Context) (lease.Record, error) {
 	if !l.live {
-		return lease.Record{}, nil
+		// A released record keeps its annotations, as the real lease does.
+		return l.record, nil
 	}
 	return l.record, nil
 }
@@ -325,7 +330,7 @@ func TestRunOnceHappyPath(t *testing.T) {
 		lease.PhaseDeletingClaim, lease.PhaseClaimDeleted, lease.PhaseRestoring, lease.PhaseRestored,
 		lease.PhaseReleasing,
 	}
-	if strings.Join(phases(leaseStore.annotates), ",") != strings.Join(phases(want), ",") {
+	if strings.Join(dedupe(phases(leaseStore.annotates)), ",") != strings.Join(dedupe(phases(want)), ",") {
 		t.Fatalf("phases = %v, want %v", leaseStore.annotates, want)
 	}
 	if len(gateway.prs) != 1 {
@@ -363,6 +368,19 @@ func TestRunOnceHappyPath(t *testing.T) {
 			t.Errorf("argv %q does not contain %q", argv, want)
 		}
 	}
+}
+
+// dedupe drops consecutive repeats: writing the durable outcome keeps the
+// current phase, which is a re-annotation rather than a new step.
+func dedupe(in []string) []string {
+	var out []string
+	for i, v := range in {
+		if i > 0 && in[i-1] == v {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 func phases(in []lease.Phase) []string {
@@ -624,6 +642,7 @@ func TestRecoverCleansUpAnInterruptedJobWithoutRerunningIt(t *testing.T) {
 	leaseStore.live = true
 	leaseStore.record = lease.Record{
 		Holder: holder, JobID: "2026-09-27-issue42", Issue: 42, Phase: lease.PhaseExecuting,
+		Outcome: lease.OutcomeFailed,
 	}
 	if err := c.Recover(context.Background()); err != nil {
 		t.Fatal(err)
@@ -641,10 +660,55 @@ func TestRecoverCleansUpAnInterruptedJobWithoutRerunningIt(t *testing.T) {
 	}
 }
 
+func TestARecoveredCleanupKeepsTheOriginalOutcome(t *testing.T) {
+	// A succeeded job that crashed while restoring must end as done, not as
+	// failed: cleanup does not get to decide the outcome.
+	c, gateway, leaseStore, pauser, _ := newController(t, nil)
+	holder := c.holderFor("2026-09-27-issue42")
+	leaseStore.live = true
+	leaseStore.record = lease.Record{
+		Holder: holder, JobID: "2026-09-27-issue42", Issue: 42,
+		Phase: lease.PhaseRestoring, Branch: "llmbench/job", Commit: strings.Repeat("c", 40),
+		Outcome: lease.OutcomeSucceeded, PullRequest: 7,
+	}
+	if err := c.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !hasLabel(gateway.labels[42], "llmbench:done") {
+		t.Fatalf("labels = %v, want done", gateway.labels[42])
+	}
+	if hasLabel(gateway.labels[42], "llmbench:failed") {
+		t.Fatalf("a succeeded job was marked failed: %v", gateway.labels[42])
+	}
+	if pauser.restores != 1 || !leaseStore.released {
+		t.Fatal("cleanup did not complete")
+	}
+}
+
+func TestReleasedLeasesAreNeverRecovered(t *testing.T) {
+	// A released lease keeps its annotations for history. Recovery must not
+	// treat that as unfinished work and resurrect the job.
+	c, gateway, leaseStore, pauser, sandbox := newController(t, nil)
+	leaseStore.live = true
+	leaseStore.record = lease.Record{
+		Holder: "", JobID: "2026-09-27-issue1", Issue: 1, Phase: lease.PhaseReleased,
+		Outcome: lease.OutcomeSucceeded,
+	}
+	if err := c.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(sandbox.deletes) != 0 || pauser.restores != 0 || len(gateway.labels[1]) != 0 {
+		t.Fatal("a released job was resurrected by recovery")
+	}
+}
+
 func TestRecoverLeavesAnotherJobsLeaseAlone(t *testing.T) {
 	c, _, leaseStore, pauser, sandbox := newController(t, nil)
 	leaseStore.live = true
-	leaseStore.record = lease.Record{Holder: "other/x", JobID: "other-job", Phase: lease.PhaseExecuting}
+	leaseStore.record = lease.Record{
+		Holder: "other/x", JobID: "other-job", Phase: lease.PhaseExecuting,
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
 	if err := c.Recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}

@@ -195,29 +195,34 @@ func (c *Controller) Run(ctx context.Context, poll, recovery time.Duration) erro
 	if err := c.Recover(ctx); err != nil {
 		c.logf("initial recovery: %v", err)
 	}
-	recoveryTicker := time.NewTicker(recovery)
-	defer recoveryTicker.Stop()
-	pollTicker := time.NewTicker(poll)
-	defer pollTicker.Stop()
+	nextRecovery := time.Now().Add(recovery)
 	for {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			return nil
-		case <-recoveryTicker.C:
+		}
+		if !time.Now().Before(nextRecovery) {
 			if err := c.Recover(ctx); err != nil {
 				c.logf("recovery: %v", err)
 			}
-		case <-pollTicker.C:
-			handled, err := c.RunOnce(ctx)
-			if err != nil {
-				c.logf("poll: %v", err)
-				continue
-			}
-			if handled && ctx.Err() == nil {
-				// Serve the next request immediately instead of waiting a
-				// whole poll interval.
-				pollTicker.Reset(time.Millisecond)
-			}
+			nextRecovery = time.Now().Add(recovery)
+		}
+		// Serving a request is not a reason to poll in a tight loop afterwards:
+		// the delay is recomputed every round, so a handled job only skips the
+		// wait for the next poll rather than replacing the interval.
+		delay := poll
+		handled, err := c.RunOnce(ctx)
+		if err != nil {
+			c.logf("poll: %v", err)
+		}
+		if handled {
+			delay = 0
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
 		}
 	}
 }
@@ -235,6 +240,11 @@ func (c *Controller) Recover(ctx context.Context) error {
 		return err
 	}
 	if record.JobID == "" {
+		return nil
+	}
+	if record.Holder == "" {
+		// The lease was released: this job is finished, and a released record
+		// must never be resurrected by a later recovery pass.
 		return nil
 	}
 	holder := c.holderFor(record.JobID)
@@ -270,6 +280,10 @@ func (c *Controller) Recover(ctx context.Context) error {
 // and the cleanup are repeated (both idempotent).
 func (c *Controller) reconcile(ctx context.Context, record lease.Record) error {
 	switch record.Phase {
+	case lease.PhaseDeletingClaim, lease.PhaseClaimDeleted, lease.PhaseRestoring, lease.PhaseRestored, lease.PhaseReleasing:
+		// Cleanup was already decided; finish it with the outcome the record
+		// carries instead of deciding again.
+		return c.finish(ctx, record)
 	case lease.PhaseExecuted, lease.PhaseOpeningPR, lease.PhasePROpen:
 		// The measurement is done and identified by branch/commit, so only the
 		// pull request is repeated. That is safe: the gateway returns the
@@ -278,7 +292,7 @@ func (c *Controller) reconcile(ctx context.Context, record lease.Record) error {
 		if record.PullRequest == 0 {
 			if record.Branch == "" {
 				c.logf("job %s has no branch in its record; finishing it as failed", record.JobID)
-				c.markFailed(ctx, record)
+				record.Outcome = lease.OutcomeFailed
 				return c.finish(ctx, record)
 			}
 			pr, err := c.Gateway.OpenPR(ctx, PullRequest{
@@ -304,22 +318,13 @@ func (c *Controller) reconcile(ctx context.Context, record lease.Record) error {
 		// Unknown whether the measurement completed. Never repeat it; the
 		// request is finished as a failure and a human can re-open it.
 		c.logf("job %s was interrupted while measuring; not repeating it", record.JobID)
-		c.markFailed(ctx, record)
+		record.Outcome = lease.OutcomeFailed
 		return c.finish(ctx, record)
 	default:
 		c.logf("discarding job %s stopped in phase %q before measuring", record.JobID, record.Phase)
-		c.markFailed(ctx, record)
+		record.Outcome = lease.OutcomeFailed
 		return c.finish(ctx, record)
 	}
-}
-
-// markFailed mirrors a failed job on its Issue, taking the claim away so the
-// label set stays a truthful mirror of the durable phase (docs/mvp.md §6.2).
-func (c *Controller) markFailed(ctx context.Context, record lease.Record) {
-	if record.Issue == 0 {
-		return
-	}
-	c.syncLabels(ctx, record.Issue, c.Config.Labels.Failed)
 }
 
 // run executes one request end to end. Every step is idempotent and the phase
@@ -337,6 +342,7 @@ func (c *Controller) run(ctx context.Context, issue Issue) error {
 	record := lease.Record{
 		JobID: request.JobID, Issue: issue.Number, JobSpecDigest: request.Digest, Phase: lease.PhaseAcquired,
 	}
+
 	// The lease comes first: it is the job mutex, so only the controller that
 	// holds it may claim the Issue. A live lease held by the same job id means
 	// another writer (or an earlier attempt) is already on it.
@@ -359,6 +365,7 @@ func (c *Controller) run(ctx context.Context, issue Issue) error {
 	if err := c.execute(ctx, request, &record); err != nil {
 		return c.abort(ctx, record, "the job did not complete", err)
 	}
+	record.Outcome = lease.OutcomeSucceeded
 	return c.finish(ctx, record)
 }
 
@@ -576,6 +583,21 @@ func (c *Controller) finish(ctx context.Context, record lease.Record) error {
 		}
 	}
 
+	// The renewal keeps running while cleanup waits for a human merge: if the
+	// lease expired here, another controller could take the GPU away from a job
+	// that is still restoring.
+	stopRenew := c.startRenewal(cleanup, holder)
+	defer stopRenew()
+
+	// The outcome is durable before cleanup starts, so the labels mirror the
+	// job's result rather than whichever cleanup step ran last.
+	if record.Outcome == "" {
+		record.Outcome = lease.OutcomeFailed
+	}
+	if err := c.annotate(cleanup, &record); err != nil {
+		return err
+	}
+
 	// Nothing is released until both the sandbox is gone and the workload is
 	// back: a not-converged restore keeps the lease, keeps the phase, and is
 	// retried by the recovery loop. The lease is what stops the next job from
@@ -593,7 +615,7 @@ func (c *Controller) finish(ctx context.Context, record lease.Record) error {
 	if err := c.Lease.Release(cleanup, holder); err != nil {
 		return fmt.Errorf("release the gpu lease: %w", err)
 	}
-	c.syncLabels(ctx, record.Issue, c.Config.Labels.Done)
+	c.syncLabels(ctx, record.Issue, record.Outcome)
 	return nil
 }
 
@@ -632,15 +654,24 @@ func (c *Controller) ensureRestored(ctx context.Context, record *lease.Record) e
 // syncLabels mirrors the job outcome on the Issue: the claim goes away and
 // exactly one terminal label remains, so the labels stay a truthful mirror of
 // the durable phase instead of a second, drifting state.
-func (c *Controller) syncLabels(ctx context.Context, issue int, terminal string) {
-	if issue == 0 {
+func (c *Controller) syncLabels(ctx context.Context, issue int, outcome lease.Outcome) {
+	if issue == 0 || outcome == "" {
 		return
 	}
-	if err := c.Gateway.Unlabel(ctx, issue, c.Config.Labels.Claimed); err != nil {
-		c.logf("issue #%d: could not remove the claim label: %v", issue, err)
+	terminal := c.Config.Labels.Done
+	other := c.Config.Labels.Failed
+	if outcome == lease.OutcomeFailed {
+		terminal, other = c.Config.Labels.Failed, c.Config.Labels.Done
 	}
-	if terminal == "" {
-		return
+	// Both terminal labels are cleared first: a job is either done or failed,
+	// and the alternative must not survive from an earlier decision.
+	for _, label := range []string{c.Config.Labels.Claimed, other, terminal} {
+		if label == "" {
+			continue
+		}
+		if err := c.Gateway.Unlabel(ctx, issue, label); err != nil {
+			c.logf("issue #%d: could not remove %s: %v", issue, label, err)
+		}
 	}
 	if err := c.Gateway.Label(ctx, issue, terminal); err != nil {
 		c.logf("issue #%d: could not add %s: %v", issue, terminal, err)
@@ -655,7 +686,7 @@ func (c *Controller) abort(ctx context.Context, record lease.Record, what string
 			c.logf("issue #%d: could not comment: %v", record.Issue, err)
 		}
 	}
-	c.syncLabels(ctx, record.Issue, c.Config.Labels.Failed)
+	record.Outcome = lease.OutcomeFailed
 	return c.finish(ctx, record)
 }
 

@@ -23,6 +23,7 @@ type (
 
 // Phase names, re-exported so callers of this package do not need both.
 const (
+	PhaseReleased      = lease.PhaseReleased
 	PhaseAcquired      = lease.PhaseAcquired
 	PhasePausing       = lease.PhasePausing
 	PhasePaused        = lease.PhasePaused
@@ -83,11 +84,19 @@ func (l *GPULease) Acquire(ctx context.Context, holder string, record LeaseRecor
 
 		current := decodeLease(existing)
 		if current.Holder != "" && l.now().Before(current.ExpiresAt) {
-			// Someone holds it and the lease has not expired. Only the same
-			// job, and only for recovery, may take it over.
+			// Someone holds it and the lease has not expired. Only the exact
+			// same holder, and only for recovery, may take it over: a live
+			// lease belongs to a process that may still be measuring.
 			if current.Holder != holder || !reentrant {
 				return false, nil
 			}
+		}
+		if current.IsUnfinished() && current.JobID != record.JobID {
+			// The lease expired with an unfinished job on it. A different job
+			// must not erase that state: its own recovery has to finish the
+			// cleanup and release the lease first, otherwise the new job would
+			// take the GPU while the previous one may still be paused.
+			return false, nil
 		}
 		record.Holder = holder
 		if current.JobID == record.JobID {
@@ -166,7 +175,7 @@ func (l *GPULease) Release(ctx context.Context, holder string) error {
 		if record.Holder != holder {
 			return fmt.Errorf("kube: refusing to release a lease held by %q", record.Holder)
 		}
-		record.Phase = PhaseReleasing
+		record.Phase = PhaseReleased
 		record.Holder = ""
 		record.ExpiresAt = time.Time{}
 		// The annotations stay: they are the record of what the last job did,
@@ -212,6 +221,7 @@ func (l *GPULease) leaseObject(r LeaseRecord) *coordinationv1.Lease {
 	if !r.AcquiredAt.IsZero() {
 		annotations[lease.AnnAcquiredAt] = r.AcquiredAt.Format(time.RFC3339Nano)
 	}
+	setIfNotEmpty(annotations, lease.AnnOutcome, string(r.Outcome))
 	if r.Issue > 0 {
 		annotations[lease.AnnIssue] = strconv.Itoa(r.Issue)
 	}
@@ -269,6 +279,8 @@ func decodeLease(obj *coordinationv1.Lease) LeaseRecord {
 			out.Attempt, _ = strconv.Atoi(value)
 		case lease.AnnAcquiredAt:
 			out.AcquiredAt, _ = time.Parse(time.RFC3339Nano, value)
+		case lease.AnnOutcome:
+			out.Outcome = lease.Outcome(value)
 		}
 	}
 	return out

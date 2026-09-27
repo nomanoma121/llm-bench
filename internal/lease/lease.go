@@ -24,6 +24,7 @@ const (
 	AnnPR            = "llmbench.io/pr"
 	AnnAttempt       = "llmbench.io/attempt"
 	AnnAcquiredAt    = "llmbench.io/acquired-at"
+	AnnOutcome       = "llmbench.io/outcome"
 )
 
 // Phase is the job's position in the write-ahead sequence. A phase is written
@@ -46,6 +47,17 @@ const (
 	PhaseRestoring     Phase = "restoring"
 	PhaseRestored      Phase = "restored"
 	PhaseReleasing     Phase = "releasing"
+	PhaseReleased      Phase = "released"
+)
+
+// Outcome is the job's result. It is recorded before cleanup starts, because
+// cleanup must not decide the outcome: a crash while restoring must not turn a
+// succeeded job into a failed one (or the other way round).
+type Outcome string
+
+const (
+	OutcomeSucceeded Outcome = "succeeded"
+	OutcomeFailed    Outcome = "failed"
 )
 
 // Record is the durable state of one job.
@@ -59,9 +71,26 @@ type Record struct {
 	Commit        string
 	// PullRequest is the number of the result PR, 0 before it exists.
 	PullRequest int
-	Attempt     int
-	AcquiredAt  time.Time
-	ExpiresAt   time.Time
+	// Outcome is durable for the same reason the phase is: cleanup runs after
+	// the job is decided and must not decide again.
+	Outcome    Outcome
+	Attempt    int
+	AcquiredAt time.Time
+	ExpiresAt  time.Time
+}
+
+// IsUnfinished reports whether the record describes a job that still owes the
+// system something: a holder owns it, or a cleanup/release never completed.
+// The GPU lease refuses to hand such a record to a different job, so a crashed
+// job cannot be silently replaced by a new one.
+func (r Record) IsUnfinished() bool {
+	if r.JobID == "" {
+		return false
+	}
+	if r.Holder != "" {
+		return true
+	}
+	return r.Phase != PhaseReleased && r.Phase != ""
 }
 
 // Lease is the single global GPU ownership record.

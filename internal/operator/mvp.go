@@ -186,7 +186,13 @@ func (m MVP) Validate() error {
 	if len(m.Images) == 0 {
 		add("images must not be empty: a job may only choose from the operator list")
 	}
-	if m.GitOps != nil {
+	if m.GitOps == nil {
+		// The MVP hands the GPU to a sandbox, so the shared inference workload
+		// has to be paused; without a plan the controller could take the GPU
+		// and then be unable to restore anything. Requiring it here keeps the
+		// failure at configuration time instead of after a lease is taken.
+		add("gitops is required: the controller must be able to pause and restore the inference workload")
+	} else {
 		g := m.GitOps
 		if g.Owner == "" || g.Repository == "" || g.BaseBranch == "" || g.FilePath == "" || len(g.YAMLPath) == 0 {
 			add("gitops needs owner, repository, base_branch, file_path and yaml_path")

@@ -257,6 +257,10 @@ poll(open な `llmbench:benchmark|optimize` Issue で、状態ラベルが無い
 - **restore は必ず通す**。benchmark が失敗しても、timeout でも、Controller が再起動しても restore と release に到達する。restore が終わるまで job を完了扱いにしない。
 - **同じ job を再実行しない**。recovery は phase で判断する: `executed` / `opening_pr` / `pr_open` は **branch/commit が durable なので PR 作成だけを再実行**して cleanup へ進む(PR 作成は冪等)。`executing` は「測定が完了したか不明」なので**再実行せず** failure として記録して cleanup する。それ以前の phase は未測定なので attempt を破棄して failure にする。
 - **restore が converge するまで Lease を手放さない**。`Sandbox.Delete` がまだ終わっていない / `Restore` が `ErrNotConverged`(PR 未マージ・Argo 未同期)の間は phase も Lease も保持したまま recovery が再試行する。Lease を先に離すと、まだ pause されたままの GPU を次の job が借りてしまう。
+- **outcome を cleanup の前に durable に書く**(`llmbench.io/outcome`)。cleanup は `deleting_claim` / `restoring` / `releasing` の間にも crash しうるので、その経路で recovery が「成功/失敗」を再判定してはならない(成功した job が failed ラベルになる事故を防ぐ)。終了ラベルは outcome だけが決め、`claimed` と反対側の終了ラベルは必ず外す。
+- **released な record(Holder 空)は recovery の対象外**。annotation は履歴として残るが、完了済み job を復活させない。
+- **`gitops` は必須**。備え付けの GPU を pause できなければ Controller は動かせないので、設定検証の段階で落とす(Lease を取った後に初めて失敗する事態を避ける)。
+- **Lease は release 完了まで renew する**(restore PR のマージ待ちが lease 期間を超えても、生きている Controller の lease を失効させない)。
 - **Lease は instance 単位で fencing する**。holder は Pod 名などの instance-unique な値にし、**別 instance の live lease は引き継がない**(引き継ぐのは失効した lease のみ)。同じ holder の中断ジョブだけを recovery が再開する。
 - Sandbox が死んだ場合は **attempt を破棄して replacement で最初から再実行**する(benchmark。`attempt` annotation を進める)。optimize では Agent session を維持したまま rebind する(§8)。
 

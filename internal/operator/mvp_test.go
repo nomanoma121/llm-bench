@@ -8,7 +8,7 @@ import (
 )
 
 func validMVP() MVP {
-	return MVP{
+	m := MVP{
 		Repository:    "owner/repo",
 		DefaultBranch: "main",
 		Lease:         Lease{Namespace: "llmb", Name: "gpu"},
@@ -20,7 +20,17 @@ func validMVP() MVP {
 		Engines:   []string{"llamacpp"},
 		Images:    []string{"img"},
 		GitHubApp: MVPGitHubApp{AppID: 1, InstallationID: 2, PrivateKeyFile: "/keys/app.pem"},
+		GitOps: &GitOps{
+			Owner: "owner", Repository: "manifests", BaseBranch: "main",
+			FilePath: "apps/inference.yaml", YAMLPath: []string{"spec", "replicas"},
+			ActiveValue: "1", PausedValue: "0",
+		},
 	}
+	m.GitOps.Application.Namespace = "argocd"
+	m.GitOps.Application.Name = "inference"
+	m.GitOps.Workload.Namespace = "llmb"
+	m.GitOps.Workload.Deployment = "llama"
+	return m
 }
 
 func TestMVPValidate(t *testing.T) {
@@ -41,11 +51,7 @@ func TestMVPValidate(t *testing.T) {
 	if owner, repo := m.RepoParts(); owner != "owner" || repo != "repo" {
 		t.Fatalf("repo parts = %q %q", owner, repo)
 	}
-	// Without gitops the controller cannot pause anything, and it says so
-	// instead of running with the GPU contended.
-	if _, err := m.GitOpsPlanFor("job"); err == nil {
-		t.Fatal("a missing gitops plan was accepted")
-	}
+
 }
 
 func TestMVPValidateRejectsIncompleteConfigs(t *testing.T) {
@@ -66,6 +72,7 @@ func TestMVPValidateRejectsIncompleteConfigs(t *testing.T) {
 		{"partial gitops", func(m *MVP) {
 			m.GitOps = &GitOps{Owner: "o"}
 		}, "gitops needs"},
+		{"no gitops", func(m *MVP) { m.GitOps = nil }, "gitops is required"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -95,15 +102,6 @@ func TestLoadMVPRejectsUnknownFields(t *testing.T) {
 
 func TestGitOpsPlanBindsBranchesToTheJob(t *testing.T) {
 	m := validMVP()
-	m.GitOps = &GitOps{
-		Owner: "o", Repository: "manifests", BaseBranch: "main",
-		FilePath: "apps/inference.yaml", YAMLPath: []string{"spec", "replicas"},
-		ActiveValue: "1", PausedValue: "0",
-	}
-	m.GitOps.Application.Namespace = "argocd"
-	m.GitOps.Application.Name = "inference"
-	m.GitOps.Workload.Namespace = "llmb"
-	m.GitOps.Workload.Deployment = "llama"
 	m.applyDefaults()
 	if err := m.Validate(); err != nil {
 		t.Fatal(err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sort"
 
 	"github.com/google/go-github/v89/github"
 
@@ -38,51 +39,66 @@ func labelSet(labels operator.Labels) map[string]bool {
 // first, so requests are served in the order they were made.
 func (g *Gateway) Pending(ctx context.Context, labels operator.Labels) ([]controller.Issue, error) {
 	state := labelSet(labels)
-	opts := &github.IssueListByRepoOptions{
-		State:  "open",
-		Labels: []string{labels.Benchmark, labels.Optimize},
-		// Oldest first: the controller serves requests in the order they were
-		// made, and a stable order keeps the recovery path deterministic.
-		Sort:        "created",
-		Direction:   "asc",
-		ListOptions: github.ListOptions{PerPage: 100},
-	}
-	var out []controller.Issue
-	for {
-		issues, resp, err := g.gh.Issues.ListByRepo(ctx, g.owner, g.repo, opts)
-		if err != nil {
-			return nil, fmt.Errorf("issues: list: %w", err)
+	byNumber := map[int]controller.Issue{}
+	// GitHub's label filter is an AND: asking for both kind labels at once
+	// returns only issues that carry both, which no request does. The two
+	// kinds are therefore listed separately and merged here.
+	for _, kindLabel := range []string{labels.Benchmark, labels.Optimize} {
+		if kindLabel == "" {
+			continue
 		}
-		for _, issue := range issues {
-			// A pull request is an issue in the API and must never be read as
-			// a request.
-			if issue.IsPullRequest() {
-				continue
+		opts := &github.IssueListByRepoOptions{
+			State:  "open",
+			Labels: []string{kindLabel},
+			// Oldest first: requests are served in the order they were made,
+			// and a stable order keeps recovery deterministic.
+			Sort:        "created",
+			Direction:   "asc",
+			ListOptions: github.ListOptions{PerPage: 100},
+		}
+		for {
+			issues, resp, err := g.gh.Issues.ListByRepo(ctx, g.owner, g.repo, opts)
+			if err != nil {
+				return nil, fmt.Errorf("issues: list: %w", err)
 			}
-			var names []string
-			var hasState bool
-			for _, label := range issue.Labels {
-				name := label.GetName()
-				names = append(names, name)
-				if state[name] {
-					hasState = true
+			for _, issue := range issues {
+				// A pull request is an issue in the API and must never be read
+				// as a request.
+				if issue.IsPullRequest() {
+					continue
+				}
+				var names []string
+				var hasState bool
+				for _, label := range issue.Labels {
+					name := label.GetName()
+					names = append(names, name)
+					if state[name] {
+						hasState = true
+					}
+				}
+				if hasState {
+					continue
+				}
+				byNumber[issue.GetNumber()] = controller.Issue{
+					Number: issue.GetNumber(),
+					Title:  issue.GetTitle(),
+					Body:   issue.GetBody(),
+					Labels: names,
 				}
 			}
-			if hasState {
-				continue
+			if resp == nil || resp.NextPage == 0 {
+				break
 			}
-			out = append(out, controller.Issue{
-				Number: issue.GetNumber(),
-				Title:  issue.GetTitle(),
-				Body:   issue.GetBody(),
-				Labels: names,
-			})
+			opts.ListOptions.Page = resp.NextPage
 		}
-		if resp == nil || resp.NextPage == 0 {
-			break
-		}
-		opts.ListOptions.Page = resp.NextPage
 	}
+	out := make([]controller.Issue, 0, len(byNumber))
+	for _, issue := range byNumber {
+		out = append(out, issue)
+	}
+	// Issue numbers increase with creation, so sorting by number restores the
+	// order the two listings were merged from.
+	sort.Slice(out, func(i, j int) bool { return out[i].Number < out[j].Number })
 	return out, nil
 }
 

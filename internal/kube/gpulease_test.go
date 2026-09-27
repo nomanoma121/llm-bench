@@ -47,28 +47,57 @@ func TestAcquireIsMutuallyExclusive(t *testing.T) {
 	}
 }
 
-func TestAcquireTakesOverAnExpiredLease(t *testing.T) {
+func TestAnExpiredUnfinishedLeaseIsOnlyRecoverableByItsOwnJob(t *testing.T) {
 	l, _ := newTestLease()
 	ctx := context.Background()
-	if ok, err := l.Acquire(ctx, "controller/job-a", lease.Record{JobID: "job-a", Phase: lease.PhaseAcquired}, false); err != nil || !ok {
+	if ok, err := l.Acquire(ctx, "controller/job-a", lease.Record{JobID: "job-a", Issue: 1, Phase: lease.PhaseRestoring}, false); err != nil || !ok {
 		t.Fatalf("acquire: %v %v", ok, err)
 	}
-	// Ten minutes later the one-minute lease has expired: a different job may
-	// take it over, which is how a crashed controller stops blocking the GPU.
+	// Ten minutes later the one-minute lease has expired. A different job must
+	// not take it: the stored phase says job-a still owes a restore, and
+	// erasing that would let a new job use a GPU that is still paused.
 	l.now = func() time.Time { return time.Date(2026, 9, 27, 12, 10, 0, 0, time.UTC) }
 	ok, err := l.Acquire(ctx, "controller/job-b", lease.Record{JobID: "job-b", Issue: 2, Phase: lease.PhaseAcquired}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if ok {
+		t.Fatal("a different job took over an expired unfinished lease")
+	}
+	// The same job recovers it.
+	ok, err = l.Acquire(ctx, "controller/job-a", lease.Record{JobID: "job-a", Issue: 1, Phase: lease.PhaseRestoring}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !ok {
-		t.Fatal("an expired lease was not taken over")
+		t.Fatal("the job could not recover its own expired lease")
 	}
 	got, err := l.Get(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.JobID != "job-b" || got.Holder != "controller/job-b" {
+	if got.JobID != "job-a" || got.Holder != "controller/job-a" {
 		t.Fatalf("record = %+v", got)
+	}
+}
+
+func TestAReleasedLeaseIsFreeForAnyJob(t *testing.T) {
+	l, _ := newTestLease()
+	ctx := context.Background()
+	if ok, err := l.Acquire(ctx, "controller/job-a", lease.Record{JobID: "job-a", Phase: lease.PhaseAcquired}, false); err != nil || !ok {
+		t.Fatalf("acquire: %v %v", ok, err)
+	}
+	if err := l.Release(ctx, "controller/job-a"); err != nil {
+		t.Fatal(err)
+	}
+	// The annotations stay as history, but the record is no longer unfinished,
+	// so the next job may take the lease immediately.
+	ok, err := l.Acquire(ctx, "controller/job-b", lease.Record{JobID: "job-b", Issue: 2, Phase: lease.PhaseAcquired}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("a released lease was not reusable")
 	}
 }
 

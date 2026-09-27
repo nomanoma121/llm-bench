@@ -38,5 +38,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: helm package charts/llmbench -d "$RUNNER_TEMP/chart"
-      - run: echo "${{ github.token }}" | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
-      - run: helm push "$RUNNER_TEMP"/chart/*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
+      - run: echo "${{ github.token }}" | helm registry login ghcr.io --registry-config "$RUNNER_TEMP/registry.json" --username "${{ github.actor }}" --password-stdin
+      - run: helm push "$RUNNER_TEMP"/chart/*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts --registry-config "$RUNNER_TEMP/registry.json"

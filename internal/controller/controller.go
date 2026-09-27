@@ -18,6 +18,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/nomanoma121/llm-bench/internal/agent"
 	"github.com/nomanoma121/llm-bench/internal/job"
 	"github.com/nomanoma121/llm-bench/internal/lease"
 	"github.com/nomanoma121/llm-bench/internal/operator"
@@ -74,6 +75,9 @@ type Sandbox interface {
 	Put(ctx context.Context, jobID, path string, content []byte) error
 	// Exec runs the benchmark CLI inside it and returns its stdout.
 	Exec(ctx context.Context, jobID string, argv []string, env map[string]string) ([]byte, error)
+	// ReadAgentResult reads the completion record the Agent wrote inside the
+	// sandbox. found=false means "not finished yet".
+	ReadAgentResult(ctx context.Context, jobID string) (AgentResult, bool, error)
 	// Delete removes the sandbox. done=false means "still terminating", which
 	// the caller retries without releasing the lease. It must be safe to call
 	// when nothing exists.
@@ -84,6 +88,16 @@ type Sandbox interface {
 // must be yet (an open pause PR, a workload that has not stopped). The loop
 // retries; it is not a failure.
 var ErrNotConverged = errors.New("controller: not converged")
+
+// AgentResult is the record an Agent leaves in its sandbox when it finishes an
+// optimization round (docs/mvp.md §8.1). The sandbox is its own filesystem, so
+// the controller validates the record rather than trusting it.
+type AgentResult struct {
+	Status string
+	Branch string
+	Commit string
+	Note   string
+}
 
 // Request is one accepted job.
 type Request struct {
@@ -124,6 +138,11 @@ type Config struct {
 	// uses one stable value, which is what makes an interrupted job
 	// recognisable as its own after a restart.
 	HolderIdentity string
+	// Binder connects the job to the harness that optimizes it. It is only
+	// needed for optimization requests; a benchmark never uses it.
+	Binder agent.Binder
+	// AgentCWD is the harness-side working directory for the session.
+	AgentCWD string
 	// GitToken mints the short-lived installation token the sandbox uses to
 	// push its branch. Empty means the sandbox gets no token and --push fails,
 	// which is the honest outcome for a controller without App credentials.
@@ -338,8 +357,8 @@ func (c *Controller) reconcile(ctx context.Context, record lease.Record) error {
 		// carries instead of deciding again.
 		return c.finish(ctx, record)
 	case lease.PhaseExecuted, lease.PhaseOpeningPR, lease.PhasePROpen:
-		// The measurement is done and identified by branch/commit, so only the
-		// pull request is repeated. That is safe: the gateway returns the
+		// The measurement (or the Agent's round) is done and identified by
+		// branch/commit, so only the pull request is repeated. That is safe: the gateway returns the
 		// existing PR for that head instead of opening a second one.
 		c.logf("resuming job %s from phase %q", record.JobID, record.Phase)
 		if record.PullRequest == 0 {
@@ -435,12 +454,6 @@ func (c *Controller) parse(issue Issue) (Request, error) {
 	if err != nil {
 		return Request{}, err
 	}
-	if spec.Kind == job.KindOptimize {
-		// The controller can measure, but it cannot yet hand a sandbox to an
-		// Agent. Accepting the request and running a single benchmark would
-		// answer a different question than the one that was asked.
-		return Request{}, errors.New("optimization requests are not supported by this controller build yet; open a benchmark request instead")
-	}
 	constraints := c.Config.Constraints
 	reserved, ok := c.Config.ReservedArgs[spec.Runtime.Engine]
 	if !ok {
@@ -530,6 +543,9 @@ func (c *Controller) execute(ctx context.Context, request Request, record *lease
 	if err := c.phase(ctx, record, lease.PhaseExecuting); err != nil {
 		return err
 	}
+	if request.Spec.Kind == job.KindOptimize {
+		return c.optimize(ctx, request, record)
+	}
 	env, err := c.sandboxEnv(ctx, request.Env)
 	if err != nil {
 		return err
@@ -608,6 +624,113 @@ func (c *Controller) sandboxEnv(ctx context.Context, extra map[string]string) (m
 // SandboxTokenEnv is the environment variable the benchmark CLI reads the
 // short-lived installation token from.
 const SandboxTokenEnv = "LLMBENCH_GIT_TOKEN"
+
+// optimize hands the ready sandbox to the harness: it creates one session,
+// submits the task, and then waits for the turn to settle. The controller does
+// not steer the session after that - the harness owns it - and what ends the
+// job is the record the Agent leaves in the sandbox, not the session's own
+// opinion of its work.
+func (c *Controller) optimize(ctx context.Context, request Request, record *lease.Record) error {
+	if c.Config.Binder == nil {
+		return errors.New("no agent binder is configured, so an optimization request cannot be handed over")
+	}
+	result, err := c.Config.Binder.Bind(ctx, agent.Request{
+		JobID: request.JobID,
+		Task:  c.optimizeTask(request),
+	})
+	if err != nil {
+		return fmt.Errorf("hand the job to the harness: %w", err)
+	}
+	c.logf("job %s: harness session %s settled with %q", request.JobID, result.SessionID, result.StopReason)
+
+	agentResult, found, err := c.Sandbox.ReadAgentResult(ctx, request.JobID)
+	if err != nil {
+		return fmt.Errorf("read the agent result: %w", err)
+	}
+	if !found {
+		return errors.New("the harness finished without recording a result in the sandbox")
+	}
+	if agentResult.Status != "complete" {
+		return fmt.Errorf("the agent reported %q: %s", agentResult.Status, agentResult.Note)
+	}
+	request.Branch, request.Commit = agentResult.Branch, agentResult.Commit
+	record.Branch, record.Commit = agentResult.Branch, agentResult.Commit
+	record.Phase = lease.PhaseExecuted
+	record.Outcome = lease.OutcomeSucceeded
+	if err := c.annotate(ctx, record); err != nil {
+		return err
+	}
+	if err := c.phase(ctx, record, lease.PhaseOpeningPR); err != nil {
+		return err
+	}
+	pr, err := c.Gateway.OpenPR(ctx, PullRequest{
+		Head:  request.Branch,
+		Base:  c.Config.DefaultBranch,
+		Title: fmt.Sprintf("optimize: %s (%s)", request.Spec.Model.ID, request.JobID),
+		Body:  c.optimizePullRequestBody(request, agentResult),
+	})
+	if err != nil {
+		return fmt.Errorf("open the pull request: %w", err)
+	}
+	record.PullRequest = pr
+	record.Phase = lease.PhasePROpen
+	if err := c.annotate(ctx, record); err != nil {
+		return err
+	}
+	if err := c.Gateway.Comment(ctx, request.Issue.Number, fmt.Sprintf("llmbench optimized %s and opened #%d for review.", request.JobID, pr)); err != nil {
+		c.logf("issue #%d: could not comment the PR link: %v", request.Issue.Number, err)
+	}
+	return nil
+}
+
+// optimizeTask is the text the harness receives. It carries everything the
+// Agent needs to act without asking: which job it is, how to reach the sandbox,
+// what the budget is, and how to record its result.
+func (c *Controller) optimizeTask(request Request) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "You are optimizing the runtime for job %s.\n\n", request.JobID)
+	fmt.Fprintf(&b, "Model: %s\n", request.Spec.Model.ID)
+	fmt.Fprintf(&b, "Runtime image under test: %s (engine %s)\n", request.Spec.Runtime.Image, request.Spec.Runtime.Engine)
+	if request.Spec.Source != nil {
+		fmt.Fprintf(&b, "Runtime source: %s at %s\n", request.Spec.Source.Repo, request.Spec.Source.Ref)
+	}
+	if request.Spec.Budget != nil {
+		fmt.Fprintf(&b, "Budget: at most %d measurement rounds.\n", request.Spec.Budget.MaxRounds)
+	}
+	fmt.Fprintf(&b, "Workload cases: ")
+	for i, c := range request.Spec.Workload.Cases {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%s (max_tokens %d, repeats %d)", c.Name, c.MaxTokens, c.RepeatCount())
+	}
+	b.WriteString("\n\n")
+	fmt.Fprintf(&b, "The GPU sandbox for this job is already running and is yours to use:\n")
+	fmt.Fprintf(&b, "  llmbench sandbox job exec %s -- <argv...>\n", request.JobID)
+	fmt.Fprintf(&b, "  llmbench sandbox job push %s <local> <sandbox-path>\n", request.JobID)
+	fmt.Fprintf(&b, "  llmbench sandbox job pull %s <sandbox-path> [local]\n", request.JobID)
+	b.WriteString("Change the runtime, measure it, and keep or revert each attempt based on what `llmbench compare` reports. The harness only reports facts; the decisions are yours.\n\n")
+	fmt.Fprintf(&b, "When you are done, push your final runtime change together with the final measurement and record it:\n")
+	fmt.Fprintf(&b, "  llmbench job done --job %s --status complete --branch <branch> --commit <sha>\n", request.JobID)
+	fmt.Fprintf(&b, "If you cannot reach a result, record that instead: `llmbench job done --job %s --status failed --note '<why>'`.\n", request.JobID)
+	return b.String()
+}
+
+// optimizePullRequestBody summarizes an optimization result for the reviewer.
+func (c *Controller) optimizePullRequestBody(request Request, result AgentResult) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Job: `%s` (optimization)\n\n", request.JobID)
+	fmt.Fprintf(&b, "- model: %s\n", request.Spec.Model.ID)
+	fmt.Fprintf(&b, "- engine: %s\n", request.Spec.Runtime.Engine)
+	fmt.Fprintf(&b, "- image: %s\n", request.Spec.Runtime.Image)
+	fmt.Fprintf(&b, "- job spec digest: `%s`\n", request.Digest)
+	fmt.Fprintf(&b, "- commit: `%s`\n", result.Commit)
+	if result.Note != "" {
+		fmt.Fprintf(&b, "\nThe Agent noted: %s\n", result.Note)
+	}
+	b.WriteString("\nThe runtime change and the final measurement are in this branch; the baseline comparison is `llmbench compare`. Whether the change is worth keeping is a review decision, not a harness verdict.\n")
+	return b.String()
+}
 
 // finish completes a job whose measurement is done (or may be): it deletes the
 // sandbox, restores the workload, releases the lease and records the outcome.

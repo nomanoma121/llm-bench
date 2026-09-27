@@ -119,11 +119,20 @@ mvp:
     baseUrl: ""
 
   # The existing ServiceAccount of the Agent Pod (the DSH deployment). Binding
-  # it grants the Agent sandbox discovery, file transfer and the completion
-  # annotation - and nothing else.
+  # it grants the Agent sandbox discovery and file transfer - and nothing else.
   agentServiceAccount:
     namespace: ""
     name: ""
+
+  # The harness (DeepSeek Harness) that runs optimization jobs. It is a
+  # long-lived Deployment of its own; the controller only opens one ACP session
+  # per job on it, over pods/exec, and never starts it.
+  agent:
+    namespace: ""
+    podSelector: ""
+    container: ""
+    exec: ["dsh", "--profile", "acp"]
+    cwd: /workspace
 
   pollIntervalSeconds: 15
   recoveryIntervalSeconds: 60

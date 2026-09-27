@@ -32,8 +32,14 @@ does not install them.
 - `mvp.pollIntervalSeconds` / `mvp.recoveryIntervalSeconds`: how often the loop
   looks for a request and reconciles unfinished work.
 - `mvp.agentServiceAccount.{namespace,name}`: the existing ServiceAccount of the
-  Agent Pod (the DSH deployment). Binding it grants the Agent sandbox
-  discovery, file transfer and the completion annotation, and nothing else.
+  Agent Pod (the DSH deployment). Binding it grants the Agent sandbox discovery
+  and file transfer, and nothing else.
+- `mvp.agent.{namespace,podSelector,container,exec,cwd}`: the long-lived harness
+  Deployment that runs optimization jobs. The controller opens one ACP session
+  per job on it over `pods/exec` (ACP is stdio-only, so there is no API to call)
+  and never starts or steers it. `exec` is the argv that serves ACP, `cwd` the
+  harness-side session directory. The Agent's model comes from the harness
+  profile, not from this chart.
 
 ## RBAC
 
@@ -46,6 +52,7 @@ controller actually touches, instead of a ClusterRole:
 | `mvp.sandbox.namespace` | sandbox claims (create/get/list/delete), sandboxes (read), pods (read) and `pods/portforward` |
 | `mvp.gitops.application.namespace` | `argoproj.io` applications (read), for the sync check |
 | `mvp.gitops.workload.namespace` | deployments/statefulsets (read) and pods (read), for the pause/restore convergence |
+| `mvp.agent.namespace` | pods (read) and `pods/exec`, to open the ACP session on the harness |
 
 The Agent's separate Role is limited to the sandbox namespace and excludes the
 lease and the manifest.

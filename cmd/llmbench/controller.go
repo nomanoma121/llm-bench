@@ -15,6 +15,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/nomanoma121/llm-bench/internal/agent"
 	"github.com/nomanoma121/llm-bench/internal/controller"
 	"github.com/nomanoma121/llm-bench/internal/githubapp"
 	"github.com/nomanoma121/llm-bench/internal/gitops"
@@ -134,6 +135,29 @@ func buildController(ctx context.Context, cfg operator.MVP, g *globalFlags, logw
 	if err != nil || holder == "" {
 		return nil, fmt.Errorf("controller: cannot determine the instance identity (hostname): %w", err)
 	}
+	var binder agent.Binder
+	if cfg.Agent != nil {
+		exec := cfg.Agent.Exec
+		if len(exec) == 0 {
+			exec = []string{"dsh", "--profile", "acp"}
+		}
+		cwd := cfg.Agent.CWD
+		if cwd == "" {
+			cwd = "/workspace"
+		}
+		binder = &agent.ACPBinder{
+			Transport: &kube.PodExec{
+				Client: client, REST: restConfig, Namespace: cfg.Agent.Namespace,
+				Selector: cfg.Agent.PodSelector, Container: cfg.Agent.Container, Command: exec,
+				Stderr: logw,
+			},
+			CWD:        cwd,
+			AllowTools: true,
+			Logf: func(format string, args ...any) {
+				fmt.Fprintf(logw, "agent: "+format+"\n", args...)
+			},
+		}
+	}
 	return &controller.Controller{
 		Config: controller.Config{
 			Repo:          cfg.Repository,
@@ -154,6 +178,7 @@ func buildController(ctx context.Context, cfg operator.MVP, g *globalFlags, logw
 			// this repository and nothing else. A token lives an hour, so an
 			// optimization run that outlasts it fails its push loudly instead
 			// of publishing with stale credentials (docs/mvp.md §7).
+			Binder: binder,
 			GitToken: func(ctx context.Context) (string, error) {
 				return app.ScopedToken(ctx, githubapp.TokenOptions{
 					Repositories: []string{repo},
@@ -264,6 +289,18 @@ func (s *sandboxAdapter) Exec(ctx context.Context, jobID string, argv []string, 
 // until its own deadline: the retry belongs to the loop, not to the adapter.
 func (s *sandboxAdapter) Delete(ctx context.Context, jobID string) (bool, error) {
 	return s.client.DeleteJobClaim(ctx, jobID)
+}
+
+// ReadAgentResult reads the record an Agent left in the sandbox. A missing
+// record is "not finished"; anything else is an error.
+func (s *sandboxAdapter) ReadAgentResult(ctx context.Context, jobID string) (controller.AgentResult, bool, error) {
+	result, found, err := s.client.ReadAgentResult(ctx, jobID)
+	if err != nil || !found {
+		return controller.AgentResult{}, found, err
+	}
+	return controller.AgentResult{
+		Status: result.Status, Branch: result.Branch, Commit: result.Commit, Note: result.Note,
+	}, true, nil
 }
 
 // Put writes the job spec into the sandbox before the CLI is started. A file

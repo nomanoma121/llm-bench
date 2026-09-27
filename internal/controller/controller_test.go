@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nomanoma121/llm-bench/internal/agent"
 	"github.com/nomanoma121/llm-bench/internal/job"
 	"github.com/nomanoma121/llm-bench/internal/lease"
 	"github.com/nomanoma121/llm-bench/internal/operator"
@@ -227,16 +228,18 @@ func (p *fakePauser) Restore(context.Context, string) error {
 
 // fakeSandbox records the lifecycle of the sandbox.
 type fakeSandbox struct {
-	ensures   []string
-	deletes   []string
-	execs     []string
-	puts      []string
-	pushed    []string
-	execOut   []byte
-	execErr   error
-	ensureErr error
-	deleteErr error
-	putErr    error
+	ensures     []string
+	deletes     []string
+	execs       []string
+	puts        []string
+	pushed      []string
+	execOut     []byte
+	execErr     error
+	ensureErr   error
+	deleteErr   error
+	putErr      error
+	agentResult *AgentResult
+	agentErr    error
 	// deletePending makes Delete report "still terminating", which the
 	// controller must retry without releasing the lease.
 	deletePending bool
@@ -265,6 +268,16 @@ func (s *fakeSandbox) Exec(_ context.Context, jobID string, argv []string, _ map
 	}
 	s.execs = append(s.execs, strings.Join(argv, " "))
 	return s.execOut, nil
+}
+
+func (s *fakeSandbox) ReadAgentResult(context.Context, string) (AgentResult, bool, error) {
+	if s.agentErr != nil {
+		return AgentResult{}, false, s.agentErr
+	}
+	if s.agentResult == nil {
+		return AgentResult{}, false, nil
+	}
+	return *s.agentResult, true, nil
 }
 
 func (s *fakeSandbox) Delete(_ context.Context, jobID string) (bool, error) {
@@ -657,27 +670,6 @@ func TestFinishKeepsTheLeaseWhenTheSandboxHasNotTerminated(t *testing.T) {
 	}
 }
 
-func TestOptimizeRequestsAreRejectedUntilTheAgentPathExists(t *testing.T) {
-	c, gateway, leaseStore, pauser, sandbox := newController(t, func(c *Controller) {
-		body := strings.Replace(issueBody(t), "kind: benchmark", "kind: optimize", 1)
-		body = strings.Replace(body, "output:\n", "source:\n  repo: owner/runtime\n  ref: main\nbudget:\n  max_rounds: 3\noutput:\n", 1)
-		c.Gateway.(*fakeGateway).issues[0].Body = body
-		c.Gateway.(*fakeGateway).issues[0].Labels = []string{"llmbench:optimize"}
-	})
-	if _, err := c.RunOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if leaseStore.live || pauser.pauses != 0 || len(sandbox.ensures) != 0 {
-		t.Fatal("an optimize request touched the GPU")
-	}
-	if !hasLabel(gateway.labels[42], "llmbench:failed") {
-		t.Fatalf("labels = %v", gateway.labels[42])
-	}
-	if len(gateway.comments[42]) == 0 || !strings.Contains(gateway.comments[42][0], "optimization") {
-		t.Fatalf("comments = %v", gateway.comments[42])
-	}
-}
-
 func TestReservedArgsArePerEngine(t *testing.T) {
 	// A FreeToken job must not slip through with llama.cpp's reserved list.
 	c, gateway, leaseStore, _, sandbox := newController(t, nil)
@@ -1009,5 +1001,99 @@ func TestRecoveryRestartsTheLeaseKeeper(t *testing.T) {
 	}
 	if !leaseStore.released {
 		t.Fatal("the recovered job did not finish")
+	}
+}
+
+// fakeBinder records the task it was given.
+type fakeBinder struct {
+	tasks  []agent.Request
+	result agent.Result
+	err    error
+}
+
+func (b *fakeBinder) Bind(_ context.Context, req agent.Request) (agent.Result, error) {
+	b.tasks = append(b.tasks, req)
+	if b.err != nil {
+		return agent.Result{}, b.err
+	}
+	if b.result.SessionID == "" {
+		b.result = agent.Result{SessionID: "session-1", StopReason: "end_turn"}
+	}
+	return b.result, nil
+}
+
+func optimizeSpec(t *testing.T) string {
+	t.Helper()
+	return "```yaml\nkind: optimize\n" +
+		"model:\n  id: model-a\n" +
+		"runtime:\n  engine: llamacpp\n  image: img\n  ready:\n    port: 8080\n" +
+		"workload:\n  cases:\n    - name: short\n      prompt_text: hi\n      max_tokens: 8\n" +
+		"metrics:\n  collectors: [harness]\n" +
+		"source:\n  repo: owner/runtime\n  ref: main\n" +
+		"budget:\n  max_rounds: 3\n" +
+		"output:\n  dir: experiments/model-a\n```\n"
+}
+
+func TestOptimizeHandsTheSandboxToTheHarness(t *testing.T) {
+	binder := &fakeBinder{}
+	c, gateway, leaseStore, _, _ := newController(t, func(c *Controller) {
+		c.Gateway.(*fakeGateway).issues[0] = Issue{
+			Number: 42, Body: optimizeSpec(t), Labels: []string{"llmbench:optimize"},
+		}
+		c.Config.Binder = binder
+		c.Sandbox.(*fakeSandbox).agentResult = &AgentResult{
+			Status: "complete", Branch: "llmbench/opt", Commit: strings.Repeat("a", 40),
+		}
+	})
+	if _, err := c.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(binder.tasks) != 1 {
+		t.Fatalf("bind calls = %d", len(binder.tasks))
+	}
+	task := binder.tasks[0]
+	// The controller creates the session and hands over everything the Agent
+	// needs; it does not run the measurement itself.
+	for _, want := range []string{"2026-09-27-issue42", "model-a", "max_rounds: 3"[:0] + "3 measurement rounds", "llmbench sandbox job exec 2026-09-27-issue42", "llmbench job done --job 2026-09-27-issue42"} {
+		if !strings.Contains(task.Task, want) {
+			t.Errorf("task %q does not mention %q", task.Task, want)
+		}
+	}
+	if gateway.prs[0].Head != "llmbench/opt" {
+		t.Fatalf("pull request = %+v", gateway.prs[0])
+	}
+	if !leaseStore.released || !hasLabel(gateway.labels[42], "llmbench:done") {
+		t.Fatal("the job did not finish cleanly")
+	}
+}
+
+func TestOptimizeFailsWhenTheHarnessReportsNoResult(t *testing.T) {
+	c, gateway, leaseStore, pauser, _ := newController(t, func(c *Controller) {
+		c.Gateway.(*fakeGateway).issues[0] = Issue{Number: 42, Body: optimizeSpec(t), Labels: []string{"llmbench:optimize"}}
+		c.Config.Binder = &fakeBinder{}
+	})
+	if _, err := c.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(gateway.prs) != 0 {
+		t.Fatal("a job without a recorded result opened a pull request")
+	}
+	if !leaseStore.released || pauser.restores != 1 {
+		t.Fatal("the job was not cleaned up")
+	}
+	if !hasLabel(gateway.labels[42], "llmbench:failed") {
+		t.Fatalf("labels = %v", gateway.labels[42])
+	}
+}
+
+func TestOptimizeRequiresABinder(t *testing.T) {
+	c, gateway, leaseStore, _, _ := newController(t, func(c *Controller) {
+		c.Gateway.(*fakeGateway).issues[0] = Issue{Number: 42, Body: optimizeSpec(t), Labels: []string{"llmbench:optimize"}}
+	})
+	if _, err := c.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !hasLabel(gateway.labels[42], "llmbench:failed") || leaseStore.live {
+		t.Fatalf("labels = %v, lease live = %v", gateway.labels[42], leaseStore.live)
 	}
 }

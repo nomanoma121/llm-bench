@@ -303,10 +303,10 @@ poll(open な `llmbench:benchmark|optimize` Issue で、状態ラベルが無い
 ### 8.1 bind / rebind の契約(HTTP API を作らない代わり)
 
 - **Sandbox の解決**: 各 SandboxClaim は `llmbench.io/job-id=<job id>` と `app.kubernetes.io/managed-by=llmbench` を持つ。discovery は**両方**を selector に使い、取得後も両ラベルを検証する(job id は予測可能なので、job-id ラベルだけをコピーした管理外の claim を誤って使わない)。`llmbench sandbox job exec|push|pull|ls <job id>` は、Kubernetes API から**その label の current claim を毎回 discovery** して port-forward transport を張る(コマンド名は §5 の CLI 表を参照)。
-  - Agent Pod の ServiceAccount に必要な権限は、同じネームスペースの `sandboxclaims` の `get` / `list` / `update`(annotation 用)と、pod の `get` / `list` と port-forward だけ。Helm は `mvp.agentServiceAccount.{namespace,name}` にその Role を bind する(lease と manifest には触れない)。
+  - Agent Pod の ServiceAccount に必要な権限は、同じネームスペースの `sandboxclaims` の **`get` / `list` / `watch`**、pod の `get` / `list` と port-forward だけ(**claim への書き込み権限は与えない**。Kubernetes RBAC は update を annotation に限定できないため、書き込みを許すと Agent が sandbox spec を書き換えられてしまう)。Helm は `mvp.agentServiceAccount.{namespace,name}` にその Role を bind する(lease と manifest には触れない)。
   - **rebind は discovery の結果が変わること**そのもの。Sandbox が置き換わったら、次に `llmbench sandbox ...` を呼んだ時点で新しい claim が見つかる。Controller から Agent Pod へ接続情報を push する必要はない。
   - 同じ `job-id` の claim が 2 つ見つかった場合は**エラー**(replacement の途中で古い claim が残っている状態)。
-- **Agent の完了検知**: Agent は最後に `llmbench job done --job <job id> --status complete|failed [--branch B --commit C]` を実行し、**SandboxClaim の annotation**(`llmbench.io/agent-result`, `llmbench.io/branch`, `llmbench.io/commit`)に書く。Controller はその annotation を観測して PR 作成に進む(`complete` には branch と commit が必須)。
+- **Agent の完了検知**: Agent は最後に `llmbench job done --job <job id> --status complete|failed [--branch B --commit C]` を実行し、**自分の sandbox 内のファイル**(`/workspace/.llmbench-agent-result.json`)に記録する。Controller は sandbox からそれを読んで PR 作成に進む(`complete` には branch と commit が必須)。annotation ではなくファイルにする理由は 2 つ: Agent に claim の書き込み権限を与えずに済むこと、記録が成果物と同じ場所に残ること。
   - push 前に落ちた場合は annotation が無いまま claim が消える/時間切れになる → Controller は attempt を破棄して失敗として扱う(optimize の途中結果を PR にしない)。
   - Agent Pod の権限は annotation の patch までで、Lease や GitOps には触れない。
 - Agent は `llmbench sandbox exec|cp|shell` で Sandbox 内の workspace を編集・実行する(port-forward transport)。ssh は実装しない。

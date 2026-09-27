@@ -114,7 +114,7 @@ metadata:
     app.kubernetes.io/name: {{ include "llmbench.name" . }}
     app.kubernetes.io/instance: {{ .Release.Name }}
 rules:
-  - apiGroups: ["extensions.agent-sandbox.io"]
+  - apiGroups: ["extensions.agents.x-k8s.io"]
     resources: ["sandboxclaims"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["agents.x-k8s.io"]
@@ -211,8 +211,12 @@ subjects:
 {{- if and $mvp.agentServiceAccount.namespace $mvp.agentServiceAccount.name }}
 ---
 # The Agent Pod (an existing DSH deployment) reaches the sandbox through the
-# same port-forward transport as a human does, so it needs the same access -
-# and nothing else: it never touches the lease or the GitOps manifest.
+# same port-forward transport as a human does. Its access is read-only plus
+# port-forward: the completion record is a file inside the sandbox, so the
+# Agent never needs to mutate a SandboxClaim (Kubernetes RBAC cannot restrict
+# an update to annotations, so a write permission would let a compromised
+# Agent rewrite the sandbox spec), and it never touches the lease or the
+# GitOps manifest.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -222,9 +226,9 @@ metadata:
     app.kubernetes.io/name: {{ include "llmbench.name" . }}
     app.kubernetes.io/instance: {{ .Release.Name }}
 rules:
-  - apiGroups: ["extensions.agent-sandbox.io"]
+  - apiGroups: ["extensions.agents.x-k8s.io"]
     resources: ["sandboxclaims"]
-    verbs: ["get", "list", "watch", "update", "patch"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["agents.x-k8s.io"]
     resources: ["sandboxes"]
     verbs: ["get", "list", "watch"]

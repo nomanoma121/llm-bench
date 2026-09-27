@@ -188,24 +188,26 @@ func newSandboxJobLsCmd(g *globalFlags) *cobra.Command {
 }
 
 // newJobDoneCmd lets an Agent declare that it finished an optimization round.
-// The controller reads the annotation instead of polling the DSH, and the
-// pushed branch and commit travel with it so the controller can open the pull
-// request without asking anything else.
+// The record is a file inside the Agent's own sandbox rather than an
+// annotation: the Agent's ServiceAccount is read-only for sandbox claims, so a
+// compromised Agent cannot rewrite the sandbox spec, and the record travels
+// with the artifacts it describes.
 func newJobDoneCmd(g *globalFlags) *cobra.Command {
 	var (
 		jobID     string
 		status    string
 		branch    string
 		commit    string
+		note      string
 		namespace string
 	)
 	cmd := &cobra.Command{
 		Use:   "done --job <job-id> --status complete|failed",
-		Short: "Record an Agent's result on the job's sandbox",
-		Long: "Writes the Agent's outcome onto the SandboxClaim, which is how the\n" +
-			"controller learns that an optimization round finished (docs/mvp.md §8.1).\n" +
-			"A branch and commit are required for a completed round: without them there\n" +
-			"is nothing for the controller to open a pull request for.",
+		Short: "Record an Agent's result in the job's sandbox",
+		Long: "Writes the Agent's outcome into the sandbox, which is how the controller\n" +
+			"learns that an optimization round finished (docs/mvp.md §8.1). A branch and\n" +
+			"commit are required for a completed round: without them there is nothing to\n" +
+			"open a pull request for.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if status != "complete" && status != "failed" {
@@ -218,17 +220,11 @@ func newJobDoneCmd(g *globalFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			annotations := map[string]string{sandbox.AgentResultAnnotation: status}
-			if branch != "" {
-				annotations[sandbox.AgentBranchAnnotation] = branch
-			}
-			if commit != "" {
-				annotations[sandbox.AgentCommitAnnotation] = commit
-			}
-			if err := client.AnnotateJobClaim(cmd.Context(), jobID, annotations); err != nil {
+			result := sandbox.AgentResult{Status: status, Branch: branch, Commit: commit, Note: note}
+			if err := client.WriteAgentResult(cmd.Context(), jobID, result); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "recorded %s for job %s\n", status, jobID)
+			fmt.Fprintf(cmd.OutOrStdout(), "recorded %s for job %s in %s\n", status, jobID, sandbox.AgentResultPath)
 			return nil
 		},
 	}
@@ -236,6 +232,7 @@ func newJobDoneCmd(g *globalFlags) *cobra.Command {
 	cmd.Flags().StringVar(&status, "status", "", "complete or failed (required)")
 	cmd.Flags().StringVar(&branch, "branch", "", "pushed branch of the final result")
 	cmd.Flags().StringVar(&commit, "commit", "", "pushed commit of the final result")
+	cmd.Flags().StringVar(&note, "note", "", "free text for the reviewer")
 	cmd.Flags().StringVar(&namespace, "namespace", "", "namespace of the sandbox (defaults to the operator configuration)")
 	_ = cmd.MarkFlagRequired("job")
 	_ = cmd.MarkFlagRequired("status")

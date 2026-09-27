@@ -80,27 +80,25 @@ func TestFindJobClaimIsDiscovery(t *testing.T) {
 	}
 }
 
-func TestAnnotateJobClaimRecordsTheAgentResult(t *testing.T) {
+func TestDeleteJobClaimRefusesAForeignClaim(t *testing.T) {
 	ctx := context.Background()
-	c := testClient(jobClaim("llmbench-job-a", "job-a"))
-	err := c.AnnotateJobClaim(ctx, "job-a", map[string]string{
-		AgentResultAnnotation: "complete",
-		AgentBranchAnnotation: "llmbench/job-a",
-		AgentCommitAnnotation: "deadbeef",
-	})
-	if err != nil {
-		t.Fatal(err)
+	// A claim with the deterministic name but without llmbench ownership must
+	// not be deleted: the name is derived from a predictable job id.
+	foreign := readyClaim(JobClaimName("job-a"))
+	c := testClient(foreign)
+	if _, err := c.DeleteJobClaim(ctx, "job-a"); err == nil {
+		t.Fatal("a foreign claim was deleted")
 	}
-	claim, err := c.Extensions.SandboxClaims("bench").Get(ctx, "llmbench-job-a", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err)
+	if _, err := c.Extensions.SandboxClaims("bench").Get(ctx, JobClaimName("job-a"), metav1.GetOptions{}); err != nil {
+		t.Fatalf("the foreign claim is gone: %v", err)
 	}
-	if claim.Annotations[AgentResultAnnotation] != "complete" || claim.Annotations[AgentBranchAnnotation] != "llmbench/job-a" {
-		t.Fatalf("annotations = %v", claim.Annotations)
+	// Ours is deleted, and a second delete is idempotent.
+	ours := testClient(jobClaim(JobClaimName("job-a"), "job-a"))
+	if done, err := ours.DeleteJobClaim(ctx, "job-a"); err != nil || !done {
+		t.Fatalf("delete: done=%v err=%v", done, err)
 	}
-	// Annotating a job without a sandbox fails instead of creating anything.
-	if err := c.AnnotateJobClaim(ctx, "job-b", map[string]string{AgentResultAnnotation: "complete"}); err == nil {
-		t.Fatal("annotating a missing sandbox succeeded")
+	if done, err := ours.DeleteJobClaim(ctx, "job-a"); err != nil || !done {
+		t.Fatalf("second delete: done=%v err=%v", done, err)
 	}
 }
 
@@ -111,5 +109,19 @@ func TestDeleteJobClaimIsIdempotent(t *testing.T) {
 	done, err := c.DeleteJobClaim(ctx, "job-a")
 	if err != nil || !done {
 		t.Fatalf("delete of a missing claim: done=%v err=%v", done, err)
+	}
+}
+
+func TestAgentResultNeedsASandbox(t *testing.T) {
+	// Both directions go through the job's sandbox, so a job without one is an
+	// error rather than a silent success. The file transfer itself is covered
+	// by the port-forward tests.
+	ctx := context.Background()
+	c := testClient()
+	if err := c.WriteAgentResult(ctx, "job-a", AgentResult{Status: "complete", Branch: "b", Commit: "c"}); err == nil {
+		t.Fatal("writing a result without a sandbox succeeded")
+	}
+	if _, _, err := c.ReadAgentResult(ctx, "job-a"); err == nil {
+		t.Fatal("reading a result without a sandbox succeeded")
 	}
 }

@@ -1,7 +1,9 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 
@@ -26,18 +28,18 @@ const ManagedByValue = "llmbench"
 // is just the next lookup (docs/mvp.md §8.1).
 const JobLabel = "llmbench.io/job-id"
 
-// AgentResultAnnotation is where the Agent records that it finished, so the
-// controller learns an optimization round is done without polling the DSH.
-const AgentResultAnnotation = "llmbench.io/agent-result"
-
-// AgentBranchAnnotation and AgentCommitAnnotation carry the pushed result.
-const (
-	AgentBranchAnnotation = "llmbench.io/branch"
-	AgentCommitAnnotation = "llmbench.io/commit"
-)
-
 // JobClaimName is the deterministic claim name for a job.
 func JobClaimName(jobID string) string { return "llmbench-job-" + jobID }
+
+// ownsClaim reports whether a claim is this job's llmbench claim. Every path
+// that attaches to or deletes a claim checks it: the claim name is derived
+// from a predictable job id, so the name alone proves nothing.
+func ownsClaim(claim *extv1beta1.SandboxClaim, jobID string) error {
+	if claim.Labels[JobLabel] != jobID || claim.Labels[ManagedByLabel] != ManagedByValue {
+		return fmt.Errorf("sandbox: claim %s is not this job's llmbench claim (labels %v)", claim.Name, claim.Labels)
+	}
+	return nil
+}
 
 // EnsureJobClaim creates the job's claim if it is absent and waits until it is
 // ready. ready=false means "not yet": the caller retries rather than treating
@@ -82,8 +84,27 @@ func (c *Client) EnsureJobClaim(ctx context.Context, jobID, warmPool string) (bo
 }
 
 // DeleteJobClaim removes the job's claim and waits until it is gone.
+//
+// The ownership check happens before the delete: the name is derived from a
+// predictable job id, so deleting by name alone could remove a claim that is
+// not ours.
 func (c *Client) DeleteJobClaim(ctx context.Context, jobID string) (bool, error) {
-	return c.ReleaseSandboxClaim(ctx, JobClaimName(jobID))
+	claims, err := c.claims()
+	if err != nil {
+		return false, err
+	}
+	name := JobClaimName(jobID)
+	existing, err := claims.Get(ctx, name, metav1.GetOptions{})
+	switch {
+	case apierrors.IsNotFound(err):
+		return true, nil // already gone: cleanup is idempotent
+	case err != nil:
+		return false, fmt.Errorf("sandbox: read claim %s: %w", name, err)
+	}
+	if err := ownsClaim(existing, jobID); err != nil {
+		return false, err
+	}
+	return c.ReleaseSandboxClaim(ctx, name)
 }
 
 // FindJobClaim returns the claim of a job.
@@ -125,36 +146,53 @@ func (c *Client) FindJobClaim(ctx context.Context, jobID string) (string, error)
 	}
 }
 
-// AnnotateJobClaim records the Agent's result on the claim.
-func (c *Client) AnnotateJobClaim(ctx context.Context, jobID string, annotations map[string]string) error {
+// AgentResultPath is where the Agent records that it finished. The result is a
+// file inside its own sandbox rather than an annotation on the claim: the
+// Agent's ServiceAccount is read-only for claims, so it cannot rewrite the
+// sandbox spec, and the record travels with the artifacts it describes.
+const AgentResultPath = "/workspace/.llmbench-agent-result.json"
+
+// AgentResult is the Agent's completion record.
+type AgentResult struct {
+	Status string `json:"status"`
+	Branch string `json:"branch,omitempty"`
+	Commit string `json:"commit,omitempty"`
+	// Note is free text for the reviewer (what was tried, what was left out).
+	Note string `json:"note,omitempty"`
+}
+
+// WriteAgentResult stores the Agent's completion record in its sandbox.
+func (c *Client) WriteAgentResult(ctx context.Context, jobID string, result AgentResult) error {
+	payload, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("sandbox: encode the agent result: %w", err)
+	}
 	name, err := c.FindJobClaim(ctx, jobID)
 	if err != nil {
 		return err
 	}
-	claims, err := c.claims()
-	if err != nil {
+	if err := c.Put(ctx, name, bytes.NewReader(append(payload, '\n')), AgentResultPath); err != nil {
 		return err
 	}
-	for attempt := 0; attempt < 3; attempt++ {
-		claim, err := claims.Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			return fmt.Errorf("sandbox: read claim %s: %w", name, err)
-		}
-		if claim.Annotations == nil {
-			claim.Annotations = map[string]string{}
-		}
-		for k, v := range annotations {
-			claim.Annotations[k] = v
-		}
-		if _, err := claims.Update(ctx, claim, metav1.UpdateOptions{}); err != nil {
-			if apierrors.IsConflict(err) {
-				continue
-			}
-			return fmt.Errorf("sandbox: annotate claim %s: %w", name, err)
-		}
-		return nil
+	return nil
+}
+
+// ReadAgentResult reads the Agent's completion record, if it wrote one.
+func (c *Client) ReadAgentResult(ctx context.Context, jobID string) (AgentResult, bool, error) {
+	name, err := c.FindJobClaim(ctx, jobID)
+	if err != nil {
+		return AgentResult{}, false, err
 	}
-	return fmt.Errorf("sandbox: claim %s kept changing; the annotation may not have landed", name)
+	payload, err := c.Pull(ctx, name, AgentResultPath)
+	if err != nil {
+		// A missing record is "the Agent has not finished", not a failure.
+		return AgentResult{}, false, nil
+	}
+	var result AgentResult
+	if err := json.Unmarshal(bytes.TrimSpace(payload), &result); err != nil {
+		return AgentResult{}, false, fmt.Errorf("sandbox: decode the agent result: %w", err)
+	}
+	return result, true, nil
 }
 
 // JobExec runs a command in the job's current sandbox.

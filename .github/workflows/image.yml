@@ -27,5 +27,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      - uses: ko-build/setup-ko@v0.9
-      - run: ko build ./cmd/llmbench --bare --platform=linux/amd64,linux/arm64 --tags=latest,${{ github.sha }}
+      - run: go install github.com/google/ko@v0.19.1
+      - run: echo "${{ github.token }}" | "$(go env GOPATH)/bin/ko" login ghcr.io --username "${{ github.actor }}" --password-stdin
+      - run: '"$(go env GOPATH)/bin/ko" build ./cmd/llmbench --bare --platform=linux/amd64,linux/arm64 --tags=latest,${{ github.sha }}'

@@ -97,7 +97,7 @@ workload:
       prompt: prompts/short.txt     # リポジトリ相対 or インラインの `prompt_text`
       max_tokens: 256
       repeats: 3
-  concurrency: 1
+  concurrency: 1                    # MVP は 1 のみ(並列計測は未実装。2 以上は拒否)
   sampling: {temperature: 0, seed: 1}
 metrics:
   collectors: [harness, runtime, nvidia]
@@ -157,6 +157,7 @@ runtime adapter が持つのは次の 3 点だけ:
 
 - **値を出した source を必ず記録する**。`harness` と `external_gpu`(nvidia-smi)は harness が直接観測した値、`runtime` は runtime の自己申告である。
 - **collector は workload 実行中に周期的にサンプルする**(既定 500ms)。GPU の VRAM ピークや util 平均は、ケース終了後の1回の読み取りでは意味を持たない(ピークを取り逃し、idle 値を平均してしまう)。集約は「VRAM = 周期サンプルの最大」「util = 周期サンプルの平均」。
+- **startup の 1 回の読み取りでは required collector を満たさない**: 要求された collector は **workload 実行中に最低 1 回**サンプルしなければ充足とみなさない(workload より前に取った値は workload について何も言えないため、足りなければ invalid)。
 - **runtime metrics は要約 metric にしない**。llama.cpp の counter はプロセス生存期間の累積、FreeToken の throughput は sliding window であり、ケース後の1回の読み取りを「その case の値」とラベル付けすると意味が変わる。runtime の値は **`series.jsonl` のサンプル(時刻と case ラベル付き)としてのみ**記録し、Agent が推移を読む。
 - **測定対象そのものを凍結する**: `result.json` の `inputs` に、解決済みの `model_path`・operator が pin した `model_digest`・**各 case のプロンプト実バイトの digest** を記録する(JobSpec には model id とプロンプトのパスしか無いため、別の weights や別のプロンプトファイルを指しても「同じ入力」に見えてしまう)。**プロンプトは測定前に一度だけ読み、その同一バイトを digest と実際のリクエストの両方に使う**(ファイルが途中で変わっても digest と送信内容がずれない)。**`model_digest` は operator が pin する**: pin が無い実行は入力 identity を凍結できないため `measurement_valid=false` になる。
 - **環境(GPU の機種とドライバ)は collector の設定に依存せず取得する**。nvidia collector を要求していないジョブでも環境 identity は記録される(取得に失敗しても invalid にはしない。要求していた場合だけ gap になる)。

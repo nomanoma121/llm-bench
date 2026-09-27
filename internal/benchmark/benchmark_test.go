@@ -673,3 +673,48 @@ func TestPromptBytesAreFrozenBeforeMeasuring(t *testing.T) {
 		t.Fatalf("prompt digest = %q, want the frozen original bytes", got)
 	}
 }
+
+func TestUnrequestedCollectorsAreNotSampled(t *testing.T) {
+	// A runtime-only job must not run nvidia-smi every interval, and must not
+	// publish GPU metrics the operator did not ask for.
+	calls := 0
+	gpu := countingGPU{onSample: func() { calls++ }}
+	h := newHarness(t, llamaOK(2), func(s *job.Spec) {
+		s.Metrics.Collectors = []job.Collector{job.CollectorHarness, job.CollectorRuntime}
+	}, gpu, nil)
+	outcome := h.run(t)
+	// The identity probe reads the GPU once; the periodic sampler must not.
+	if calls != 1 {
+		t.Fatalf("nvidia-smi was called %d times for a runtime-only job", calls)
+	}
+	for _, m := range outcome.Result.Metrics {
+		if m.Source == measurement.SourceExternalGPU {
+			t.Fatalf("unrequested GPU metric %s was recorded", m.Name)
+		}
+	}
+}
+
+type countingGPU struct{ onSample func() }
+
+func (c countingGPU) Sample(context.Context) (GPUSample, []string, error) {
+	c.onSample()
+	return goodGPU().sample, nil, nil
+}
+
+func TestRequiredCollectorNeedsAWorkloadSample(t *testing.T) {
+	// The workload finishes before the sampler's first tick: the startup
+	// readings cannot certify the workload, so the run is invalid rather than
+	// reporting a collector that never observed it.
+	h := newHarness(t, llamaOK(1), func(s *job.Spec) {
+		s.Metrics.Collectors = []job.Collector{job.CollectorHarness, job.CollectorGPU}
+		s.Workload.Cases = []job.Case{{Name: "tiny", PromptText: "a", MaxTokens: 1, Repeats: 1}}
+	}, nil, nil)
+	h.sampleInterval = time.Hour
+	outcome := h.run(t)
+	if outcome.Result.MeasurementValid {
+		t.Fatal("a required collector that never sampled the workload was accepted")
+	}
+	if !strings.Contains(strings.Join(outcome.Result.InvalidReasons, " "), "no sample while the workload ran") {
+		t.Fatalf("reasons = %v", outcome.Result.InvalidReasons)
+	}
+}

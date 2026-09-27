@@ -39,11 +39,14 @@ type runState struct {
 	start    time.Time
 	required []job.Collector
 
-	mu             sync.Mutex
-	observations   []observation
-	samples        []Sample
-	gpu            []GPUSample
-	gpuRaw         []string
+	mu           sync.Mutex
+	observations []observation
+	samples      []Sample
+	gpu          []GPUSample
+	gpuRaw       []string
+	// collectorSeen counts samples taken while a case was running: a reading
+	// from before the workload says nothing about it, so it cannot satisfy a
+	// required collector.
 	collectorSeen  map[job.Collector]int
 	collectorGaps  map[job.Collector]int
 	invalidReasons []string
@@ -246,7 +249,7 @@ func (s *runState) collectRuntime(ctx context.Context) {
 		}
 		s.addSample(m.Name, source, m.Unit, m.Value, s.caseLabelsLocked(m.Labels), 0, 0, at)
 	}
-	s.collectorSeen[job.CollectorRuntime]++
+	s.noteWorkloadSampleLocked(job.CollectorRuntime)
 }
 
 // sampleRuntime calls the adapter's metrics endpoint with its own deadline: a
@@ -280,9 +283,11 @@ func (s *runState) collectGPU(ctx context.Context) {
 	s.gpu = append(s.gpu, sample)
 	s.gpuRaw = append(s.gpuRaw, raw...)
 	if !s.wants(job.CollectorGPU) {
+		// The reading still feeds the environment identity, but an
+		// unrequested collector records no samples.
 		return
 	}
-	s.collectorSeen[job.CollectorGPU]++
+	s.noteWorkloadSampleLocked(job.CollectorGPU)
 	for _, g := range sample.GPUs {
 		labels := s.caseLabelsLocked(map[string]string{"gpu": g.Model})
 		s.addSample("vram_used_mib", measurement.SourceExternalGPU, "MiB", float64(g.UsedMiB), labels, 0, 0, at)
@@ -314,14 +319,29 @@ func (s *runState) startSampling(ctx context.Context) (stop func()) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				s.collectGPU(ctx)
-				s.collectRuntime(ctx)
+				// Only sample what the job asked for: an unrequested
+				// collector must not add load to the measurement (and must
+				// not add metrics the operator did not want).
+				if s.wants(job.CollectorGPU) {
+					s.collectGPU(ctx)
+				}
+				if s.wants(job.CollectorRuntime) {
+					s.collectRuntime(ctx)
+				}
 			}
 		}
 	}()
 	return func() {
 		close(done)
 		wg.Wait()
+	}
+}
+
+// noteWorkloadSampleLocked counts a sample towards the collector requirement
+// only when a case is running. Callers hold the lock.
+func (s *runState) noteWorkloadSampleLocked(c job.Collector) {
+	if s.currentCase != "" {
+		s.collectorSeen[c]++
 	}
 }
 
@@ -550,7 +570,7 @@ func (s *runState) finalizeValidity() {
 	defer s.mu.Unlock()
 	for _, c := range s.required {
 		if s.collectorSeen[c] == 0 {
-			s.addReasonLocked(fmt.Sprintf("%s collector produced no sample; the job requires it", c))
+			s.addReasonLocked(fmt.Sprintf("%s collector produced no sample while the workload ran; the job requires it", c))
 		}
 	}
 }

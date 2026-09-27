@@ -1,5 +1,7 @@
 # Implementation plan
 
+> **現在の作業計画は §4「MVP」であり、仕様は `docs/mvp.md` が正である。**§1〜§3c と §4b は v1.6/v1.7 の実装履歴である。MVP は旧仕様との互換性を保たない(visual 経路は freeze し、後で削除する)。
+
 ## 1. Local vertical slice
 
 - [x] Define and validate a minimal `config.yaml` without changing existing placeholder experiments.
@@ -45,9 +47,9 @@ The controller will stop owning permanent publication: it serves an authenticate
 
 The split is implemented: the controller seals artifacts, serves authenticated previews and records the review in the Issue; `adopt` materializes the accepted artifact (with the authorizing vote) into `experiments/<model-id>/<experiment-id>/output/`, and CI publishes on merge. Digests and path checks live in Go, so the site toolchain never re-implements hashing. Publishing to GitHub Pages has not yet been exercised by a real merge.
 
-## 3c. Measurement and optimization (designed in `docs/architecture.md` v1.7 and `docs/optimization.md`, **not implemented**)
+## 3c. Measurement and optimization (superseded by `docs/mvp.md`)
 
-The controller stays a single-Run state machine; measurement evidence is a separate sealed artifact and promotion decisions are computed by the harness, not claimed by the Agent.
+この節は v1.7 設計の履歴である。**MVP では C〜H のうち `compare` 以外を実装しない**(MeasurementWindow、PromotionPolicy による自動採否、OptimizationSession 台帳、公開サイトへの metrics 反映は凍結)。B(sealed evidence)の `internal/measurement` は MVP の `result.json` の基盤として流用する。
 
 - [x] A: measurement identity — record `MetricsDigest`, the frozen `MeasurementProtocol` (snapshot + digest), `RuntimeSpecDigest`, `RuntimeBuildDigest` and `EnvironmentDigest` on the run, without changing the existing `BenchmarkFingerprint`. `RunKind` (empty decodes as legacy visual) and the executor's `ExecutionOutputs` are in place, and the engine enforces each kind's required output instead of trusting a nil error.
 - [ ] B: sealed evidence — `evidence/metrics.json` with schema validation, metric source/trust, measurement validity, size bounds, atomic seal; `GET /v1/runs/{id}/metrics` on the authenticated control API; `llmbench metrics --json`.
@@ -60,7 +62,20 @@ The controller stays a single-Run state machine; measurement evidence is a separ
 
 Explicitly not doing: attempts inside a run, sharing a SandboxClaim across a window, re-running the same run, Agent-controlled promotion, runtime-reported metrics as the primary objective, a single weighted score, always-on profiling.
 
-## 4. Human evaluation and Agent loop
+## 4. MVP (spec: `docs/mvp.md`)
+
+2 本の経路(benchmark / optimization)を end-to-end で動かすことが完了条件。PR 単位で進める。
+
+- [ ] `internal/job`: JobSpec の parse / validate(CLI と Controller が同一コードを共有、unknown field は拒否)+ `llmbench job validate|init` + GitHub Issue Form(`.github/ISSUE_TEMPLATE/`)。
+- [ ] `internal/runtime` + `llmbench benchmark`: runtime adapter(llamacpp / freetoken)、runtime 起動と readiness、case ごとの計測、collector(harness / runtime / nvidia)、`experiments/<model-id>/<job-id>/` への `jobspec.yaml` / `result.json` / `series.jsonl` / `README.md` / `raw/` 出力、`--push` での commit / push。
+- [ ] `llmbench compare`: baseline と candidate の中央値・delta・`valid`・`comparable`(+理由)・prefill 回帰・VRAM 差分を**事実としてのみ**返す(採否は返さない)。
+- [ ] GitHub App 認証(`internal/githubapp`): private key から JWT → installation token(キャッシュ + 期限前更新)+ Issue polling + push 済みブランチからの PR 作成 + リンクコメント。
+- [ ] Controller 薄版(`llmbench controller`, Deployment): Issue poll → JobSpec 検証 → claim ラベル → Lease → GitOps pause → SandboxClaim → Sandbox 内 `llmbench benchmark --push` → PR → claim 削除 → restore → release → 完了ラベル。startup と定期の recovery、write-ahead、mandatory restore、同一 job を再実行しない規律。ConfigMap store と leader election は作らない。
+- [ ] Helm chart: controller Deployment / RBAC / GitHub App Secret / gpuLease / gitops / sandbox / models / runtimeImages / dsh option。
+- [ ] Agent / DSH 連携: 既存 DSH deployment を参照し、Sandbox の bind / rebind と `llmbench sandbox exec|cp|shell`(port-forward transport)を提供する。conversation も session も llm-bench は持たない。
+- [ ] 実データで `result.json` / `compare` の形式を調整し、凍結した visual 経路(httpapi / serve / preview / adopt / sitebuild / review / discord / pages workflow)を削除する。
+
+## 4b. Human evaluation and Agent loop (v1.6/v1.7, frozen for MVP)
 
 - [x] Post A/B requests and run links to the originating Issue; record A/B/tie/invalid votes through the CLI (which posts marker comments) and rebuild the vote history from the Issue. There is no vote endpoint on the HTTP API; free-form Issue replies are not parsed as votes.
 - [x] Optionally send Discord notifications linking to that Issue.

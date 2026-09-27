@@ -25,7 +25,14 @@ func NewGitHubAPIFromEnv(ctx context.Context, owner, repository, baseBranch stri
 	if err != nil {
 		return nil, fmt.Errorf("gitops: github client: %w", err)
 	}
-	return &githubAPI{gh: client, owner: owner, repo: repository, base: baseBranch}, nil
+	return NewGitHubAPI(client, owner, repository, baseBranch), nil
+}
+
+// NewGitHubAPI binds an already authenticated client to one manifest
+// repository, so the MVP controller can use its GitHub App installation
+// instead of a personal token.
+func NewGitHubAPI(client *github.Client, owner, repository, baseBranch string) GitHubAPI {
+	return &githubAPI{gh: client, owner: owner, repo: repository, base: baseBranch}
 }
 
 type githubAPI struct {

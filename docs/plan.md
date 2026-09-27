@@ -69,8 +69,8 @@ Explicitly not doing: attempts inside a run, sharing a SandboxClaim across a win
 - [x] `internal/job`: JobSpec の parse / validate(CLI と Controller が同一コードを共有、unknown field は拒否)+ `llmbench job validate|init` + GitHub Issue Form(`.github/ISSUE_TEMPLATE/`)。
 - [x] `internal/runtime` + `llmbench benchmark`: runtime adapter(llamacpp / freetoken)、runtime 起動と readiness、case ごとの計測、collector(harness / runtime / nvidia)、`experiments/<model-id>/<job-id>/` への `jobspec.yaml` / `result.json` / `series.jsonl` / `README.md` / `raw/` 出力、`--push` での commit / push。
 - [x] `llmbench compare`: baseline と candidate の metric delta・`measurement_valid`・`comparable`(+理由)を**事実としてのみ**返す(採否は返さない)。
-- [ ] GitHub App 認証(`internal/githubapp`): private key から JWT → installation token(キャッシュ + 期限前更新)+ Issue polling + push 済みブランチからの PR 作成 + リンクコメント。
-- [ ] Controller 薄版(`llmbench controller`, Deployment): Issue poll → JobSpec 検証 → claim ラベル → Lease → GitOps pause → SandboxClaim → Sandbox 内 `llmbench benchmark --push` → PR → claim 削除 → restore → release → 完了ラベル。startup と定期の recovery、write-ahead、mandatory restore、同一 job を再実行しない規律。ConfigMap store と leader election は作らない。
+- [x] GitHub App 認証(`internal/githubapp`): private key から JWT → installation token(キャッシュ + 期限前更新)+ Issue polling + push 済みブランチからの PR 作成 + リンクコメント。
+- [x] Controller 薄版(`llmbench controller`, Deployment): Issue poll → JobSpec 検証 → claim ラベル → Lease → GitOps pause → SandboxClaim → Sandbox 内 `llmbench benchmark --push` → PR → claim 削除 → restore → release → 完了ラベル。startup と定期の recovery、write-ahead、mandatory restore、同一 job を再実行しない規律。ConfigMap store と leader election は作らない。
 - [ ] Helm chart: controller Deployment / RBAC / GitHub App Secret / gpuLease / gitops / sandbox / models / runtimeImages / dsh option。
 - [ ] Agent / DSH 連携: 既存 DSH deployment を参照し、Sandbox の bind / rebind と `llmbench sandbox exec|cp|shell`(port-forward transport)を提供する。conversation も session も llm-bench は持たない。
 - [ ] 実データで `result.json` / `compare` の形式を調整し、凍結した visual 経路(httpapi / serve / preview / adopt / sitebuild / review / discord / pages workflow)を削除する。

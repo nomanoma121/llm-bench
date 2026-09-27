@@ -33,6 +33,7 @@ func newRootCmd() *cobra.Command {
 		newJobCmd(),
 		newBenchmarkCmd(&g),
 		newCompareCmd(),
+		newControllerCmd(&g),
 		newSubmitCmd(&g),
 		newStatusCmd(&g),
 		newServeCmd(&g),

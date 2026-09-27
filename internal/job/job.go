@@ -392,17 +392,18 @@ func (s Spec) outputErrors(c Constraints) []error {
 	return errs
 }
 
-// Digest is the canonical identity of the spec: SHA-256 over its JSON form.
-// The controller freezes it on the run so that the spec a result belongs to
-// can be proven later, and so that a re-submitted spec with the same content
-// is recognisably the same job.
+// Digest is the canonical identity of the spec: the bare hexadecimal SHA-256
+// of its JSON form, the same shape measurement and provenance digests use. The
+// controller freezes it on the job so that the spec a result belongs to can be
+// proven later, and so that a re-submitted spec with the same content is
+// recognisably the same job.
 func (s Spec) Digest() (string, error) {
 	b, err := json.Marshal(s)
 	if err != nil {
 		return "", fmt.Errorf("job: canonical spec: %w", err)
 	}
 	sum := sha256.Sum256(b)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // reserves reports whether the adapter owns the flag. The comparison ignores

@@ -202,16 +202,24 @@ func (e Evidence) Validate() error {
 			return fmt.Errorf("%w: empty invalid reason", ValidationError)
 		}
 	}
-	if len(e.Metrics) == 0 && e.MeasurementValid {
+	return validateMeasurements(e.Metrics, e.Series, e.Collectors, e.MeasurementValid)
+}
+
+// validateMeasurements holds the metric, series and collector rules shared by
+// the frozen run evidence and the MVP job result. It is fail-closed: a valid
+// document with no metrics, a duplicate identity, an oversized series or a
+// collector gap next to measurement_valid=true are all rejected.
+func validateMeasurements(metrics []Metric, series []Series, collectors []CollectorStatus, valid bool) error {
+	if len(metrics) == 0 && valid {
 		// A valid measurement with no metrics would let a policy "succeed" on
 		// an empty evidence.
 		return fmt.Errorf("%w: valid evidence must contain at least one metric", ValidationError)
 	}
-	if len(e.Metrics) > MaxMetricCount {
-		return fmt.Errorf("%w: %d metrics exceeds the limit %d", ValidationError, len(e.Metrics), MaxMetricCount)
+	if len(metrics) > MaxMetricCount {
+		return fmt.Errorf("%w: %d metrics exceeds the limit %d", ValidationError, len(metrics), MaxMetricCount)
 	}
 	seenMetrics := map[string]bool{}
-	for i, m := range e.Metrics {
+	for i, m := range metrics {
 		if err := m.validate(); err != nil {
 			return fmt.Errorf("%w: metrics[%d]: %v", ValidationError, i, err)
 		}
@@ -224,7 +232,7 @@ func (e Evidence) Validate() error {
 	}
 	total := 0
 	seenSeries := map[string]bool{}
-	for i, s := range e.Series {
+	for i, s := range series {
 		if err := s.validate(); err != nil {
 			return fmt.Errorf("%w: series[%d]: %v", ValidationError, i, err)
 		}
@@ -238,7 +246,7 @@ func (e Evidence) Validate() error {
 	if total > MaxTotalSeriesPoints {
 		return fmt.Errorf("%w: %d series points exceed the limit %d", ValidationError, total, MaxTotalSeriesPoints)
 	}
-	for i, c := range e.Collectors {
+	for i, c := range collectors {
 		if c.Name == "" {
 			return fmt.Errorf("%w: collectors[%d].name is required", ValidationError, i)
 		}
@@ -250,7 +258,7 @@ func (e Evidence) Validate() error {
 		}
 		// A collector that missed samples cannot certify a clean environment
 		// (docs/optimization.md §5.5).
-		if c.Gaps > 0 && e.MeasurementValid {
+		if c.Gaps > 0 && valid {
 			return fmt.Errorf("%w: collector %q reported %d gaps but the measurement is marked valid", ValidationError, c.Name, c.Gaps)
 		}
 	}
@@ -426,10 +434,17 @@ func Seal(dir string, e Evidence) (Sealed, error) {
 	if err != nil {
 		return Sealed{}, err
 	}
+	return atomicSeal(dir, EvidenceFileName, ".metrics-", b)
+}
+
+// atomicSeal is the shared write-ahead write: temp file, fsync, rename,
+// parent fsync. Both the frozen run evidence and the MVP job result use it so
+// the durability argument only has to hold once.
+func atomicSeal(dir, name, tmpPrefix string, b []byte) (Sealed, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return Sealed{}, fmt.Errorf("measurement: seal: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".metrics-*.tmp")
+	tmp, err := os.CreateTemp(dir, tmpPrefix+"*.tmp")
 	if err != nil {
 		return Sealed{}, fmt.Errorf("measurement: seal: %w", err)
 	}
@@ -446,7 +461,7 @@ func Seal(dir string, e Evidence) (Sealed, error) {
 	if err := tmp.Close(); err != nil {
 		return Sealed{}, fmt.Errorf("measurement: seal: %w", err)
 	}
-	final := filepath.Join(dir, EvidenceFileName)
+	final := filepath.Join(dir, name)
 	if err := os.Rename(tmpName, final); err != nil {
 		return Sealed{}, fmt.Errorf("measurement: seal: %w", err)
 	}

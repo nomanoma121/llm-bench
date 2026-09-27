@@ -36,9 +36,8 @@ jobs:
     runs-on: [self-hosted, llm-bench-deploy]
     timeout-minutes: 10
     env:
-      DOCKER_CONFIG: ${{ runner.temp }}/docker
       REGISTRY_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
       - run: helm package charts/llmbench -d "$RUNNER_TEMP/chart"
-      - run: helm push "$RUNNER_TEMP"/chart/*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts --registry-config "$RUNNER_TEMP/registry.json" --username "${{ github.actor }}" --password "$REGISTRY_TOKEN"
+      - run: DOCKER_CONFIG="$RUNNER_TEMP/docker" helm push "$RUNNER_TEMP"/chart/*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts --registry-config "$RUNNER_TEMP/registry.json" --username "${{ github.actor }}" --password "$REGISTRY_TOKEN"

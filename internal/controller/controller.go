@@ -171,11 +171,14 @@ func (c *Controller) RunOnce(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	// One job at a time: the lease rejects the rest anyway, and taking them in
-	// order keeps the queue visible in the Issues themselves.
-	if err := c.run(ctx, issues[0]); err != nil {
+	// order keeps the queue visible in the Issues themselves. handled is true
+	// only when this poll actually moved a job forward — a pending Issue whose
+	// lease is busy must not turn the loop into a spin against the GitHub API.
+	progressed, err := c.run(ctx, issues[0])
+	if err != nil {
 		c.logf("issue #%d: %v", issues[0].Number, err)
 	}
-	return true, nil
+	return progressed, nil
 }
 
 // Run is the control loop: it recovers unfinished work periodically and polls
@@ -243,8 +246,12 @@ func (c *Controller) Recover(ctx context.Context) error {
 		return nil
 	}
 	if record.Holder == "" {
-		// The lease was released: this job is finished, and a released record
-		// must never be resurrected by a later recovery pass.
+		// The lease was released: the job is finished and must not be
+		// resurrected. What may still be missing is the label mirror, if the
+		// controller died between writing the labels and releasing the lease.
+		if record.Outcome != "" && record.Issue > 0 {
+			c.syncLabels(ctx, record.Issue, record.Outcome)
+		}
 		return nil
 	}
 	holder := c.holderFor(record.JobID)
@@ -329,14 +336,14 @@ func (c *Controller) reconcile(ctx context.Context, record lease.Record) error {
 
 // run executes one request end to end. Every step is idempotent and the phase
 // is written before the effect, so a crash anywhere is recoverable.
-func (c *Controller) run(ctx context.Context, issue Issue) error {
+func (c *Controller) run(ctx context.Context, issue Issue) (bool, error) {
 	request, err := c.parse(issue)
 	if err != nil {
 		// An invalid request never takes the GPU: it is answered on the Issue.
 		c.logf("issue #%d: %v", issue.Number, err)
 		_ = c.Gateway.Comment(ctx, issue.Number, "llmbench could not accept this request:\n\n```\n"+err.Error()+"\n```")
 		_ = c.Gateway.Label(ctx, issue.Number, c.Config.Labels.Failed)
-		return nil
+		return true, nil
 	}
 	holder := c.holderFor(request.JobID)
 	record := lease.Record{
@@ -348,25 +355,27 @@ func (c *Controller) run(ctx context.Context, issue Issue) error {
 	// another writer (or an earlier attempt) is already on it.
 	acquired, err := c.Lease.Acquire(ctx, holder, record, false)
 	if err != nil {
-		return fmt.Errorf("acquire the gpu lease: %w", err)
+		return false, fmt.Errorf("acquire the gpu lease: %w", err)
 	}
 	if !acquired {
 		c.logf("issue #%d: the gpu lease is held elsewhere; leaving it for the next poll", issue.Number)
-		return nil
+		return false, nil
 	}
 	record.Holder = holder
 	if err := c.claim(ctx, issue); err != nil {
-		return c.abort(ctx, record, "could not claim the request", err)
+		return true, c.abort(ctx, record, "could not claim the request", err)
 	}
 
-	stopRenew := c.startRenewal(ctx, holder)
+	jobCtx, cancelJob := context.WithCancel(ctx)
+	defer cancelJob()
+	stopRenew := c.startRenewal(jobCtx, holder, cancelJob)
 	defer stopRenew()
 
-	if err := c.execute(ctx, request, &record); err != nil {
-		return c.abort(ctx, record, "the job did not complete", err)
+	if err := c.execute(jobCtx, request, &record); err != nil {
+		return true, c.abort(ctx, record, "the job did not complete", err)
 	}
 	record.Outcome = lease.OutcomeSucceeded
-	return c.finish(ctx, record)
+	return true, c.finish(ctx, record)
 }
 
 // parse turns an Issue into a validated request. A rejected request is a fact
@@ -492,7 +501,11 @@ func (c *Controller) execute(ctx context.Context, request Request, record *lease
 	}
 	request.Branch, request.Commit = result.Branch, result.Commit
 	record.Branch, record.Commit = result.Branch, result.Commit
+	// The outcome is durable with the phase that follows the measurement: a
+	// crash after this point must not let recovery reinterpret a successful
+	// run as a failed one.
 	record.Phase = lease.PhaseExecuted
+	record.Outcome = lease.OutcomeSucceeded
 	if err := c.annotate(ctx, record); err != nil {
 		return err
 	}
@@ -586,7 +599,7 @@ func (c *Controller) finish(ctx context.Context, record lease.Record) error {
 	// The renewal keeps running while cleanup waits for a human merge: if the
 	// lease expired here, another controller could take the GPU away from a job
 	// that is still restoring.
-	stopRenew := c.startRenewal(cleanup, holder)
+	stopRenew := c.startRenewal(cleanup, holder, func() {})
 	defer stopRenew()
 
 	// The outcome is durable before cleanup starts, so the labels mirror the
@@ -612,10 +625,13 @@ func (c *Controller) finish(ctx context.Context, record lease.Record) error {
 	if err := c.annotate(cleanup, &record); err != nil {
 		return err
 	}
+	// The labels are part of completion, so they are written before the lease
+	// goes away: a crash after the release would leave the Issue looking
+	// claimed forever, and recovery cannot act on a released record.
+	c.syncLabels(cleanup, record.Issue, record.Outcome)
 	if err := c.Lease.Release(cleanup, holder); err != nil {
 		return fmt.Errorf("release the gpu lease: %w", err)
 	}
-	c.syncLabels(ctx, record.Issue, record.Outcome)
 	return nil
 }
 
@@ -760,7 +776,12 @@ func (c *Controller) annotate(ctx context.Context, record *lease.Record) error {
 }
 
 // startRenewal keeps the lease alive while a job runs.
-func (c *Controller) startRenewal(ctx context.Context, holder string) func() {
+//
+// Losing the lease cancels the job: once another instance has taken it over,
+// continuing to measure would use a GPU this process no longer owns, and
+// pushing a branch would publish a result for a job that is being recovered
+// elsewhere. The lease is a fence, so losing it stops the work.
+func (c *Controller) startRenewal(ctx context.Context, holder string, onLost func()) func() {
 	interval := c.Config.LeaseRenewInterval
 	if interval <= 0 {
 		interval = 5 * time.Minute
@@ -777,7 +798,9 @@ func (c *Controller) startRenewal(ctx context.Context, holder string) func() {
 				return
 			case <-ticker.C:
 				if err := c.Lease.Renew(ctx, holder); err != nil {
-					c.logf("renewing the gpu lease: %v", err)
+					c.logf("renewing the gpu lease failed: %v", err)
+					onLost()
+					return
 				}
 			}
 		}

@@ -45,6 +45,12 @@ func (ExecStarter) Start(ctx context.Context, argv []string, logPath string) (Pr
 	cmd.Stdout = log
 	cmd.Stderr = log
 	cmd.Stdin = nil
+	// The runtime is the candidate's code. It inherits the harness
+	// environment, which holds the short-lived git token the result is pushed
+	// with, so that token is removed here: the runtime has no business
+	// publishing anything, and a runtime that logs its environment would leak
+	// a write credential into the measurement's raw output.
+	cmd.Env = runtimeEnv(os.Environ())
 	// A new process group lets Stop signal every descendant: runtimes spawn
 	// worker threads and helper processes, and leaving them behind would hold
 	// the GPU after the run reports itself finished.
@@ -55,6 +61,24 @@ func (ExecStarter) Start(ctx context.Context, argv []string, logPath string) (Pr
 	}
 	return &execProcess{cmd: cmd, log: log}, nil
 }
+
+// runtimeEnv removes the publishing credential from the environment the
+// runtime child process receives. Everything else is inherited: the runtime
+// needs the usual machine environment (CUDA paths, model directories).
+func runtimeEnv(environ []string) []string {
+	out := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		if strings.HasPrefix(kv, publishingEnvPrefix) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+// publishingEnvPrefix is the environment prefix the benchmark CLI reads its
+// git token from; the runner must not hand it to the runtime.
+const publishingEnvPrefix = "LLMBENCH_GIT_TOKEN"
 
 type execProcess struct {
 	cmd  *exec.Cmd

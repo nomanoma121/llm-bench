@@ -91,12 +91,15 @@ func (l *GPULease) Acquire(ctx context.Context, holder string, record LeaseRecor
 				return false, nil
 			}
 		}
-		if current.IsUnfinished() && current.JobID != record.JobID {
-			// The lease expired with an unfinished job on it. A different job
-			// must not erase that state: its own recovery has to finish the
-			// cleanup and release the lease first, otherwise the new job would
-			// take the GPU while the previous one may still be paused.
-			return false, nil
+		if current.IsUnfinished() {
+			// The record describes work that still owes the system something
+			// (a pending restore, a release that never completed). Only the
+			// same job, and only the recovery path, may take it over: a normal
+			// run must not erase that state, and no other job may take the GPU
+			// while the workload may still be paused.
+			if current.JobID != record.JobID || !reentrant {
+				return false, nil
+			}
 		}
 		record.Holder = holder
 		if current.JobID == record.JobID {

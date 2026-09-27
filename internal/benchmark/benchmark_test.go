@@ -796,3 +796,17 @@ func TestWorkloadDigestIsCanonical(t *testing.T) {
 		}
 	}
 }
+
+func TestRuntimeDoesNotInheritThePublishingToken(t *testing.T) {
+	// The runtime is candidate code: it must not receive the token the result
+	// is pushed with, or a runtime that prints its environment would leak it
+	// into the measurement's raw output.
+	env := runtimeEnv([]string{"PATH=/usr/bin", "LLMBENCH_GIT_TOKEN=ghs_secret", "CUDA_VISIBLE_DEVICES=0"})
+	joined := strings.Join(env, " ")
+	if strings.Contains(joined, "ghs_secret") {
+		t.Fatalf("the token survived: %v", env)
+	}
+	if !strings.Contains(joined, "PATH=/usr/bin") || !strings.Contains(joined, "CUDA_VISIBLE_DEVICES=0") {
+		t.Fatalf("the environment was over-filtered: %v", env)
+	}
+}

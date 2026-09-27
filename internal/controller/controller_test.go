@@ -106,6 +106,7 @@ type fakeLease struct {
 	live       bool
 	annotates  []lease.Phase
 	released   bool
+	outcomeAt  lease.Phase
 	acquireErr error
 }
 
@@ -134,6 +135,11 @@ func (l *fakeLease) Annotate(_ context.Context, holder string, mutate func(*leas
 	}
 	mutate(&l.record)
 	l.annotates = append(l.annotates, l.record.Phase)
+	// Record when the outcome first became durable, so a test can prove it
+	// happened before the cleanup phases.
+	if l.record.Outcome != "" && l.outcomeAt == "" {
+		l.outcomeAt = l.record.Phase
+	}
 	return nil
 }
 
@@ -383,6 +389,16 @@ func dedupe(in []string) []string {
 	return out
 }
 
+// recordedOutcomeEarly reports whether the outcome was durable before the
+// cleanup phases started.
+func (c *Controller) recordedOutcomeEarly(l *fakeLease) bool {
+	switch l.outcomeAt {
+	case lease.PhaseExecuted, lease.PhaseOpeningPR, lease.PhasePROpen:
+		return true
+	}
+	return false
+}
+
 func phases(in []lease.Phase) []string {
 	out := make([]string, 0, len(in))
 	for _, p := range in {
@@ -420,8 +436,10 @@ func TestRunOnceSkipsWhenTheLeaseIsHeld(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !handled {
-		t.Fatal("the issue should have been seen")
+	if handled {
+		// A busy lease is not progress: reporting it as handled would make the
+		// loop poll GitHub again immediately, forever.
+		t.Fatal("a busy lease was reported as progress")
 	}
 	if len(sandbox.ensures) != 0 {
 		t.Fatal("a second job touched the GPU while the lease was held")
@@ -660,6 +678,24 @@ func TestRecoverCleansUpAnInterruptedJobWithoutRerunningIt(t *testing.T) {
 	}
 }
 
+func TestTheSuccessOutcomeIsDurableBeforeCleanup(t *testing.T) {
+	// A crash between the pull request and the cleanup must not turn a
+	// succeeded job into a failed one, so the outcome has to be written with
+	// the phase that follows the measurement.
+	c, _, leaseStore, _, _ := newController(t, nil)
+	if _, err := c.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if leaseStore.record.Outcome != lease.OutcomeSucceeded {
+		t.Fatalf("final outcome = %q", leaseStore.record.Outcome)
+	}
+	// The outcome was written while the phase was still executed or later, so
+	// it was durable before any cleanup phase.
+	if !c.recordedOutcomeEarly(leaseStore) {
+		t.Fatal("the outcome was only recorded during cleanup")
+	}
+}
+
 func TestARecoveredCleanupKeepsTheOriginalOutcome(t *testing.T) {
 	// A succeeded job that crashed while restoring must end as done, not as
 	// failed: cleanup does not get to decide the outcome.
@@ -697,8 +733,14 @@ func TestReleasedLeasesAreNeverRecovered(t *testing.T) {
 	if err := c.Recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(sandbox.deletes) != 0 || pauser.restores != 0 || len(gateway.labels[1]) != 0 {
+	if len(sandbox.deletes) != 0 || pauser.restores != 0 {
 		t.Fatal("a released job was resurrected by recovery")
+	}
+	// The only thing recovery may still do is repair the label mirror: a crash
+	// between the label sync and the release would leave the Issue looking
+	// claimed forever, and a released record is never revisited afterwards.
+	if !hasLabel(gateway.labels[1], "llmbench:done") {
+		t.Fatalf("labels = %v", gateway.labels[1])
 	}
 }
 

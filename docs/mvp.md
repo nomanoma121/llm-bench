@@ -302,8 +302,8 @@ poll(open な `llmbench:benchmark|optimize` Issue で、状態ラベルが無い
 
 ### 8.1 bind / rebind の契約(HTTP API を作らない代わり)
 
-- **Sandbox の解決**: 各 SandboxClaim は `llmbench.io/job-id=<job id>` ラベルを持つ。`llmbench sandbox job exec|push|pull|ls <job id>` は、Kubernetes API から**その label の current claim を毎回 discovery** して port-forward transport を張る(コマンド名は §5 の CLI 表を参照)。
-  - Agent Pod の ServiceAccount に必要な権限は、同じネームスペースの `sandboxclaims` の `get` / `list` と、その claim に対する pod の port-forward だけ。
+- **Sandbox の解決**: 各 SandboxClaim は `llmbench.io/job-id=<job id>` と `app.kubernetes.io/managed-by=llmbench` を持つ。discovery は**両方**を selector に使い、取得後も両ラベルを検証する(job id は予測可能なので、job-id ラベルだけをコピーした管理外の claim を誤って使わない)。`llmbench sandbox job exec|push|pull|ls <job id>` は、Kubernetes API から**その label の current claim を毎回 discovery** して port-forward transport を張る(コマンド名は §5 の CLI 表を参照)。
+  - Agent Pod の ServiceAccount に必要な権限は、同じネームスペースの `sandboxclaims` の `get` / `list` / `update`(annotation 用)と、pod の `get` / `list` と port-forward だけ。Helm は `mvp.agentServiceAccount.{namespace,name}` にその Role を bind する(lease と manifest には触れない)。
   - **rebind は discovery の結果が変わること**そのもの。Sandbox が置き換わったら、次に `llmbench sandbox ...` を呼んだ時点で新しい claim が見つかる。Controller から Agent Pod へ接続情報を push する必要はない。
   - 同じ `job-id` の claim が 2 つ見つかった場合は**エラー**(replacement の途中で古い claim が残っている状態)。
 - **Agent の完了検知**: Agent は最後に `llmbench job done --job <job id> --status complete|failed [--branch B --commit C]` を実行し、**SandboxClaim の annotation**(`llmbench.io/agent-result`, `llmbench.io/branch`, `llmbench.io/commit`)に書く。Controller はその annotation を観測して PR 作成に進む(`complete` には branch と commit が必須)。
@@ -322,13 +322,13 @@ poll(open な `llmbench:benchmark|optimize` Issue で、状態ラベルが無い
 | values | 内容 |
 |---|---|
 | `controller` | Deployment(1 replica)、resources、ログレベル |
-| `serviceAccount` / `rbac` | Lease、SandboxClaim、Sandbox、Pod exec、Secret 参照 |
+| `serviceAccount` / `rbac` | **ネームスペースごとの Role**(lease / sandbox / Argo CD Application / workload)と Agent 用 Role。ClusterRole は使わない |
 | `github` | App id / installation id / private key Secret 名 / repo |
 | `gpuLease` | Lease 名とネームスペース |
 | `gitops` | 対象 repo、manifest パス、pause 値、restore 値、待ち時間 |
 | `sandbox` | SandboxTemplate / WarmPool 名、image allowlist、GPU リソース要求 |
 | `models` | モデル id → 置き場 のマッピング(operator 権限) |
-| `dsh` | enabled / existing deployment 名 / session PVC 名(Agent Pod の manifest 自体は DSH 側) |
+| `dsh` | enabled / existing deployment 名 / session PVC 名 / **Agent の ServiceAccount(namespace + name)**。Agent Pod の manifest 自体は DSH 側 |
 | `runtimeImages` | allowlist |
 
 ---

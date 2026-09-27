@@ -118,6 +118,13 @@ mvp:
     privateKeyKey: private-key.pem
     baseUrl: ""
 
+  # The existing ServiceAccount of the Agent Pod (the DSH deployment). Binding
+  # it grants the Agent sandbox discovery, file transfer and the completion
+  # annotation - and nothing else.
+  agentServiceAccount:
+    namespace: ""
+    name: ""
+
   pollIntervalSeconds: 15
   recoveryIntervalSeconds: 60
 

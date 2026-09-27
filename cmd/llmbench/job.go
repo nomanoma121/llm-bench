@@ -17,7 +17,7 @@ func newJobCmd(g *globalFlags) *cobra.Command {
 		Use:   "job",
 		Short: "Validate and render MVP job specs (the request carried by an Issue)",
 	}
-	cmd.AddCommand(newJobValidateCmd(), newJobInitCmd(), newJobDoneCmd(nil))
+	cmd.AddCommand(newJobValidateCmd(), newJobInitCmd(), newJobDoneCmd(g))
 	return cmd
 }
 

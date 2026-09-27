@@ -12,6 +12,14 @@ import (
 	extv1beta1 "sigs.k8s.io/agent-sandbox/extensions/api/v1beta1"
 )
 
+// ManagedByLabel marks a claim as created by llmbench. Discovery requires it
+// as well as the job label: without it, a claim that merely copies the
+// job-id label (which is predictable) would be usable as the Agent's sandbox.
+const ManagedByLabel = "app.kubernetes.io/managed-by"
+
+// ManagedByValue is the value of ManagedByLabel for llmbench-owned claims.
+const ManagedByValue = "llmbench"
+
 // JobLabel marks a SandboxClaim as belonging to one MVP job. The label is how
 // the Agent's CLI finds the current sandbox without the controller having to
 // tell it anything: a replacement sandbox carries the same label, so "rebind"
@@ -45,8 +53,8 @@ func (c *Client) EnsureJobClaim(ctx context.Context, jobID, warmPool string) (bo
 			Name:      name,
 			Namespace: c.Namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "llmbench",
-				JobLabel:                       jobID,
+				ManagedByLabel: ManagedByValue,
+				JobLabel:       jobID,
 			},
 		},
 		Spec: extv1beta1.SandboxClaimSpec{
@@ -88,21 +96,32 @@ func (c *Client) FindJobClaim(ctx context.Context, jobID string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	list, err := claims.List(ctx, metav1.ListOptions{LabelSelector: JobLabel + "=" + jobID})
+	selector := JobLabel + "=" + jobID + "," + ManagedByLabel + "=" + ManagedByValue
+	list, err := claims.List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
 		return "", fmt.Errorf("sandbox: list claims for job %s: %w", jobID, err)
 	}
-	switch len(list.Items) {
+	// The selector is not a trust boundary on its own: verify the labels of
+	// every match, so a claim that only looks like ours is never used.
+	owned := list.Items[:0]
+	for _, item := range list.Items {
+		if item.Labels[JobLabel] == jobID && item.Labels[ManagedByLabel] == ManagedByValue {
+			owned = append(owned, item)
+			continue
+		}
+		return "", fmt.Errorf("sandbox: claim %s carries the job label but is not managed by llmbench", item.Name)
+	}
+	switch len(owned) {
 	case 0:
 		return "", fmt.Errorf("sandbox: no sandbox exists for job %s", jobID)
 	case 1:
-		return list.Items[0].Name, nil
+		return owned[0].Name, nil
 	default:
-		names := make([]string, 0, len(list.Items))
-		for _, item := range list.Items {
+		names := make([]string, 0, len(owned))
+		for _, item := range owned {
 			names = append(names, item.Name)
 		}
-		return "", fmt.Errorf("sandbox: job %s has %d claims (%v); wait for the replacement to finish", jobID, len(list.Items), names)
+		return "", fmt.Errorf("sandbox: job %s has %d claims (%v); wait for the replacement to finish", jobID, len(owned), names)
 	}
 }
 

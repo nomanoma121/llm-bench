@@ -12,7 +12,7 @@ import (
 
 func jobClaim(name, jobID string) *extv1beta1.SandboxClaim {
 	c := readyClaim(name)
-	c.Labels = map[string]string{JobLabel: jobID}
+	c.Labels = map[string]string{JobLabel: jobID, ManagedByLabel: ManagedByValue}
 	return c
 }
 
@@ -34,6 +34,14 @@ func TestEnsureJobClaimCarriesTheJobLabel(t *testing.T) {
 	}
 	if claim.Labels[JobLabel] != "2026-09-27-issue42" {
 		t.Fatalf("labels = %v", claim.Labels)
+	}
+	// A claim that only copies the job label is not ours: discovery verifies
+	// both labels instead of trusting the selector.
+	foreign := readyClaim("llmbench-job-foreign")
+	foreign.Labels = map[string]string{JobLabel: "job-x"}
+	foreignClient := testClient(foreign)
+	if _, err := foreignClient.FindJobClaim(ctx, "job-x"); err == nil {
+		t.Fatal("a claim that is not managed by llmbench was used")
 	}
 	// A ready claim with the job label satisfies the next call.
 	readyClient := testClient(jobClaim(JobClaimName("2026-09-27-issue42"), "2026-09-27-issue42"))

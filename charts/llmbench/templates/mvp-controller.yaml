@@ -70,13 +70,13 @@ metadata:
     app.kubernetes.io/name: {{ include "llmbench.name" . }}
     app.kubernetes.io/instance: {{ .Release.Name }}
 ---
-# The controller needs the GPU lease, the sandbox claims, and port-forward into
-# the sandbox Pod. It does not need ConfigMaps (its durable state is the lease)
-# and it never touches Secrets at runtime: the GitHub App key is mounted.
+# One namespaced Role per namespace the controller actually touches. A single
+# Role in the lease namespace would leave the Argo CD and workload checks
+# Forbidden, and a ClusterRole would grant more than this design needs.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: {{ $name }}
+  name: {{ $name }}-lease
   namespace: {{ $mvp.lease.namespace }}
   labels:
     app.kubernetes.io/name: {{ include "llmbench.name" . }}
@@ -85,6 +85,35 @@ rules:
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-lease
+  namespace: {{ $mvp.lease.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "llmbench.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-lease
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+# The sandbox namespace: create and delete the claim, watch it become ready,
+# and reach the sandbox through port-forward.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-sandbox
+  namespace: {{ $mvp.sandbox.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "llmbench.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+rules:
   - apiGroups: ["extensions.agent-sandbox.io"]
     resources: ["sandboxclaims"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -101,19 +130,128 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ $name }}
-  namespace: {{ $mvp.lease.namespace }}
+  name: {{ $name }}-sandbox
+  namespace: {{ $mvp.sandbox.namespace }}
   labels:
     app.kubernetes.io/name: {{ include "llmbench.name" . }}
     app.kubernetes.io/instance: {{ .Release.Name }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: {{ $name }}
+  name: {{ $name }}-sandbox
 subjects:
   - kind: ServiceAccount
     name: {{ $name }}
     namespace: {{ .Release.Namespace }}
+---
+# The GitOps side: the Application's sync status and the workload's
+# replicas/Pods decide whether a pause or restore has converged.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-gitops-app
+  namespace: {{ $mvp.gitops.application.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "llmbench.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-gitops-app
+  namespace: {{ $mvp.gitops.application.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "llmbench.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-gitops-app
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-gitops-workload
+  namespace: {{ $mvp.gitops.workload.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "llmbench.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-gitops-workload
+  namespace: {{ $mvp.gitops.workload.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "llmbench.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-gitops-workload
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+{{- if and $mvp.agentServiceAccount.namespace $mvp.agentServiceAccount.name }}
+---
+# The Agent Pod (an existing DSH deployment) reaches the sandbox through the
+# same port-forward transport as a human does, so it needs the same access -
+# and nothing else: it never touches the lease or the GitOps manifest.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-agent
+  namespace: {{ $mvp.sandbox.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "llmbench.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+rules:
+  - apiGroups: ["extensions.agent-sandbox.io"]
+    resources: ["sandboxclaims"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-agent
+  namespace: {{ $mvp.sandbox.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "llmbench.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-agent
+subjects:
+  - kind: ServiceAccount
+    name: {{ $mvp.agentServiceAccount.name }}
+    namespace: {{ $mvp.agentServiceAccount.namespace }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment

@@ -31,6 +31,24 @@ does not install them.
   scoped to one repository with `contents: write`.
 - `mvp.pollIntervalSeconds` / `mvp.recoveryIntervalSeconds`: how often the loop
   looks for a request and reconciles unfinished work.
+- `mvp.agentServiceAccount.{namespace,name}`: the existing ServiceAccount of the
+  Agent Pod (the DSH deployment). Binding it grants the Agent sandbox
+  discovery, file transfer and the completion annotation, and nothing else.
+
+## RBAC
+
+The chart creates one namespaced Role and RoleBinding per namespace the
+controller actually touches, instead of a ClusterRole:
+
+| Namespace | What it grants |
+|---|---|
+| `mvp.lease.namespace` | `coordination.k8s.io` leases (the GPU ownership and the durable phase) |
+| `mvp.sandbox.namespace` | sandbox claims (create/get/list/delete), sandboxes (read), pods (read) and `pods/portforward` |
+| `mvp.gitops.application.namespace` | `argoproj.io` applications (read), for the sync check |
+| `mvp.gitops.workload.namespace` | deployments/statefulsets (read) and pods (read), for the pause/restore convergence |
+
+The Agent's separate Role is limited to the sandbox namespace and excludes the
+lease and the manifest.
 
 The Agent reaches the sandbox with `llmbench sandbox job exec|push|pull|ls
 <job id> --operator-config <file>` and reports its outcome with `llmbench job

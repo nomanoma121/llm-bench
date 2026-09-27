@@ -12,14 +12,20 @@ jobs:
   update:
     runs-on: [self-hosted, llm-bench-deploy]
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        runtime: [llama-cpp, vllm, freetoken]
     steps:
       - uses: actions/checkout@v4
-      - run: git submodule update --init --remote --depth 1
+      - run: git submodule update --init --remote --depth 1 runtimes/${{ matrix.runtime }}/upstream
       - uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.RUNTIMES_PR_TOKEN }}
-          branch: chore/runtime-upstreams
-          commit-message: "chore: update runtime upstreams"
-          title: "chore: update runtime upstreams"
-          body: Follows the upstream default branches of the runtimes under `runtimes/`. This PR is updated daily until it is merged.
+          branch: chore/runtime-${{ matrix.runtime }}
+          add-paths: runtimes/${{ matrix.runtime }}/upstream
+          commit-message: "chore: update ${{ matrix.runtime }} upstream"
+          title: "chore: update ${{ matrix.runtime }} upstream"
+          body: Follows the upstream default branch of `runtimes/${{ matrix.runtime }}/upstream`. This PR is updated daily until it is merged.
           delete-branch: true

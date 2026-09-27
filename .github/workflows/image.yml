@@ -8,6 +8,7 @@ on:
       - "internal/**"
       - "go.mod"
       - "go.sum"
+      - "charts/**"
       - ".github/workflows/image.yml"
   workflow_dispatch:
 
@@ -30,3 +31,12 @@ jobs:
       - run: go install github.com/google/ko@v0.19.1
       - run: echo "${{ github.token }}" | "$(go env GOPATH)/bin/ko" login ghcr.io --username "${{ github.actor }}" --password-stdin
       - run: '"$(go env GOPATH)/bin/ko" build ./cmd/llmbench --bare --platform=linux/amd64,linux/arm64 --tags=latest,${{ github.sha }}'
+
+  chart:
+    runs-on: [self-hosted, llm-bench-deploy]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: helm package charts/llmbench -d "$RUNNER_TEMP/chart"
+      - run: echo "${{ github.token }}" | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
+      - run: helm push "$RUNNER_TEMP"/chart/*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts

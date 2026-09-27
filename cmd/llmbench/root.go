@@ -31,6 +31,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(
 		newValidateCmd(&g),
 		newJobCmd(),
+		newBenchmarkCmd(&g),
 		newSubmitCmd(&g),
 		newStatusCmd(&g),
 		newServeCmd(&g),

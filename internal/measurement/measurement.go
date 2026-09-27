@@ -104,12 +104,16 @@ type Stats struct {
 // Series is a time or depth ordered series kept for graphs. A downsample must
 // be deterministic and must keep OriginalCount and SampleMethod.
 type Series struct {
-	Name          string       `json:"name"`
-	Unit          string       `json:"unit"`
-	Source        Source       `json:"source"`
-	Points        [][2]float64 `json:"points"`
-	OriginalCount int          `json:"original_count,omitempty"`
-	SampleMethod  string       `json:"sample_method,omitempty"`
+	Name string `json:"name"`
+	// Labels distinguish series of the same name, exactly as they do for a
+	// metric: with several workload cases, "ttft_ms" exists once per case and
+	// the two must not share an identity.
+	Labels        map[string]string `json:"labels,omitempty"`
+	Unit          string            `json:"unit"`
+	Source        Source            `json:"source"`
+	Points        [][2]float64      `json:"points"`
+	OriginalCount int               `json:"original_count,omitempty"`
+	SampleMethod  string            `json:"sample_method,omitempty"`
 }
 
 // CollectorStatus records one collector's health. Gaps make a measurement
@@ -286,13 +290,8 @@ func (m Metric) validate() error {
 	if m.Samples < 0 {
 		return errors.New("samples must not be negative")
 	}
-	if len(m.Labels) > MaxLabelsPerMetric {
-		return fmt.Errorf("%d labels exceed the limit %d", len(m.Labels), MaxLabelsPerMetric)
-	}
-	for k, v := range m.Labels {
-		if k == "" || len(k) > MaxLabelBytes || len(v) > MaxLabelBytes {
-			return fmt.Errorf("label %q is empty or too long", k)
-		}
+	if err := checkLabels(m.Labels); err != nil {
+		return err
 	}
 	if m.Stats != nil {
 		if m.Stats.Count < 0 {
@@ -314,6 +313,9 @@ func (s Series) validate() error {
 	if !s.Source.valid() {
 		return fmt.Errorf("source %q is not a known source", s.Source)
 	}
+	if err := checkLabels(s.Labels); err != nil {
+		return err
+	}
 	if len(s.Points) > MaxSeriesPointsPerSeries {
 		return fmt.Errorf("%d points exceed the per-series limit %d", len(s.Points), MaxSeriesPointsPerSeries)
 	}
@@ -326,6 +328,19 @@ func (s Series) validate() error {
 	for _, p := range s.Points {
 		if !finite(p[0]) || !finite(p[1]) {
 			return errors.New("points must be finite")
+		}
+	}
+	return nil
+}
+
+// checkLabels applies the label bounds shared by metrics and series.
+func checkLabels(labels map[string]string) error {
+	if len(labels) > MaxLabelsPerMetric {
+		return fmt.Errorf("%d labels exceed the limit %d", len(labels), MaxLabelsPerMetric)
+	}
+	for k, v := range labels {
+		if k == "" || len(k) > MaxLabelBytes || len(v) > MaxLabelBytes {
+			return fmt.Errorf("label %q is empty or too long", k)
 		}
 	}
 	return nil
@@ -393,9 +408,12 @@ func metricKey(m Metric) string {
 	return m.Name + "\x00" + string(m.Source) + "\x00" + m.Unit + "\x00" + labelKey(m.Labels)
 }
 
-// seriesKey is the total order key of a series.
+// seriesKey is the total order key of a series. Labels are part of it for the
+// same reason they are part of a metric's key: two cases of one workload
+// produce two series with the same name, and treating them as one identity
+// would hide one of them.
 func seriesKey(s Series) string {
-	return s.Name + "\x00" + string(s.Source) + "\x00" + s.Unit
+	return s.Name + "\x00" + string(s.Source) + "\x00" + s.Unit + "\x00" + labelKey(s.Labels)
 }
 
 func labelKey(labels map[string]string) string {

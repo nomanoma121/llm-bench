@@ -255,7 +255,9 @@ poll(open な `llmbench:benchmark|optimize` Issue で、状態ラベルが無い
 
 - **すべての段は再実行可能**。外部効果の前に phase を書き、効果自体は冪等にする。
 - **restore は必ず通す**。benchmark が失敗しても、timeout でも、Controller が再起動しても restore と release に到達する。restore が終わるまで job を完了扱いにしない。
-- **同じ job を再実行しない**。phase が `executing` の状態で復帰した場合は再実行せず failure として記録する。
+- **同じ job を再実行しない**。recovery は phase で判断する: `executed` / `opening_pr` / `pr_open` は **branch/commit が durable なので PR 作成だけを再実行**して cleanup へ進む(PR 作成は冪等)。`executing` は「測定が完了したか不明」なので**再実行せず** failure として記録して cleanup する。それ以前の phase は未測定なので attempt を破棄して failure にする。
+- **restore が converge するまで Lease を手放さない**。`Sandbox.Delete` がまだ終わっていない / `Restore` が `ErrNotConverged`(PR 未マージ・Argo 未同期)の間は phase も Lease も保持したまま recovery が再試行する。Lease を先に離すと、まだ pause されたままの GPU を次の job が借りてしまう。
+- **Lease は instance 単位で fencing する**。holder は Pod 名などの instance-unique な値にし、**別 instance の live lease は引き継がない**(引き継ぐのは失効した lease のみ)。同じ holder の中断ジョブだけを recovery が再開する。
 - Sandbox が死んだ場合は **attempt を破棄して replacement で最初から再実行**する(benchmark。`attempt` annotation を進める)。optimize では Agent session を維持したまま rebind する(§8)。
 
 ### 6.4 recovery
@@ -273,6 +275,7 @@ poll(open な `llmbench:benchmark|optimize` Issue で、状態ラベルが無い
 - Controller の用途: Issue の poll / ラベル / コメント / PR 作成。
 - Sandbox に渡すのは **短命 installation token のみ**(単一 repo の `contents: write`)。private key は絶対に渡さない。Agent Pod にも渡さない。
 - **push は fail-closed**(§5 の `--push`): 同名ブランチが remote に既にあれば拒否、remote の **default branch を実際に問い合わせて**拒否(name の deny-list だけに頼らない)、commit は指定パス配下のみ(事前に stage 済みのファイルを巻き込まない)、force は決してしない。
+- **Sandbox 用 token は用途を絞る**: Controller 自身の token とは別に、**対象 repo 1 つ + `contents: write` だけ**の installation token を**ジョブごとに新規に mint**して環境変数で渡す(GitHub は body が空だと installation の全 repo・全権限を渡してしまう)。token の寿命は 1 時間なので、それを超える実行(長時間の optimize)では push が失敗する — その場合は Controller 側 push か token 再取得が必要(MVP では未実装として明示)。
 - **installation token は branch-scoped ではない**。optimize の Sandbox で Agent が自由にコマンドを実行できる以上、token を読んで任意ブランチに push できる。したがって **default branch はリポジトリ側で保護する**: PR 必須、force push 禁止、admin bypass 無効、GitHub App が直接 push できない設定(ruleset で bypass リストに入れない)。これは MVP の必須要件であり、Sandbox に token を渡す前提条件である。
 - outbound のみ。webhook、public endpoint は作らない。
 - Git 操作(`commit` / `push`)は **Sandbox 内の `llmbench`** が行う。PR 作成は Controller が行う(GitHub API の credential を Controller に閉じ込める)。

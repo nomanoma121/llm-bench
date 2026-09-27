@@ -7,6 +7,7 @@
 package githubapp
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -108,32 +109,74 @@ func (a *App) Token(ctx context.Context) (string, error) {
 	return token, nil
 }
 
+// TokenOptions narrow an installation token. GitHub grants an unrestricted
+// token when the body is empty, which would give a sandbox every repository
+// and every permission the installation has.
+type TokenOptions struct {
+	// Repositories limits the token to these repository names.
+	Repositories []string
+	// Permissions limits the token to these permissions, for example
+	// {"contents": "write"}.
+	Permissions map[string]string
+}
+
+// ScopedToken mints a token that is limited to the given repositories and
+// permissions. The sandbox receives one of these, never the controller's own.
+func (a *App) ScopedToken(ctx context.Context, opts TokenOptions) (string, error) {
+	jwt, err := a.jwt()
+	if err != nil {
+		return "", err
+	}
+	token, _, err := a.mint(ctx, jwt, opts)
+	return token, err
+}
+
 // mint asks GitHub for an installation token.
-func (a *App) mint(ctx context.Context, jwt string) (string, time.Time, error) {
+func (a *App) mint(ctx context.Context, jwt string, opts ...TokenOptions) (string, time.Time, error) {
 	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", a.baseURL(), a.InstallationID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	var body io.Reader
+	if len(opts) > 0 {
+		payload := map[string]any{}
+		if len(opts[0].Repositories) > 0 {
+			payload["repositories"] = opts[0].Repositories
+		}
+		if len(opts[0].Permissions) > 0 {
+			payload["permissions"] = opts[0].Permissions
+		}
+		if len(payload) > 0 {
+			encoded, err := json.Marshal(payload)
+			if err != nil {
+				return "", time.Time{}, fmt.Errorf("githubapp: token request: %w", err)
+			}
+			body = bytes.NewReader(encoded)
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("githubapp: token request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := a.client().Do(req)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("githubapp: token request: %w", err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	response, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("githubapp: token response: %w", err)
 	}
 	if resp.StatusCode/100 != 2 {
-		return "", time.Time{}, fmt.Errorf("githubapp: token request returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return "", time.Time{}, fmt.Errorf("githubapp: token request returned %d: %s", resp.StatusCode, strings.TrimSpace(string(response)))
 	}
 	var out struct {
 		Token     string    `json:"token"`
 		ExpiresAt time.Time `json:"expires_at"`
 	}
-	if err := json.Unmarshal(body, &out); err != nil {
+	if err := json.Unmarshal(response, &out); err != nil {
 		return "", time.Time{}, fmt.Errorf("githubapp: token response: %w", err)
 	}
 	if out.Token == "" {

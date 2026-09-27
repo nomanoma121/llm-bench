@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -119,9 +121,17 @@ func buildController(ctx context.Context, cfg operator.MVP, g *globalFlags, logw
 	box := &sandboxAdapter{client: sandboxClient, warmPool: cfg.Sandbox.WarmPool, logf: func(format string, args ...any) {
 		fmt.Fprintf(logw, format+"\n", args...)
 	}}
-	reserved, err := runtime.ReservedArgs(cfg.Engines[0])
-	if err != nil {
-		return nil, err
+	reserved := make(map[string][]string, len(cfg.Engines))
+	for _, engine := range cfg.Engines {
+		args, err := runtime.ReservedArgs(engine)
+		if err != nil {
+			return nil, err
+		}
+		reserved[engine] = args
+	}
+	holder, err := os.Hostname()
+	if err != nil || holder == "" {
+		return nil, fmt.Errorf("controller: cannot determine the instance identity (hostname): %w", err)
 	}
 	return &controller.Controller{
 		Config: controller.Config{
@@ -129,13 +139,25 @@ func buildController(ctx context.Context, cfg operator.MVP, g *globalFlags, logw
 			DefaultBranch: cfg.DefaultBranch,
 			Labels:        cfg.Labels,
 			Models:        cfg.Models,
-			Constraints:   cfg.Constraints(reserved),
+			Constraints:   cfg.Constraints(nil),
+			ReservedArgs:  reserved,
 			Sandbox:       cfg.Sandbox,
 			LLMBench:      cfg.Sandbox.LLMBench,
-			// A single-replica Deployment uses one stable identity, which is
-			// what makes an interrupted job recognisable as its own.
-			HolderIdentity: "llmbench-controller",
-			GitToken:       app.Token,
+			// The holder is instance-unique (the Pod name). A shared identity
+			// would let a new Pod take over a live lease and clean up a
+			// sandbox that is being measured in, so the two instances must be
+			// distinguishable.
+			HolderIdentity: "llmbench-controller-" + holder,
+			// A fresh, narrowly scoped token per job: the sandbox may push to
+			// this repository and nothing else. A token lives an hour, so an
+			// optimization run that outlasts it fails its push loudly instead
+			// of publishing with stale credentials (docs/mvp.md §7).
+			GitToken: func(ctx context.Context) (string, error) {
+				return app.ScopedToken(ctx, githubapp.TokenOptions{
+					Repositories: []string{repo},
+					Permissions:  map[string]string{"contents": "write"},
+				})
+			},
 		},
 		Gateway: issues.NewGateway(gh, owner, repo, ""),
 		Lease:   leaseStore,
@@ -235,19 +257,20 @@ func (s *sandboxAdapter) Exec(ctx context.Context, jobID string, argv []string, 
 	return stdout, nil
 }
 
-func (s *sandboxAdapter) Delete(ctx context.Context, jobID string) error {
-	for {
-		done, err := s.client.DeleteJobClaim(ctx, jobID)
-		if err != nil {
-			return err
-		}
-		if done {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Second):
-		}
+// Delete reports whether the claim is gone. The controller retries a
+// not-yet-deleted claim without releasing the lease, so this must not block
+// until its own deadline: the retry belongs to the loop, not to the adapter.
+func (s *sandboxAdapter) Delete(ctx context.Context, jobID string) (bool, error) {
+	return s.client.DeleteJobClaim(ctx, jobID)
+}
+
+// Put writes the job spec into the sandbox before the CLI is started. A file
+// rather than stdin: the CLI re-reads and validates it, and the sandbox keeps
+// the exact spec that ran next to the result.
+func (s *sandboxAdapter) Put(ctx context.Context, jobID, path string, content []byte) error {
+	name, err := s.client.FindJobClaim(ctx, jobID)
+	if err != nil {
+		return err
 	}
+	return s.client.Put(ctx, name, bytes.NewReader(content), path)
 }

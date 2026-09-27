@@ -156,6 +156,7 @@ func (l *fakeLease) Get(context.Context) (lease.Record, error) {
 // fakePauser records pause and restore calls.
 type fakePauser struct {
 	acquireErr error
+	restoreErr error
 	pauses     int
 	restores   int
 }
@@ -168,17 +169,29 @@ func (p *fakePauser) Pause(context.Context, string) error {
 	return nil
 }
 
-func (p *fakePauser) Restore(context.Context, string) error { p.restores++; return nil }
+func (p *fakePauser) Restore(context.Context, string) error {
+	if p.restoreErr != nil {
+		return p.restoreErr
+	}
+	p.restores++
+	return nil
+}
 
 // fakeSandbox records the lifecycle of the sandbox.
 type fakeSandbox struct {
 	ensures   []string
 	deletes   []string
 	execs     []string
+	puts      []string
+	pushed    []string
 	execOut   []byte
 	execErr   error
 	ensureErr error
 	deleteErr error
+	putErr    error
+	// deletePending makes Delete report "still terminating", which the
+	// controller must retry without releasing the lease.
+	deletePending bool
 }
 
 func (s *fakeSandbox) Ensure(_ context.Context, jobID string) error {
@@ -186,6 +199,15 @@ func (s *fakeSandbox) Ensure(_ context.Context, jobID string) error {
 		return s.ensureErr
 	}
 	s.ensures = append(s.ensures, jobID)
+	return nil
+}
+
+func (s *fakeSandbox) Put(_ context.Context, jobID, path string, content []byte) error {
+	if s.putErr != nil {
+		return s.putErr
+	}
+	s.puts = append(s.puts, path)
+	s.pushed = append(s.pushed, string(content))
 	return nil
 }
 
@@ -197,12 +219,15 @@ func (s *fakeSandbox) Exec(_ context.Context, jobID string, argv []string, _ map
 	return s.execOut, nil
 }
 
-func (s *fakeSandbox) Delete(_ context.Context, jobID string) error {
+func (s *fakeSandbox) Delete(_ context.Context, jobID string) (bool, error) {
 	if s.deleteErr != nil {
-		return s.deleteErr
+		return false, s.deleteErr
+	}
+	if s.deletePending {
+		return false, nil
 	}
 	s.deletes = append(s.deletes, jobID)
-	return nil
+	return true, nil
 }
 
 // benchOutput is a successful CLI summary.
@@ -262,7 +287,11 @@ func newController(t *testing.T, mutate func(*Controller)) (*Controller, *fakeGa
 			Models:        []operator.MVPModel{{ID: "model-a", Path: "/models/a", Digest: strings.Repeat("d", 64)}},
 			Constraints: job.Constraints{
 				Engines: []string{"llamacpp"}, Images: []string{"img"}, Models: []string{"model-a"},
-				OutputRoots: []string{"experiments"}, ReservedArgs: []string{"--model", "--host", "--port"},
+				OutputRoots: []string{"experiments"},
+			},
+			ReservedArgs: map[string][]string{
+				"llamacpp":  {"--model", "--host", "--port"},
+				"freetoken": {"--model", "--host", "--port", "--gpu"},
 			},
 			LLMBench:       []string{"llmbench"},
 			HolderIdentity: "test-controller",
@@ -294,6 +323,7 @@ func TestRunOnceHappyPath(t *testing.T) {
 		lease.PhasePausing, lease.PhasePaused, lease.PhaseClaiming, lease.PhaseClaimReady,
 		lease.PhaseExecuting, lease.PhaseExecuted, lease.PhaseOpeningPR, lease.PhasePROpen,
 		lease.PhaseDeletingClaim, lease.PhaseClaimDeleted, lease.PhaseRestoring, lease.PhaseRestored,
+		lease.PhaseReleasing,
 	}
 	if strings.Join(phases(leaseStore.annotates), ",") != strings.Join(phases(want), ",") {
 		t.Fatalf("phases = %v, want %v", leaseStore.annotates, want)
@@ -317,15 +347,18 @@ func TestRunOnceHappyPath(t *testing.T) {
 	if !leaseStore.released || leaseStore.live {
 		t.Fatal("the gpu lease was not released")
 	}
-	if !hasLabel(gateway.labels[42], "llmbench:claimed") {
-		t.Fatalf("issue labels = %v", gateway.labels[42])
+	if hasLabel(gateway.labels[42], "llmbench:claimed") {
+		t.Fatalf("the claim label survived a successful job: %v", gateway.labels[42])
+	}
+	if !hasLabel(gateway.labels[42], "llmbench:done") {
+		t.Fatalf("the done label is missing: %v", gateway.labels[42])
 	}
 	if len(gateway.comments[42]) == 0 {
 		t.Fatal("no comment was posted")
 	}
 	// The command carries the resolved model and the pinned digest.
 	argv := sandbox.execs[0]
-	for _, want := range []string{"benchmark", "--job -", "--model-path /models/a", "--model-digest " + strings.Repeat("d", 64), "--job-id 2026-09-27-issue42"} {
+	for _, want := range []string{"benchmark", "--push", "--model-path /models/a", "--model-digest " + strings.Repeat("d", 64), "--job-id 2026-09-27-issue42"} {
 		if !strings.Contains(argv, want) {
 			t.Errorf("argv %q does not contain %q", argv, want)
 		}
@@ -402,11 +435,19 @@ func TestExecFailureRestoresAndMarksFailed(t *testing.T) {
 	if !hasLabel(gateway.labels[42], "llmbench:failed") {
 		t.Fatalf("labels = %v", gateway.labels[42])
 	}
-	// The failure is recorded after restoration, so the phase sequence still
-	// ends in restored.
-	last := leaseStore.annotates[len(leaseStore.annotates)-1]
-	if last != lease.PhaseRestored {
-		t.Fatalf("last phase = %s", last)
+	// Restoration still completes before the lease is released, so the phase
+	// sequence reaches restored and only then releasing.
+	var sawRestored bool
+	for _, phase := range leaseStore.annotates {
+		if phase == lease.PhaseRestored {
+			sawRestored = true
+		}
+	}
+	if !sawRestored {
+		t.Fatalf("restoration was skipped: %v", leaseStore.annotates)
+	}
+	if last := leaseStore.annotates[len(leaseStore.annotates)-1]; last != lease.PhaseReleasing {
+		t.Fatalf("last phase = %s, want releasing", last)
 	}
 }
 
@@ -451,6 +492,128 @@ func (p *scriptedPauser) Pause(context.Context, string) error { return p.onAcqui
 func (p *scriptedPauser) Restore(context.Context, string) error {
 	p.restores++
 	return nil
+}
+
+func TestRecoverResumesFromAPhaseThatOnlyNeedsThePR(t *testing.T) {
+	c, gateway, leaseStore, _, sandbox := newController(t, nil)
+	holder := c.holderFor("2026-09-27-issue42")
+	leaseStore.live = true
+	leaseStore.record = lease.Record{
+		Holder: holder, JobID: "2026-09-27-issue42", Issue: 42,
+		Phase: lease.PhaseExecuted, Branch: "llmbench/2026-09-27-issue42", Commit: strings.Repeat("c", 40),
+	}
+	if err := c.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(sandbox.execs) != 0 {
+		t.Fatal("a resumed job measured again")
+	}
+	if len(gateway.prs) != 1 || gateway.prs[0].Head != "llmbench/2026-09-27-issue42" {
+		t.Fatalf("the pull request was not resumed: %+v", gateway.prs)
+	}
+	if !leaseStore.released {
+		t.Fatal("the resumed job did not release the lease")
+	}
+}
+
+func TestFinishKeepsTheLeaseWhenRestoreHasNotConverged(t *testing.T) {
+	// The restore is a human-merged PR: until it converges the lease stays
+	// ours, because releasing it would let the next job borrow a GPU that is
+	// still paused.
+	c, _, leaseStore, pauser, sandbox := newController(t, nil)
+	pauser.acquireErr = nil
+	pauser.restoreErr = ErrNotConverged
+	if _, err := c.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if leaseStore.released {
+		t.Fatal("the lease was released while the workload was still paused")
+	}
+	if !leaseStore.live {
+		t.Fatal("the lease was dropped")
+	}
+	if got := leaseStore.record.Phase; got != lease.PhaseRestoring {
+		t.Fatalf("phase = %s, want the restore to stay in progress", got)
+	}
+	_ = sandbox
+}
+
+func TestFinishKeepsTheLeaseWhenTheSandboxHasNotTerminated(t *testing.T) {
+	c, _, leaseStore, pauser, sandbox := newController(t, nil)
+	sandbox.deletePending = true
+	if _, err := c.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if leaseStore.released {
+		t.Fatal("the lease was released while the sandbox was still terminating")
+	}
+	if pauser.restores != 0 {
+		t.Fatal("the workload was restored while the GPU was still held by a sandbox")
+	}
+	if got := leaseStore.record.Phase; got != lease.PhaseDeletingClaim {
+		t.Fatalf("phase = %s", got)
+	}
+}
+
+func TestOptimizeRequestsAreRejectedUntilTheAgentPathExists(t *testing.T) {
+	c, gateway, leaseStore, pauser, sandbox := newController(t, func(c *Controller) {
+		body := strings.Replace(issueBody(t), "kind: benchmark", "kind: optimize", 1)
+		body = strings.Replace(body, "output:\n", "source:\n  repo: owner/runtime\n  ref: main\nbudget:\n  max_rounds: 3\noutput:\n", 1)
+		c.Gateway.(*fakeGateway).issues[0].Body = body
+		c.Gateway.(*fakeGateway).issues[0].Labels = []string{"llmbench:optimize"}
+	})
+	if _, err := c.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if leaseStore.live || pauser.pauses != 0 || len(sandbox.ensures) != 0 {
+		t.Fatal("an optimize request touched the GPU")
+	}
+	if !hasLabel(gateway.labels[42], "llmbench:failed") {
+		t.Fatalf("labels = %v", gateway.labels[42])
+	}
+	if len(gateway.comments[42]) == 0 || !strings.Contains(gateway.comments[42][0], "optimization") {
+		t.Fatalf("comments = %v", gateway.comments[42])
+	}
+}
+
+func TestReservedArgsArePerEngine(t *testing.T) {
+	// A FreeToken job must not slip through with llama.cpp's reserved list.
+	c, gateway, leaseStore, _, sandbox := newController(t, nil)
+	body := strings.Replace(issueBody(t), "engine: llamacpp", "engine: freetoken", 1)
+	body = strings.Replace(body, "  image: img\n", "  image: img\n  args: [\"--gpu\", \"1\"]\n", 1)
+	c.Gateway.(*fakeGateway).issues[0].Body = body
+	if _, err := c.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if leaseStore.live || len(sandbox.ensures) != 0 {
+		t.Fatal("a spec setting a reserved engine flag reached the GPU")
+	}
+	if !hasLabel(gateway.labels[42], "llmbench:failed") {
+		t.Fatalf("labels = %v", gateway.labels[42])
+	}
+}
+
+func TestRunOnceWritesTheSpecAndPushes(t *testing.T) {
+	c, _, _, _, sandbox := newController(t, nil)
+	if _, err := c.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(sandbox.puts) != 1 {
+		t.Fatalf("the job spec was not written into the sandbox: %v", sandbox.puts)
+	}
+	if !strings.Contains(sandbox.pushed[0], "kind: benchmark") {
+		t.Fatalf("the pushed spec = %q", sandbox.pushed[0])
+	}
+	argv := sandbox.execs[0]
+	if !strings.Contains(argv, "--push") {
+		t.Fatalf("argv %q does not push the result", argv)
+	}
+	if strings.Contains(argv, "--job -") {
+		t.Fatalf("argv %q still reads the spec from a stdin that does not exist", argv)
+	}
+	if !strings.Contains(argv, "--job "+sandbox.puts[0]) {
+		t.Fatalf("argv %q does not point at the written spec", argv)
+	}
 }
 
 func TestRecoverCleansUpAnInterruptedJobWithoutRerunningIt(t *testing.T) {

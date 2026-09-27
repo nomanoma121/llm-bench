@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/nomanoma121/llm-bench/internal/job"
 	"github.com/nomanoma121/llm-bench/internal/lease"
 	"github.com/nomanoma121/llm-bench/internal/operator"
@@ -65,10 +67,16 @@ type Pauser interface {
 type Sandbox interface {
 	// Ensure makes a ready sandbox available for the job.
 	Ensure(ctx context.Context, jobID string) error
+	// Put writes a file into the sandbox. The job spec travels this way: the
+	// CLI reads a file, and a file can be quoted, re-read and re-validated,
+	// which a stdin stream cannot.
+	Put(ctx context.Context, jobID, path string, content []byte) error
 	// Exec runs the benchmark CLI inside it and returns its stdout.
 	Exec(ctx context.Context, jobID string, argv []string, env map[string]string) ([]byte, error)
-	// Delete removes it. It must be safe to call when nothing exists.
-	Delete(ctx context.Context, jobID string) error
+	// Delete removes the sandbox. done=false means "still terminating", which
+	// the caller retries without releasing the lease. It must be safe to call
+	// when nothing exists.
+	Delete(ctx context.Context, jobID string) (bool, error)
 }
 
 // ErrNotConverged is returned by a Pauser whose external state is not where it
@@ -78,12 +86,15 @@ var ErrNotConverged = errors.New("controller: not converged")
 
 // Request is one accepted job.
 type Request struct {
-	Issue  Issue
-	JobID  string
-	Kind   job.Kind
-	Spec   job.Spec
-	Digest string
-	Model  operator.MVPModel
+	Issue Issue
+	JobID string
+	Kind  job.Kind
+	Spec  job.Spec
+	// SpecYAML is the validated spec as it is handed to the benchmark CLI, so
+	// the executed spec is the one the controller validated.
+	SpecYAML []byte
+	Digest   string
+	Model    operator.MVPModel
 	// Env is extra environment for the sandbox command (for example the
 	// short-lived git token).
 	Env map[string]string
@@ -101,7 +112,11 @@ type Config struct {
 	Labels        operator.Labels
 	Models        []operator.MVPModel
 	Constraints   job.Constraints
-	Sandbox       operator.MVPSandbox
+	// ReservedArgs maps an engine to the flags its adapter owns. The reserved
+	// list is per engine: using the first engine's list for every job would let
+	// a FreeToken job set llama.cpp's flags and vice versa.
+	ReservedArgs map[string][]string
+	Sandbox      operator.MVPSandbox
 	// LLMBench is the argv prefix that runs the CLI inside the sandbox.
 	LLMBench []string
 	// HolderIdentity prefixes the lease holder. A single-replica Deployment
@@ -222,15 +237,89 @@ func (c *Controller) Recover(ctx context.Context) error {
 	if record.JobID == "" {
 		return nil
 	}
-	if record.Holder == c.holderFor(record.JobID) {
-		// Ours: either the loop is running it, or it is an interrupted job of
-		// this controller (a single-replica Deployment has no other writer).
-		c.logf("recovering job %s left in phase %q", record.JobID, record.Phase)
+	holder := c.holderFor(record.JobID)
+	if record.Holder == holder {
+		// Ours: an interrupted job of this very process.
+		return c.reconcile(ctx, record)
+	}
+	// Someone else's live lease is fenced: taking it over while its holder is
+	// still running could delete a sandbox that is being measured in. Only an
+	// expired lease is recoverable, and then only by taking it first.
+	if !record.ExpiresAt.IsZero() && c.now().Before(record.ExpiresAt) {
+		return nil
+	}
+	previous := record.Holder
+	acquired, err := c.Lease.Acquire(ctx, holder, record, true)
+	if err != nil {
+		return err
+	}
+	if !acquired {
+		return nil
+	}
+	record.Holder = holder
+	c.logf("taking over job %s left in phase %q by %q", record.JobID, record.Phase, previous)
+	return c.reconcile(ctx, record)
+}
+
+// reconcile decides what an interrupted job needs, from its durable phase.
+//
+// The rule that matters: a job whose measurement may already have run is never
+// re-run, because a second run would publish a different result for the same
+// request. A job that never started measuring is discarded; a job whose
+// measurement finished keeps its branch and commit, so only the pull request
+// and the cleanup are repeated (both idempotent).
+func (c *Controller) reconcile(ctx context.Context, record lease.Record) error {
+	switch record.Phase {
+	case lease.PhaseExecuted, lease.PhaseOpeningPR, lease.PhasePROpen:
+		// The measurement is done and identified by branch/commit, so only the
+		// pull request is repeated. That is safe: the gateway returns the
+		// existing PR for that head instead of opening a second one.
+		c.logf("resuming job %s from phase %q", record.JobID, record.Phase)
+		if record.PullRequest == 0 {
+			if record.Branch == "" {
+				c.logf("job %s has no branch in its record; finishing it as failed", record.JobID)
+				c.markFailed(ctx, record)
+				return c.finish(ctx, record)
+			}
+			pr, err := c.Gateway.OpenPR(ctx, PullRequest{
+				Head:  record.Branch,
+				Base:  c.Config.DefaultBranch,
+				Title: fmt.Sprintf("benchmark: %s", record.JobID),
+				Body:  c.resumedPullRequestBody(record),
+			})
+			if err != nil {
+				return fmt.Errorf("resume the pull request: %w", err)
+			}
+			record.PullRequest = pr
+			record.Phase = lease.PhasePROpen
+			if err := c.annotate(ctx, &record); err != nil {
+				return err
+			}
+			if record.Issue > 0 {
+				_ = c.Gateway.Comment(ctx, record.Issue, fmt.Sprintf("llmbench recovered job %s and opened #%d for review.", record.JobID, pr))
+			}
+		}
+		return c.finish(ctx, record)
+	case lease.PhaseExecuting:
+		// Unknown whether the measurement completed. Never repeat it; the
+		// request is finished as a failure and a human can re-open it.
+		c.logf("job %s was interrupted while measuring; not repeating it", record.JobID)
+		c.markFailed(ctx, record)
+		return c.finish(ctx, record)
+	default:
+		c.logf("discarding job %s stopped in phase %q before measuring", record.JobID, record.Phase)
+		c.markFailed(ctx, record)
 		return c.finish(ctx, record)
 	}
-	// Another job holds the lease. Nothing to do: its own controller (or the
-	// expiry path) owns it.
-	return nil
+}
+
+// markFailed mirrors a failed job on its Issue, taking the claim away so the
+// label set stays a truthful mirror of the durable phase (docs/mvp.md §6.2).
+func (c *Controller) markFailed(ctx context.Context, record lease.Record) {
+	if record.Issue == 0 {
+		return
+	}
+	c.syncLabels(ctx, record.Issue, c.Config.Labels.Failed)
 }
 
 // run executes one request end to end. Every step is idempotent and the phase
@@ -280,7 +369,19 @@ func (c *Controller) parse(issue Issue) (Request, error) {
 	if err != nil {
 		return Request{}, err
 	}
-	if err := spec.ValidateConstraints(c.Config.Constraints); err != nil {
+	if spec.Kind == job.KindOptimize {
+		// The controller can measure, but it cannot yet hand a sandbox to an
+		// Agent. Accepting the request and running a single benchmark would
+		// answer a different question than the one that was asked.
+		return Request{}, errors.New("optimization requests are not supported by this controller build yet; open a benchmark request instead")
+	}
+	constraints := c.Config.Constraints
+	reserved, ok := c.Config.ReservedArgs[spec.Runtime.Engine]
+	if !ok {
+		return Request{}, fmt.Errorf("engine %q has no reserved-argument list in the operator configuration", spec.Runtime.Engine)
+	}
+	constraints.ReservedArgs = reserved
+	if err := spec.ValidateConstraints(constraints); err != nil {
 		return Request{}, err
 	}
 	digest, err := spec.Digest()
@@ -291,13 +392,18 @@ func (c *Controller) parse(issue Issue) (Request, error) {
 	if !ok {
 		return Request{}, fmt.Errorf("model %q is not configured by the operator", spec.Model.ID)
 	}
+	specYAML, err := yaml.Marshal(spec)
+	if err != nil {
+		return Request{}, fmt.Errorf("encode the accepted spec: %w", err)
+	}
 	return Request{
-		Issue:  issue,
-		JobID:  jobIDFor(issue.Number, c.now()),
-		Kind:   spec.Kind,
-		Spec:   spec,
-		Digest: digest,
-		Model:  model,
+		Issue:    issue,
+		JobID:    jobIDFor(issue.Number, c.now()),
+		Kind:     spec.Kind,
+		Spec:     spec,
+		SpecYAML: specYAML,
+		Digest:   digest,
+		Model:    model,
 	}, nil
 }
 
@@ -362,7 +468,11 @@ func (c *Controller) execute(ctx context.Context, request Request, record *lease
 	if err != nil {
 		return err
 	}
-	out, err := c.Sandbox.Exec(ctx, request.JobID, c.benchmarkArgv(request), env)
+	specPath := "/tmp/llmbench-job-" + request.JobID + ".yaml"
+	if err := c.Sandbox.Put(ctx, request.JobID, specPath, request.SpecYAML); err != nil {
+		return fmt.Errorf("write the job spec into the sandbox: %w", err)
+	}
+	out, err := c.Sandbox.Exec(ctx, request.JobID, c.benchmarkArgv(request, specPath), env)
 	if err != nil {
 		return fmt.Errorf("measure in the sandbox: %w", err)
 	}
@@ -437,54 +547,104 @@ const SandboxTokenEnv = "LLMBENCH_GIT_TOKEN"
 // last so an interrupted job is still recognisable after a restart.
 func (c *Controller) finish(ctx context.Context, record lease.Record) error {
 	cleanup := context.WithoutCancel(ctx)
-	var failures []error
+	holder := record.Holder
+	if holder == "" {
+		holder = c.holderFor(record.JobID)
+	}
 
-	// Take the lease with the same holder before writing phases: after a
-	// restart the record names the old holder, and the phases are ours to
-	// write only while we own it.
-	if record.Holder != c.holderFor(record.JobID) || !c.owns(ctx, record.JobID) {
-		acquired, err := c.Lease.Acquire(cleanup, c.holderFor(record.JobID), record, true)
+	// Take the lease before writing phases: after a restart the record names
+	// an older holder, and the phases are ours to write only while we own it.
+	// A live lease of another instance cannot be taken (fencing), so the job
+	// waits for expiry instead of being cleaned up under a running measurement.
+	current, err := c.Lease.Get(cleanup)
+	if err != nil {
+		return err
+	}
+	if current.JobID != record.JobID {
+		return fmt.Errorf("the gpu lease no longer belongs to job %s", record.JobID)
+	}
+	if current.Holder != holder {
+		if !current.ExpiresAt.IsZero() && c.now().Before(current.ExpiresAt) {
+			return fmt.Errorf("%w: job %s is still held by %q", ErrNotConverged, record.JobID, current.Holder)
+		}
+		acquired, err := c.Lease.Acquire(cleanup, holder, record, true)
 		if err != nil {
-			return fmt.Errorf("take over the gpu lease for recovery: %w", err)
+			return err
 		}
 		if !acquired {
-			return fmt.Errorf("another writer holds the gpu lease for job %s; not recovering it", record.JobID)
+			return fmt.Errorf("%w: another writer holds the gpu lease for job %s", ErrNotConverged, record.JobID)
 		}
-		record.Holder = c.holderFor(record.JobID)
 	}
 
-	record.Phase = lease.PhaseDeletingClaim
-	if err := c.annotate(cleanup, &record); err != nil {
-		failures = append(failures, err)
+	// Nothing is released until both the sandbox is gone and the workload is
+	// back: a not-converged restore keeps the lease, keeps the phase, and is
+	// retried by the recovery loop. The lease is what stops the next job from
+	// borrowing a GPU that is still paused.
+	if err := c.ensureClaimDeleted(cleanup, &record); err != nil {
+		return err
 	}
-	if err := c.Sandbox.Delete(cleanup, record.JobID); err != nil {
-		failures = append(failures, fmt.Errorf("delete the sandbox: %w", err))
+	if err := c.ensureRestored(cleanup, &record); err != nil {
+		return err
+	}
+	record.Phase = lease.PhaseReleasing
+	if err := c.annotate(cleanup, &record); err != nil {
+		return err
+	}
+	if err := c.Lease.Release(cleanup, holder); err != nil {
+		return fmt.Errorf("release the gpu lease: %w", err)
+	}
+	c.syncLabels(ctx, record.Issue, c.Config.Labels.Done)
+	return nil
+}
+
+// ensureClaimDeleted deletes the sandbox and records the phase only once the
+// claim is really gone.
+func (c *Controller) ensureClaimDeleted(ctx context.Context, record *lease.Record) error {
+	record.Phase = lease.PhaseDeletingClaim
+	if err := c.annotate(ctx, record); err != nil {
+		return err
+	}
+	done, err := c.Sandbox.Delete(ctx, record.JobID)
+	if err != nil {
+		return fmt.Errorf("delete the sandbox: %w", err)
+	}
+	if !done {
+		return fmt.Errorf("%w: the sandbox of job %s is still terminating", ErrNotConverged, record.JobID)
 	}
 	record.Phase = lease.PhaseClaimDeleted
-	if err := c.annotate(cleanup, &record); err != nil {
-		failures = append(failures, err)
-	}
+	return c.annotate(ctx, record)
+}
+
+// ensureRestored restores the workload and records the phase only once the
+// restore has converged (the PR merged, Argo synced, the workload back).
+func (c *Controller) ensureRestored(ctx context.Context, record *lease.Record) error {
 	record.Phase = lease.PhaseRestoring
-	if err := c.annotate(cleanup, &record); err != nil {
-		failures = append(failures, err)
+	if err := c.annotate(ctx, record); err != nil {
+		return err
 	}
-	if err := c.pauser().Restore(cleanup, record.JobID); err != nil {
-		failures = append(failures, fmt.Errorf("restore the workload: %w", err))
+	if err := c.pauser().Restore(ctx, record.JobID); err != nil {
+		return fmt.Errorf("restore the workload: %w", err)
 	}
 	record.Phase = lease.PhaseRestored
-	if err := c.annotate(cleanup, &record); err != nil {
-		failures = append(failures, err)
+	return c.annotate(ctx, record)
+}
+
+// syncLabels mirrors the job outcome on the Issue: the claim goes away and
+// exactly one terminal label remains, so the labels stay a truthful mirror of
+// the durable phase instead of a second, drifting state.
+func (c *Controller) syncLabels(ctx context.Context, issue int, terminal string) {
+	if issue == 0 {
+		return
 	}
-	// The lease is released last: until then the job is unfinished and the
-	// next controller must recover it rather than start something new.
-	if err := c.Lease.Release(cleanup, c.holderFor(record.JobID)); err != nil {
-		failures = append(failures, fmt.Errorf("release the gpu lease: %w", err))
-		return errors.Join(failures...)
+	if err := c.Gateway.Unlabel(ctx, issue, c.Config.Labels.Claimed); err != nil {
+		c.logf("issue #%d: could not remove the claim label: %v", issue, err)
 	}
-	if len(failures) > 0 && record.Issue > 0 {
-		_ = c.Gateway.Comment(ctx, record.Issue, "llmbench restored the GPU, but with errors:\n\n```\n"+errors.Join(failures...).Error()+"\n```")
+	if terminal == "" {
+		return
 	}
-	return errors.Join(failures...)
+	if err := c.Gateway.Label(ctx, issue, terminal); err != nil {
+		c.logf("issue #%d: could not add %s: %v", issue, terminal, err)
+	}
 }
 
 // abort records a failure on the Issue and leaves the job restored.
@@ -494,20 +654,9 @@ func (c *Controller) abort(ctx context.Context, record lease.Record, what string
 		if err := c.Gateway.Comment(ctx, record.Issue, "llmbench failed this request: "+what+".\n\n```\n"+cause.Error()+"\n```"); err != nil {
 			c.logf("issue #%d: could not comment: %v", record.Issue, err)
 		}
-		if err := c.Gateway.Label(ctx, record.Issue, c.Config.Labels.Failed); err != nil {
-			c.logf("issue #%d: could not label: %v", record.Issue, err)
-		}
 	}
+	c.syncLabels(ctx, record.Issue, c.Config.Labels.Failed)
 	return c.finish(ctx, record)
-}
-
-// owns reports whether the lease is currently recorded as ours.
-func (c *Controller) owns(ctx context.Context, jobID string) bool {
-	record, err := c.Lease.Get(ctx)
-	if err != nil {
-		return false
-	}
-	return record.JobID == jobID && record.Holder == c.holderFor(jobID)
 }
 
 // pauser returns the pause/restore implementation; a nil Pauser means no
@@ -616,19 +765,34 @@ func (c *Controller) holderFor(jobID string) string {
 // benchmarkArgv builds the command that runs the measurement inside the
 // sandbox. The CLI reads the job spec from stdin, so the controller does not
 // have to write the request into the sandbox as a file.
-func (c *Controller) benchmarkArgv(request Request) []string {
+func (c *Controller) benchmarkArgv(request Request, specPath string) []string {
 	argv := append([]string(nil), c.Config.LLMBench...)
 	argv = append(argv,
 		"benchmark",
-		"--job", "-",
+		"--job", specPath,
 		"--model-path", request.Model.Path,
 		"--job-id", request.JobID,
+		// The sandbox commits and pushes its own result; the controller only
+		// opens the pull request (docs/mvp.md §7).
+		"--push",
 		"--json",
 	)
 	if request.Model.Digest != "" {
 		argv = append(argv, "--model-digest", request.Model.Digest)
 	}
 	return argv
+}
+
+// resumedPullRequestBody describes a job recovered after a restart, where the
+// request details are no longer in memory but the durable record holds what
+// matters: the identity of the measurement and where to find it.
+func (c *Controller) resumedPullRequestBody(record lease.Record) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Job: `%s` (resumed after a controller restart)\n\n", record.JobID)
+	fmt.Fprintf(&b, "- job spec digest: `%s`\n", record.JobSpecDigest)
+	fmt.Fprintf(&b, "- commit: `%s`\n", record.Commit)
+	b.WriteString("\nThe measurement itself is in `experiments/`; the harness did not re-run it, so this PR carries the result of the original run.\n")
+	return b.String()
 }
 
 // pullRequestBody summarizes the request and the measurement for the reviewer.

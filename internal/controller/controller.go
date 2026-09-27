@@ -132,7 +132,12 @@ type Config struct {
 	// PollInterval is how often a not-converged pause is retried.
 	PollInterval time.Duration
 	// LeaseRenewInterval is how often the lease is renewed while a job runs.
+	// When it is zero it is derived from LeaseDuration, so it can never be
+	// longer than the lease itself.
 	LeaseRenewInterval time.Duration
+	// LeaseDuration is the lifetime of the lease, used to derive a safe
+	// renewal interval.
+	LeaseDuration time.Duration
 }
 
 // Controller runs jobs one at a time.
@@ -192,6 +197,9 @@ func (c *Controller) Run(ctx context.Context, poll, recovery time.Duration) erro
 	if recovery <= 0 {
 		recovery = time.Minute
 	}
+	if c.Config.LeaseDuration > 0 && c.Config.LeaseRenewInterval >= c.Config.LeaseDuration {
+		return fmt.Errorf("controller: the lease renewal interval (%s) must be shorter than the lease duration (%s)", c.Config.LeaseRenewInterval, c.Config.LeaseDuration)
+	}
 	if err := c.Gateway.EnsureLabels(ctx, c.Config.Labels); err != nil {
 		return err
 	}
@@ -250,7 +258,9 @@ func (c *Controller) Recover(ctx context.Context) error {
 		// resurrected. What may still be missing is the label mirror, if the
 		// controller died between writing the labels and releasing the lease.
 		if record.Outcome != "" && record.Issue > 0 {
-			c.syncLabels(ctx, record.Issue, record.Outcome)
+			if err := c.syncLabels(ctx, record.Issue, record.Outcome); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -625,10 +635,13 @@ func (c *Controller) finish(ctx context.Context, record lease.Record) error {
 	if err := c.annotate(cleanup, &record); err != nil {
 		return err
 	}
-	// The labels are part of completion, so they are written before the lease
-	// goes away: a crash after the release would leave the Issue looking
-	// claimed forever, and recovery cannot act on a released record.
-	c.syncLabels(cleanup, record.Issue, record.Outcome)
+	// The labels are part of completion, so they are established before the
+	// lease goes away. If the terminal label cannot be written the lease is
+	// kept: releasing it would make the Issue pending again (no state label)
+	// and the same request would be measured a second time.
+	if err := c.syncLabels(cleanup, record.Issue, record.Outcome); err != nil {
+		return fmt.Errorf("%w: %w", ErrNotConverged, err)
+	}
 	if err := c.Lease.Release(cleanup, holder); err != nil {
 		return fmt.Errorf("release the gpu lease: %w", err)
 	}
@@ -670,28 +683,30 @@ func (c *Controller) ensureRestored(ctx context.Context, record *lease.Record) e
 // syncLabels mirrors the job outcome on the Issue: the claim goes away and
 // exactly one terminal label remains, so the labels stay a truthful mirror of
 // the durable phase instead of a second, drifting state.
-func (c *Controller) syncLabels(ctx context.Context, issue int, outcome lease.Outcome) {
+func (c *Controller) syncLabels(ctx context.Context, issue int, outcome lease.Outcome) error {
 	if issue == 0 || outcome == "" {
-		return
+		return nil
 	}
 	terminal := c.Config.Labels.Done
 	other := c.Config.Labels.Failed
 	if outcome == lease.OutcomeFailed {
 		terminal, other = c.Config.Labels.Failed, c.Config.Labels.Done
 	}
-	// Both terminal labels are cleared first: a job is either done or failed,
-	// and the alternative must not survive from an earlier decision.
-	for _, label := range []string{c.Config.Labels.Claimed, other, terminal} {
+	// The terminal label goes on first: while it exists the Issue is not
+	// pending, so a crash in the middle of syncing cannot make an already
+	// handled request look like a new one. Only then is the claim removed.
+	if err := c.Gateway.Label(ctx, issue, terminal); err != nil {
+		return fmt.Errorf("label the issue as %s: %w", terminal, err)
+	}
+	for _, label := range []string{other, c.Config.Labels.Claimed} {
 		if label == "" {
 			continue
 		}
 		if err := c.Gateway.Unlabel(ctx, issue, label); err != nil {
-			c.logf("issue #%d: could not remove %s: %v", issue, label, err)
+			return fmt.Errorf("remove the %s label: %w", label, err)
 		}
 	}
-	if err := c.Gateway.Label(ctx, issue, terminal); err != nil {
-		c.logf("issue #%d: could not add %s: %v", issue, terminal, err)
-	}
+	return nil
 }
 
 // abort records a failure on the Issue and leaves the job restored.
@@ -752,6 +767,19 @@ func (c *Controller) pause(ctx context.Context, jobID string) error {
 	}
 }
 
+// renewInterval is a third of the lease duration unless it was set
+// explicitly: a renewal interval longer than the lease would let the lease
+// expire mid-measurement, and the first renewal would already be too late.
+func (c *Controller) renewInterval() time.Duration {
+	if c.Config.LeaseRenewInterval > 0 && (c.Config.LeaseDuration <= 0 || c.Config.LeaseRenewInterval < c.Config.LeaseDuration) {
+		return c.Config.LeaseRenewInterval
+	}
+	if c.Config.LeaseDuration > 0 {
+		return c.Config.LeaseDuration / 3
+	}
+	return 5 * time.Minute
+}
+
 func (c *Controller) pollInterval() time.Duration {
 	if c.Config.PollInterval > 0 {
 		return c.Config.PollInterval
@@ -782,10 +810,7 @@ func (c *Controller) annotate(ctx context.Context, record *lease.Record) error {
 // pushing a branch would publish a result for a job that is being recovered
 // elsewhere. The lease is a fence, so losing it stops the work.
 func (c *Controller) startRenewal(ctx context.Context, holder string, onLost func()) func() {
-	interval := c.Config.LeaseRenewInterval
-	if interval <= 0 {
-		interval = 5 * time.Minute
-	}
+	interval := c.renewInterval()
 	done := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(interval)

@@ -108,7 +108,8 @@ func buildController(ctx context.Context, cfg operator.MVP, g *globalFlags, logw
 	if err != nil {
 		return nil, fmt.Errorf("controller: kubernetes client: %w", err)
 	}
-	leaseStore := kube.NewGPULease(client, cfg.Lease.Namespace, cfg.Lease.Name, time.Duration(cfg.Lease.DurationSeconds)*time.Second)
+	leaseDuration := time.Duration(cfg.Lease.DurationSeconds) * time.Second
+	leaseStore := kube.NewGPULease(client, cfg.Lease.Namespace, cfg.Lease.Name, leaseDuration)
 
 	// The pause/restore plan is bound per job (deterministic branch names), so
 	// the pauser resolves the hook from the job id it is given.
@@ -148,6 +149,7 @@ func buildController(ctx context.Context, cfg operator.MVP, g *globalFlags, logw
 			// sandbox that is being measured in, so the two instances must be
 			// distinguishable.
 			HolderIdentity: "llmbench-controller-" + holder,
+			LeaseDuration:  leaseDuration,
 			// A fresh, narrowly scoped token per job: the sandbox may push to
 			// this repository and nothing else. A token lives an hour, so an
 			// optimization run that outlasts it fails its push loudly instead

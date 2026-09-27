@@ -258,6 +258,8 @@ poll(open な `llmbench:benchmark|optimize` Issue で、状態ラベルが無い
 - **同じ job を再実行しない**。recovery は phase で判断する: `executed` / `opening_pr` / `pr_open` は **branch/commit が durable なので PR 作成だけを再実行**して cleanup へ進む(PR 作成は冪等)。`executing` は「測定が完了したか不明」なので**再実行せず** failure として記録して cleanup する。それ以前の phase は未測定なので attempt を破棄して failure にする。
 - **restore が converge するまで Lease を手放さない**。`Sandbox.Delete` がまだ終わっていない / `Restore` が `ErrNotConverged`(PR 未マージ・Argo 未同期)の間は phase も Lease も保持したまま recovery が再試行する。Lease を先に離すと、まだ pause されたままの GPU を次の job が借りてしまう。
 - **outcome は測定直後の annotate で durable にする**(phase=`executed` と同じ書き込み)。測定後の crash で「成功した job を recovery が failed と解釈する」事故を防ぐ。
+- **終了ラベルを先に付け、`claimed` を後に外す**。terminal ラベルの書き込みに失敗したら **Lease は保持**したまま recovery が再試行する(状態ラベルが 1 つも無いまま release すると、同じ Issue が pending に見えて二重実行される)。
+- **renew 間隔は lease duration から導出する**(既定 = duration/3)。renew 間隔が lease 期間以上だと、測定中に失効して別 instance に引き継がれる。設定で明示する場合は duration 未満でなければならない(起動時に fail)。`lease.duration_seconds` は 60 以上。
 - **ラベルの mirror は Lease release より先に書く**(crash しても released record の recovery が label だけ resync できる)。
 - **Lease を失ったらジョブを止める**(fencing): renew が失敗した時点で実行中の context を cancel する。lease を失ったプロセスは外部効果(測定・push)を続けてはならない。
 - **runtime 子プロセスに出版 credential を渡さない**: `llmbench benchmark` は runtime を起動する際、環境変数から `LLMBENCH_GIT_TOKEN` を除く(runtime は候補のコードであり、環境をログに出すと write token が生の出力に漏れる)。

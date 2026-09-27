@@ -155,6 +155,11 @@ func (m MVP) Validate() error {
 	if m.Lease.Namespace == "" || m.Lease.Name == "" {
 		add("lease.namespace and lease.name are required")
 	}
+	if m.Lease.DurationSeconds < 60 {
+		// The renewal interval is derived from the duration; a lease shorter
+		// than a minute would expire while a job is still starting.
+		add("lease.duration_seconds must be at least 60, got %d", m.Lease.DurationSeconds)
+	}
 	if m.Sandbox.Namespace == "" || m.Sandbox.WarmPool == "" {
 		add("sandbox.namespace and sandbox.warm_pool are required")
 	}

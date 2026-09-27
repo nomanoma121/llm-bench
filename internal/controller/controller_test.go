@@ -21,6 +21,10 @@ type fakeGateway struct {
 	comments map[int][]string
 	prs      []PullRequest
 	prErr    error
+	labelErr error
+	// terminalOnlyErr fails the terminal label but lets the claim through, so
+	// a test can reproduce "the claim was removed but done never landed".
+	terminalOnlyErr error
 }
 
 func newFakeGateway(issues ...Issue) *fakeGateway {
@@ -42,6 +46,12 @@ func (g *fakeGateway) Pending(_ context.Context, labels operator.Labels) ([]Issu
 }
 
 func (g *fakeGateway) Label(_ context.Context, issue int, label string) error {
+	if g.labelErr != nil {
+		return g.labelErr
+	}
+	if g.terminalOnlyErr != nil && strings.HasPrefix(label, "llmbench:done") {
+		return g.terminalOnlyErr
+	}
 	g.labels[issue] = append(g.labels[issue], label)
 	for i := range g.issues {
 		if g.issues[i].Number == issue {
@@ -306,6 +316,7 @@ func newController(t *testing.T, mutate func(*Controller)) (*Controller, *fakeGa
 			},
 			LLMBench:       []string{"llmbench"},
 			HolderIdentity: "test-controller",
+			LeaseDuration:  time.Minute,
 			PollInterval:   time.Millisecond,
 		},
 		Gateway: gateway,
@@ -405,6 +416,34 @@ func phases(in []lease.Phase) []string {
 		out = append(out, string(p))
 	}
 	return out
+}
+
+func TestAJobIsNotReleasedUntilItsTerminalLabelExists(t *testing.T) {
+	// If the terminal label cannot be written, releasing the lease would leave
+	// the Issue with no state label at all: the next poll would find the same
+	// request and measure it a second time.
+	c, gateway, leaseStore, _, _ := newController(t, nil)
+	gateway.terminalOnlyErr = errors.New("github is unavailable")
+	if _, err := c.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if leaseStore.released {
+		t.Fatal("the lease was released without a terminal label")
+	}
+	if !leaseStore.live || leaseStore.record.Outcome != lease.OutcomeSucceeded {
+		t.Fatalf("record = %+v", leaseStore.record)
+	}
+	// With GitHub back, recovery finishes the job.
+	gateway.terminalOnlyErr = nil
+	if err := c.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !leaseStore.released {
+		t.Fatal("recovery did not finish the job")
+	}
+	if !hasLabel(gateway.labels[42], "llmbench:done") {
+		t.Fatalf("labels = %v", gateway.labels[42])
+	}
 }
 
 func TestRunOnceRejectsAnInvalidRequestWithoutTakingTheGpu(t *testing.T) {

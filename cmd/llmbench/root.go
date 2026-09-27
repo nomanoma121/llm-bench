@@ -14,6 +14,10 @@ type globalFlags struct {
 	state      string // controller state directory (run records, leases)
 	output     string // artifact root; artifacts live under <output>/runs/<run-id>
 	kubeconfig string // optional kubeconfig for cluster integrations
+	// operatorConfig is the MVP operator configuration. The Agent's sandbox
+	// commands read the sandbox namespace from it, so the CLI and the
+	// controller agree without extra environment variables.
+	operatorConfig string
 }
 
 func newRootCmd() *cobra.Command {
@@ -28,9 +32,10 @@ func newRootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&g.state, "state", ".state", "controller state directory")
 	cmd.PersistentFlags().StringVar(&g.output, "output", "runs", "artifact output root")
 	cmd.PersistentFlags().StringVar(&g.kubeconfig, "kubeconfig", "", "kubeconfig path for cluster integrations (defaults to in-cluster, then ~/.kube/config)")
+	cmd.PersistentFlags().StringVar(&g.operatorConfig, "operator-config", "", "MVP operator configuration (docs/mvp.md §9)")
 	cmd.AddCommand(
 		newValidateCmd(&g),
-		newJobCmd(),
+		newJobCmd(&g),
 		newBenchmarkCmd(&g),
 		newCompareCmd(),
 		newControllerCmd(&g),

@@ -34,7 +34,7 @@ benchmark なら Sandbox 内の llmbench を実行し、optimization なら外�
 | ジョブ状態の持ち方 | **メモリ + GPU Lease の annotation(永続 phase)+ Issue ラベル(人間向けのミラー)**。ConfigMap store と leader election は**使わない** |
 | HTTP API | MVP の経路に置かない。既存 `serve` は freeze(削除は後続 PR) |
 | Agent / DSH | **既存デプロイを使う**。llm-bench は Sandbox を貸し出し、bind / rebind とライフサイクルだけを持つ。Helm の option で参照 |
-| Agent → Sandbox | `llmbench sandbox exec|cp|shell`(Agent Sandbox SDK の port-forward transport)。ssh は実装しない |
+| Agent → Sandbox | `llmbench sandbox job exec|push|pull|ls <job id>`(Agent Sandbox SDK の port-forward transport)。ssh も対話 shell も実装しない(exec は shell 無しの argv) |
 | GitHub 認証 | **GitHub App**(private key は Controller のみ)。Sandbox には短命 installation token のみ渡す |
 | 計測の実行者 | **Sandbox 内の `llmbench`**。runtime 起動・workload・metrics・`experiments/` 書き出し・commit/push まで |
 | 結果の形式 | 本仕様 §4.3 の案を採用。**実データを見てから調整する**(互換性は保証しない) |
@@ -198,9 +198,10 @@ runtime adapter が持つのは次の 3 点だけ:
 | `llmbench compare <baseline dir> <candidate dir> [--json]` | **事実のみ**: metric ごとの中央値と delta、`valid`, `comparable`(+ 理由)、prefill 回帰、VRAM 差分。`accept`/`reject`/`good`/`bad` は返さない |
 | `llmbench job validate <file\|->` | JobSpec 検証(Controller と同一コード) |
 | `llmbench job init --kind <benchmark\|optimize>` | Issue に貼る JobSpec の雛形を出力 |
-| `llmbench sandbox exec <job id> -- <argv...>` | 実行先 Sandbox でコマンド実行 |
-| `llmbench sandbox cp <job id> <src> <dst>` | 実行先 Sandbox とのファイル転送 |
-| `llmbench sandbox shell <job id>` | 対話シェル(人間用) |
+| `llmbench sandbox job exec <job id> -- <argv...>` | 実行先 Sandbox でコマンド実行(rebind は自動) |
+| `llmbench sandbox job push\|pull <job id> ...` | 実行先 Sandbox とのファイル転送 |
+| `llmbench sandbox job ls <job id> [path]` | 実行先 Sandbox の一覧 |
+| `llmbench job done --job <job id> --status complete\|failed` | Agent の完了を SandboxClaim に記録 |
 | `llmbench version` | |
 
 - exit code: `0` 成功(invalid な measurement でも成功)/ `2` 入力不正 / `3` 競合(Lease が取れない)/ `10` 結果を作れなかった(runtime が起動しない・serving にならない・中断)/ `11` timeout(readiness)
@@ -301,11 +302,11 @@ poll(open な `llmbench:benchmark|optimize` Issue で、状態ラベルが無い
 
 ### 8.1 bind / rebind の契約(HTTP API を作らない代わり)
 
-- **Sandbox の解決**: 各 SandboxClaim は `llmbench.io/job-id=<job id>` ラベルを持つ。Agent Pod の `llmbench sandbox exec|cp|shell <job id>` は、Kubernetes API から**その label の current claim を毎回 discovery** して port-forward transport を張る。
-  - Agent Pod の ServiceAccount に必要な権限は、同じネームスペースの `sandboxclaims` の `get` / `list` と、その claim に対する pod の port-forward だけ。
+- **Sandbox の解決**: 各 SandboxClaim は `llmbench.io/job-id=<job id>` と `app.kubernetes.io/managed-by=llmbench` を持つ。discovery は**両方**を selector に使い、取得後も両ラベルを検証する(job id は予測可能なので、job-id ラベルだけをコピーした管理外の claim を誤って使わない)。`llmbench sandbox job exec|push|pull|ls <job id>` は、Kubernetes API から**その label の current claim を毎回 discovery** して port-forward transport を張る(コマンド名は §5 の CLI 表を参照)。
+  - Agent Pod の ServiceAccount に必要な権限は、同じネームスペースの `sandboxclaims` の **`get` / `list` / `watch`**、pod の `get` / `list` と port-forward だけ(**claim への書き込み権限は与えない**。Kubernetes RBAC は update を annotation に限定できないため、書き込みを許すと Agent が sandbox spec を書き換えられてしまう)。Helm は `mvp.agentServiceAccount.{namespace,name}` にその Role を bind する(lease と manifest には触れない)。
   - **rebind は discovery の結果が変わること**そのもの。Sandbox が置き換わったら、次に `llmbench sandbox ...` を呼んだ時点で新しい claim が見つかる。Controller から Agent Pod へ接続情報を push する必要はない。
   - 同じ `job-id` の claim が 2 つ見つかった場合は**エラー**(replacement の途中で古い claim が残っている状態)。
-- **Agent の完了検知**: Agent は最後に `llmbench job done --status complete|failed` を実行し、**SandboxClaim の annotation**(`llmbench.io/agent-result`, `llmbench.io/branch`, `llmbench.io/commit`)に書く。Controller はその annotation を観測して PR 作成に進む。
+- **Agent の完了検知**: Agent は最後に `llmbench job done --job <job id> --status complete|failed [--branch B --commit C]` を実行し、**自分の sandbox 内のファイル**(`/workspace/.llmbench-agent-result.json`)に記録する。Controller は sandbox からそれを読んで PR 作成に進む。**読み取り側も同じ契約を検証する**(既知の status、`complete` なら branch と commit)— ファイルは Agent の sandbox 内にある以上、CLI の検証だけを信頼境界にはしない。**ファイルが無い = 未完了**で、それ以外の読み取り失敗(port-forward 断・sandboxd 死)は**エラー**(インフラ障害を Agent 待ちと誤認しない)。読み取りは **64 KiB 上限**(Agent が書けるファイルは untrusted input。上限超過は「未完了」ではなくエラー)。annotation ではなくファイルにする理由は 2 つ: Agent に claim の書き込み権限を与えずに済むこと、記録が成果物と同じ場所に残ること。
   - push 前に落ちた場合は annotation が無いまま claim が消える/時間切れになる → Controller は attempt を破棄して失敗として扱う(optimize の途中結果を PR にしない)。
   - Agent Pod の権限は annotation の patch までで、Lease や GitOps には触れない。
 - Agent は `llmbench sandbox exec|cp|shell` で Sandbox 内の workspace を編集・実行する(port-forward transport)。ssh は実装しない。
@@ -321,13 +322,13 @@ poll(open な `llmbench:benchmark|optimize` Issue で、状態ラベルが無い
 | values | 内容 |
 |---|---|
 | `controller` | Deployment(1 replica)、resources、ログレベル |
-| `serviceAccount` / `rbac` | Lease、SandboxClaim、Sandbox、Pod exec、Secret 参照 |
+| `serviceAccount` / `rbac` | **ネームスペースごとの Role**(lease / sandbox / Argo CD Application / workload)と Agent 用 Role。ClusterRole は使わない |
 | `github` | App id / installation id / private key Secret 名 / repo |
 | `gpuLease` | Lease 名とネームスペース |
 | `gitops` | 対象 repo、manifest パス、pause 値、restore 値、待ち時間 |
 | `sandbox` | SandboxTemplate / WarmPool 名、image allowlist、GPU リソース要求 |
 | `models` | モデル id → 置き場 のマッピング(operator 権限) |
-| `dsh` | enabled / existing deployment 名 / session PVC 名(Agent Pod の manifest 自体は DSH 側) |
+| `dsh` | enabled / existing deployment 名 / session PVC 名 / **Agent の ServiceAccount(namespace + name)**。Agent Pod の manifest 自体は DSH 側 |
 | `runtimeImages` | allowlist |
 
 ---

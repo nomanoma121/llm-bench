@@ -248,6 +248,10 @@ func (c *Controller) Run(ctx context.Context, poll, recovery time.Duration) erro
 
 // Recover reconciles the durable state after a restart or a long gap.
 //
+// The Agent's completion annotation (docs/mvp.md §8.1) is read when the
+// optimization path lands; this build only measures, and it rejects optimize
+// requests instead of running them as a benchmark.
+//
 // It never re-runs a job: a phase that may already have executed the
 // measurement is finished as a failure, because a second run would publish a
 // different result for the same request. What it always completes is

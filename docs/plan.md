@@ -71,8 +71,8 @@ Explicitly not doing: attempts inside a run, sharing a SandboxClaim across a win
 - [x] `llmbench compare`: baseline と candidate の metric delta・`measurement_valid`・`comparable`(+理由)を**事実としてのみ**返す(採否は返さない)。
 - [x] GitHub App 認証(`internal/githubapp`): private key から JWT → installation token(キャッシュ + 期限前更新)+ Issue polling + push 済みブランチからの PR 作成 + リンクコメント。
 - [x] Controller 薄版(`llmbench controller`, Deployment): Issue poll → JobSpec 検証 → claim ラベル → Lease → GitOps pause → SandboxClaim → Sandbox 内 `llmbench benchmark --push` → PR → claim 削除 → restore → release → 完了ラベル。startup と定期の recovery、write-ahead、mandatory restore、同一 job を再実行しない規律。ConfigMap store と leader election は作らない。
-- [ ] Helm chart: controller Deployment / RBAC / GitHub App Secret / gpuLease / gitops / sandbox / models / runtimeImages / dsh option。
-- [ ] Agent / DSH 連携: 既存 DSH deployment を参照し、Sandbox の bind / rebind と `llmbench sandbox exec|cp|shell`(port-forward transport)を提供する。conversation も session も llm-bench は持たない。
+- [x] Helm chart: controller Deployment / RBAC / GitHub App Secret / gpuLease / gitops / sandbox / models / runtimeImages / dsh option。
+- [x] Agent / DSH 連携: 既存 DSH deployment を参照し、Sandbox の bind / rebind と `llmbench sandbox job exec|push|pull|ls`(port-forward transport)・`llmbench job done` を提供する。conversation も session も llm-bench は持たない。
 - [ ] 実データで `result.json` / `compare` の形式を調整し、凍結した visual 経路(httpapi / serve / preview / adopt / sitebuild / review / discord / pages workflow)を削除する。
 
 ## 4b. Human evaluation and Agent loop (v1.6/v1.7, frozen for MVP)

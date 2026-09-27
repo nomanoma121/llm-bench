@@ -231,9 +231,6 @@ func (m MVP) Validate() error {
 		if m.Agent.Namespace == "" || m.Agent.PodSelector == "" {
 			add("agent.namespace and agent.pod_selector are required")
 		}
-		if len(m.Agent.Exec) == 0 {
-			add("agent.exec is required: the argv that serves ACP in the harness Pod")
-		}
 	}
 	if len(m.Engines) == 0 {
 		add("engines must not be empty: a job may only choose from the operator list")

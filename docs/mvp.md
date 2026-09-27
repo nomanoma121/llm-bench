@@ -195,13 +195,13 @@ runtime adapter が持つのは次の 3 点だけ:
 | コマンド | 内容 |
 |---|---|
 | `llmbench benchmark --job <file\|-> [--out <dir>] [--push] [--json]` | runtime 起動 → workload → 計測 → `experiments/` 書き出し。`--push` でブランチ作成 + commit + push |
-| `llmbench compare <baseline dir> <candidate dir> [--json]` | **事実のみ**: metric ごとの中央値と delta、`valid`, `comparable`(+ 理由)、prefill 回帰、VRAM 差分。`accept`/`reject`/`good`/`bad` は返さない |
+| `llmbench compare <baseline dir> <candidate dir> [--kind model\|runtime] [--json]` | **事実のみ**: metric ごとの delta、`measurement_valid`、`comparable`(+ 理由の全列挙)。`accept`/`reject`/`good`/`bad` は返さない |
 | `llmbench job validate <file\|->` | JobSpec 検証(Controller と同一コード) |
 | `llmbench job init --kind <benchmark\|optimize>` | Issue に貼る JobSpec の雛形を出力 |
 | `llmbench sandbox job exec <job id> -- <argv...>` | 実行先 Sandbox でコマンド実行(rebind は自動) |
 | `llmbench sandbox job push\|pull <job id> ...` | 実行先 Sandbox とのファイル転送 |
 | `llmbench sandbox job ls <job id> [path]` | 実行先 Sandbox の一覧 |
-| `llmbench job done --job <job id> --status complete\|failed` | Agent の完了を SandboxClaim に記録 |
+| `llmbench job done --job <job id> --status complete\|failed [--branch B --commit C]` | Agent の完了を sandbox 内のファイルに記録 |
 | `llmbench version` | |
 
 - exit code: `0` 成功(invalid な measurement でも成功)/ `2` 入力不正 / `3` 競合(Lease が取れない)/ `10` 結果を作れなかった(runtime が起動しない・serving にならない・中断)/ `11` timeout(readiness)

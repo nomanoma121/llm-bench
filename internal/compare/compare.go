@@ -153,7 +153,8 @@ func comparabilityReasons(before, after measurement.Result, kind Kind) []string 
 	}
 
 	// Prompts must always match: a different prompt is a different question.
-	if diff := promptDifference(before.Inputs, after.Inputs); diff != "" {
+	// Every difference is reported, not just the first one.
+	for _, diff := range promptDifferences(before.Inputs, after.Inputs) {
 		add("%s", diff)
 	}
 	// The workload has to match as well: the same prompt with a different
@@ -198,27 +199,56 @@ func comparabilityReasons(before, after measurement.Result, kind Kind) []string 
 			add("both sides ran the same runtime build (%s): a runtime comparison needs two builds", before.Runtime.BuildDigest)
 		}
 	}
-	// The environment must match: a GPU change is not a runtime change.
+	// The environment must match *and* be known: two runs that both failed to
+	// record a GPU have not agreed on anything, so an empty environment is a
+	// reason rather than a match.
+	if !environmentKnown(before) {
+		add("the baseline does not record its environment (driver and GPU identity), so the two cannot be compared")
+	}
+	if !environmentKnown(after) {
+		add("the candidate does not record its environment (driver and GPU identity), so the two cannot be compared")
+	}
 	if a, b := environmentKey(before), environmentKey(after); a != b {
 		add("the measured environment differs: %s vs %s", a, b)
 	}
 	return reasons
 }
 
-func promptDifference(a, b measurement.Inputs) string {
-	if len(a.Prompts) != len(b.Prompts) {
-		return fmt.Sprintf("the workload cases differ (%d vs %d prompts)", len(a.Prompts), len(b.Prompts))
+func promptDifferences(a, b measurement.Inputs) []string {
+	var reasons []string
+	names := map[string]bool{}
+	for name := range a.Prompts {
+		names[name] = true
 	}
-	for name, digest := range a.Prompts {
-		other, ok := b.Prompts[name]
+	for name := range b.Prompts {
+		names[name] = true
+	}
+	for _, name := range sortedKeys(names) {
+		before, inBefore := a.Prompts[name]
+		after, inAfter := b.Prompts[name]
 		switch {
-		case !ok:
-			return fmt.Sprintf("case %q exists on one side only", name)
-		case other != digest:
-			return fmt.Sprintf("the prompt bytes of case %q differ", name)
+		case !inAfter:
+			reasons = append(reasons, fmt.Sprintf("case %q exists in the baseline only", name))
+		case !inBefore:
+			reasons = append(reasons, fmt.Sprintf("case %q exists in the candidate only", name))
+		case before != after:
+			reasons = append(reasons, fmt.Sprintf("the prompt bytes of case %q differ", name))
 		}
 	}
-	return ""
+	return reasons
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func environmentKnown(r measurement.Result) bool {
+	return r.Environment.Driver != "" && len(r.Environment.GPUs) > 0
 }
 
 // collectorDifference compares the collectors the two runs asked for, with the

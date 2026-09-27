@@ -157,7 +157,7 @@ func TestCompareRejectsIncomparablePairs(t *testing.T) {
 		}, "prompt bytes"},
 		{"different cases", KindRuntime, func(s *resultSpec) {
 			s.prompts = map[string]string{"short": strings.Repeat("c", 64), "long": strings.Repeat("e", 64)}
-		}, "cases differ"},
+		}, `case "long" exists in the candidate only`},
 		{"different model in a runtime comparison", KindRuntime, func(s *resultSpec) {
 			s.modelDigest = strings.Repeat("7", 64)
 		}, "model digest differs"},
@@ -187,6 +187,9 @@ func TestCompareRejectsIncomparablePairs(t *testing.T) {
 			s.runtimeBuild = "sha256:" + strings.Repeat("4", 64)
 		}, "runtime build differs"},
 		{"invalid side", KindRuntime, func(s *resultSpec) { s.invalid = []string{"collector gap"} }, "invalid"},
+		{"unknown environment", KindRuntime, func(s *resultSpec) {
+			s.environment = measurement.Environment{}
+		}, "does not record its environment"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -304,5 +307,21 @@ func TestZeroValuesSurviveTheEncoding(t *testing.T) {
 	}
 	if strings.Contains(string(b), "rel_change") {
 		t.Fatalf("rel_change is present in %s", b)
+	}
+}
+
+func TestPromptDifferencesAreExhaustive(t *testing.T) {
+	// Both prompts differ: a single return would hide the second reason.
+	a := measurement.Inputs{Prompts: map[string]string{"short": "1", "long": "2"}}
+	b := measurement.Inputs{Prompts: map[string]string{"short": "3", "long": "4", "extra": "5"}}
+	got := promptDifferences(a, b)
+	if len(got) != 3 {
+		t.Fatalf("reasons = %v, want one per differing or extra case", got)
+	}
+	joined := strings.Join(got, " ")
+	for _, want := range []string{"short", "long", "extra"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("%q missing from %v", want, got)
+		}
 	}
 }

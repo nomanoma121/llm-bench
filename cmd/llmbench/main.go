@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/nomanoma121/llm-bench/internal/benchmark"
 	"github.com/nomanoma121/llm-bench/internal/job"
 )
 
@@ -24,11 +25,18 @@ func main() {
 }
 
 // exitCode maps a command error to the CLI contract (docs/mvp.md §5): 0 on
-// success, 2 for invalid input, 1 for everything else until the run-related
-// codes (3, 10, 11) are implemented.
+// success, 2 for invalid input, 10 when a run produced no result, 11 on a
+// timeout, and 1 for everything else (3, the lease conflict, is added with the
+// controller).
 func exitCode(err error) int {
-	if errors.Is(err, job.ErrInvalid) {
+	switch {
+	case errors.Is(err, job.ErrInvalid):
 		return 2
+	case errors.Is(err, benchmark.ErrTimeout):
+		return 11
+	case errors.Is(err, benchmark.ErrNoResult), errors.Is(err, benchmark.ErrAborted):
+		return 10
+	default:
+		return 1
 	}
-	return 1
 }

@@ -328,8 +328,13 @@ func (w Workload) validate() []error {
 			add("workload.cases[%d].repeats must be 0..%d, got %d", i, MaxRepeats, c.Repeats)
 		}
 	}
+	// The MVP measures one request at a time. Accepting a larger value would
+	// record a jobspec.yaml that claims a concurrency the harness does not
+	// implement, and the measurement would silently be sequential.
 	if w.Concurrency < 0 || w.Concurrency > MaxConcurrency {
 		add("workload.concurrency must be 0..%d, got %d", MaxConcurrency, w.Concurrency)
+	} else if w.Concurrency > 1 {
+		add("workload.concurrency must be 1: parallel measurement is not implemented yet, got %d", w.Concurrency)
 	}
 	if s := w.Sampling; s != nil {
 		if s.Temperature != nil && (*s.Temperature < 0 || *s.Temperature > 2) {

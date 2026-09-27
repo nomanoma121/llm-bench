@@ -18,6 +18,11 @@ func validResult(t *testing.T) Result {
 		JobSpecFileDigest: strings.Repeat("b", 64),
 		SeriesDigest:      SeriesDigest([]byte("{\"name\":\"decode\"}\n")),
 		TrustLevel:        TrustUnverifiedDriver,
+		Inputs: Inputs{
+			ModelID:   "qwen38-27b",
+			ModelPath: "/models/qwen38-27b",
+			Prompts:   map[string]string{"short": strings.Repeat("e", 64)},
+		},
 		Metrics: []Metric{
 			{Name: "decode_tok_per_s", Value: 45.1, Unit: "tok/s", Source: SourceHarness, Samples: 3},
 			{Name: "ttft_ms", Value: 120.5, Unit: "ms", Source: SourceHarness, Samples: 3},
@@ -171,6 +176,7 @@ func TestResultDigestIsOrderIndependent(t *testing.T) {
 
 func TestResultValidateRejects(t *testing.T) {
 	base := validResult(t)
+	_ = base
 	tests := []struct {
 		name string
 		edit func(*Result)
@@ -183,6 +189,8 @@ func TestResultValidateRejects(t *testing.T) {
 		{"jobspec file digest", func(r *Result) { r.JobSpecFileDigest = "nope" }, "jobspec_file_digest"},
 		{"series digest", func(r *Result) { r.SeriesDigest = "" }, "series_digest"},
 		{"trust level", func(r *Result) { r.TrustLevel = "trusted" }, "trust_level"},
+		{"missing inputs", func(r *Result) { r.Inputs.ModelPath = "" }, "inputs.model_path"},
+		{"bad prompt digest", func(r *Result) { r.Inputs.Prompts = map[string]string{"c": "nope"} }, "inputs.prompts"},
 		{"validity disagreement", func(r *Result) { r.InvalidReasons = []string{"x"} }, "disagree"},
 		{"no metrics but valid", func(r *Result) { r.Metrics = nil }, "at least one metric"},
 		{"collector gap while valid", func(r *Result) {
@@ -261,5 +269,27 @@ func TestUnitlessRuntimeMetricIsAccepted(t *testing.T) {
 	}
 	if _, err := SealResult(t.TempDir(), final); err != nil {
 		t.Fatalf("seal: %v", err)
+	}
+}
+
+func TestInputsArePartOfTheIdentity(t *testing.T) {
+	a := validResult(t)
+	b := validResult(t)
+	b.Inputs.ModelPath = "/models/other"
+	final, err := b.Finalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.ResultDigest == a.ResultDigest {
+		t.Fatal("result_digest ignores the resolved model path")
+	}
+	c := validResult(t)
+	c.Inputs.Prompts = map[string]string{"short": strings.Repeat("f", 64)}
+	final, err = c.Finalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.ResultDigest == a.ResultDigest {
+		t.Fatal("result_digest ignores the prompt bytes")
 	}
 }

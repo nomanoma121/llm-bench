@@ -97,7 +97,7 @@ workload:
       prompt: prompts/short.txt     # リポジトリ相対 or インラインの `prompt_text`
       max_tokens: 256
       repeats: 3
-  concurrency: 1
+  concurrency: 1                    # MVP は 1 のみ(並列計測は未実装。2 以上は拒否)
   sampling: {temperature: 0, seed: 1}
 metrics:
   collectors: [harness, runtime, nvidia]
@@ -155,7 +155,12 @@ runtime adapter が持つのは次の 3 点だけ:
 | `runtime` | `cache_hit_ratio`, `kv_cache_used_mib`, `mtp_acceptance`(あれば) |
 | `nvidia` | `vram_used_mib`, `vram_total_mib`, `gpu_util_percent` |
 
-- **値を出した source を必ず記録する**。`harness` / `nvidia` は harness が直接観測した値、`runtime` は runtime の自己申告である。
+- **値を出した source を必ず記録する**。`harness` と `external_gpu`(nvidia-smi)は harness が直接観測した値、`runtime` は runtime の自己申告である。
+- **collector は workload 実行中に周期的にサンプルする**(既定 500ms)。GPU の VRAM ピークや util 平均は、ケース終了後の1回の読み取りでは意味を持たない(ピークを取り逃し、idle 値を平均してしまう)。集約は「VRAM = 周期サンプルの最大」「util = 周期サンプルの平均」。
+- **startup の 1 回の読み取りでは required collector を満たさない**: 要求された collector は **workload 実行中に最低 1 回**サンプルしなければ充足とみなさない(workload より前に取った値は workload について何も言えないため、足りなければ invalid)。
+- **runtime metrics は要約 metric にしない**。llama.cpp の counter はプロセス生存期間の累積、FreeToken の throughput は sliding window であり、ケース後の1回の読み取りを「その case の値」とラベル付けすると意味が変わる。runtime の値は **`series.jsonl` のサンプル(時刻と case ラベル付き)としてのみ**記録し、Agent が推移を読む。
+- **測定対象そのものを凍結する**: `result.json` の `inputs` に、解決済みの `model_path`・operator が pin した `model_digest`・**各 case のプロンプト実バイトの digest** を記録する(JobSpec には model id とプロンプトのパスしか無いため、別の weights や別のプロンプトファイルを指しても「同じ入力」に見えてしまう)。**プロンプトは測定前に一度だけ読み、その同一バイトを digest と実際のリクエストの両方に使う**(ファイルが途中で変わっても digest と送信内容がずれない)。**`model_digest` は operator が pin する**: pin が無い実行は入力 identity を凍結できないため `measurement_valid=false` になる。
+- **環境(GPU の機種とドライバ)は collector の設定に依存せず取得する**。nvidia collector を要求していないジョブでも環境 identity は記録される(取得に失敗しても invalid にはしない。要求していた場合だけ gap になる)。
 - **identity・validity・環境情報は harness が持つ**(runtime にも candidate にも書かせない)。JobSpec・runtime image・model・prompt・収集 collector の digest を結果に焼き込む。
 - `measurement_valid` は「測定チャネルが信頼できるか」のみを表す。collector の欠測、想定外の他プロセス、GPU の throttling などで false になる。runtime が自己申告を出さない場合も `runtime` を要求する JobSpec では invalid になる(要求した source が取れない場合は valid にしない)。
 - `llmbench compare` は `valid` / `comparable` を**事実として**返す。採否は返さない。
@@ -179,6 +184,7 @@ runtime adapter が持つのは次の 3 点だけ:
   - したがって **`jobspec.yaml` や `series.jsonl` を書き換えると `series_digest` → `result_digest` が変わり、identity が変わる**(「digest 対象」の矛盾はここで閉じる)。
 - **identity は `result_digest`**。baseline と candidate の比較、PR の記述、後続の追跡はこの digest で行う。
 - **検証はディレクトリ単位で行う**(`VerifyResultDir` 相当): `result.json` 自身の digest だけでなく、`jobspec.yaml` / `series.jsonl` の実バイトを記録された digest と照合する。`result.json` だけを検証すると、`series.jsonl` を差し替えても valid のままになってしまう。
+- `inputs`(解決済みモデルとプロンプトの digest)も `result_digest` に含まれる。
 - **trust level を記録する**: driver の隔離(候補が書けない場所からの実行と `Driver.ContentDigest` の実行時検証)は F で行うため、それまでの結果には `provenance.trust_level`(例 `unverified-driver`)を書く。後から「この結果はどの程度信頼できるか」が変に読み替えられないようにする。
 - `raw/` と `README.md` は digest の対象外(後から再生成・追記できる)。
 
@@ -197,7 +203,7 @@ runtime adapter が持つのは次の 3 点だけ:
 | `llmbench sandbox shell <job id>` | 対話シェル(人間用) |
 | `llmbench version` | |
 
-- exit code: `0` 成功 / `2` 入力不正 / `3` 競合(Lease が取れない)/ `10` job 失敗 / `11` timeout
+- exit code: `0` 成功(invalid な measurement でも成功)/ `2` 入力不正 / `3` 競合(Lease が取れない)/ `10` 結果を作れなかった(runtime が起動しない・serving にならない・中断)/ `11` timeout(readiness)
 - `--json` は機械可読の 1 オブジェクトを stdout に出す(Agent はこれを読む)。ログは stderr。
 - MVP で使わない既存コマンド(`submit` / `status` / `serve` / `review` / `adopt` / `metrics` など)は freeze し、MVP が動いた後に削除する。
 
@@ -266,6 +272,7 @@ poll(open な `llmbench:benchmark|optimize` Issue で、状態ラベルが無い
 - **GitHub App** を使う。private key は Controller の Secret のみ。JWT(RS256)→ installation token(キャッシュし、期限前に更新)を発行する。対象 repo は 1 つ固定。
 - Controller の用途: Issue の poll / ラベル / コメント / PR 作成。
 - Sandbox に渡すのは **短命 installation token のみ**(単一 repo の `contents: write`)。private key は絶対に渡さない。Agent Pod にも渡さない。
+- **push は fail-closed**(§5 の `--push`): 同名ブランチが remote に既にあれば拒否、remote の **default branch を実際に問い合わせて**拒否(name の deny-list だけに頼らない)、commit は指定パス配下のみ(事前に stage 済みのファイルを巻き込まない)、force は決してしない。
 - **installation token は branch-scoped ではない**。optimize の Sandbox で Agent が自由にコマンドを実行できる以上、token を読んで任意ブランチに push できる。したがって **default branch はリポジトリ側で保護する**: PR 必須、force push 禁止、admin bypass 無効、GitHub App が直接 push できない設定(ruleset で bypass リストに入れない)。これは MVP の必須要件であり、Sandbox に token を渡す前提条件である。
 - outbound のみ。webhook、public endpoint は作らない。
 - Git 操作(`commit` / `push`)は **Sandbox 内の `llmbench`** が行う。PR 作成は Controller が行う(GitHub API の credential を Controller に閉じ込める)。

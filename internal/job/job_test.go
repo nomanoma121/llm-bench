@@ -80,6 +80,7 @@ func TestValidateRejects(t *testing.T) {
 		{"max_tokens too large", mutate(func(s *Spec) { s.Workload.Cases[0].MaxTokens = MaxMaxTokens + 1 }), "max_tokens"},
 		{"repeats too large", mutate(func(s *Spec) { s.Workload.Cases[0].Repeats = MaxRepeats + 1 }), "repeats"},
 		{"concurrency too large", mutate(func(s *Spec) { s.Workload.Concurrency = MaxConcurrency + 1 }), "workload.concurrency"},
+		{"parallel concurrency not implemented", mutate(func(s *Spec) { s.Workload.Concurrency = 2 }), "must be 1"},
 		{"temperature out of range", mutate(func(s *Spec) {
 			v := 3.0
 			s.Workload.Sampling = &Sampling{Temperature: &v}

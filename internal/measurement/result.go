@@ -38,6 +38,23 @@ const (
 	TrustIsolatedDriver = "isolated-driver"
 )
 
+// Inputs identify what was actually measured. The job spec carries a model id
+// and a prompt path; this section freezes what those resolved to, so two runs
+// that read different weights or different prompt bytes cannot look like the
+// same input.
+type Inputs struct {
+	// ModelID is the id from the job spec.
+	ModelID string `json:"model_id"`
+	// ModelPath is the path or repository id the operator resolved it to.
+	ModelPath string `json:"model_path"`
+	// ModelDigest is the operator-pinned digest of the weights, when one is
+	// configured. Empty means the operator did not pin one.
+	ModelDigest string `json:"model_digest,omitempty"`
+	// Prompts maps a case name to the digest of the prompt bytes that case
+	// actually measured.
+	Prompts map[string]string `json:"prompts,omitempty"`
+}
+
 // Result is the canonical measurement document for one MVP job.
 type Result struct {
 	SchemaVersion int    `json:"schema_version"`
@@ -67,6 +84,10 @@ type Result struct {
 	Collectors  []CollectorStatus `json:"collectors,omitempty"`
 	Environment Environment       `json:"environment"`
 	Runtime     RuntimeRef        `json:"runtime"`
+	// Inputs freeze what was measured (the resolved model and the prompt
+	// bytes), so a later comparison cannot mistake two different inputs for
+	// the same one.
+	Inputs Inputs `json:"inputs"`
 
 	// ResultDigest is the digest of the canonical payload above. It is always
 	// the last field so the payload that is hashed is unambiguous.
@@ -105,6 +126,17 @@ func (r Result) Validate() error {
 	}
 	if r.MeasurementValid != (len(r.InvalidReasons) == 0) {
 		return fmt.Errorf("%w: measurement_valid and invalid_reasons disagree", ValidationError)
+	}
+	if strings.TrimSpace(r.Inputs.ModelID) == "" || strings.TrimSpace(r.Inputs.ModelPath) == "" {
+		return fmt.Errorf("%w: inputs.model_id and inputs.model_path are required", ValidationError)
+	}
+	if r.Inputs.ModelDigest != "" && !isHexDigest(r.Inputs.ModelDigest) {
+		return fmt.Errorf("%w: inputs.model_digest %q is not a sha256 digest", ValidationError, r.Inputs.ModelDigest)
+	}
+	for name, d := range r.Inputs.Prompts {
+		if strings.TrimSpace(name) == "" || !isHexDigest(d) {
+			return fmt.Errorf("%w: inputs.prompts[%q] is not a case name with a sha256 digest", ValidationError, name)
+		}
 	}
 	if err := validateMeasurements(r.Metrics, r.Series, r.Collectors, r.MeasurementValid); err != nil {
 		return err

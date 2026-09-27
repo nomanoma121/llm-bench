@@ -217,15 +217,101 @@ func TestParseRawRejectsUnusableInput(t *testing.T) {
 	if _, err := ParseRaw([]byte(`{"metrics":[{"name":"x","value":1,"unit":"ms","source":"runtime"}]}`)); err == nil {
 		t.Fatal("raw input must not be able to set its own source")
 	}
-	raw, err := ParseRaw([]byte(`{"metrics":[{"name":"decode_step_ms","value":17.7,"unit":"ms/step","labels":{"depth":"64k"},"samples":385}]}`))
+	raw, err := ParseRaw([]byte(`{"metrics":[{"name":"prefill_ms","value":20.6,"unit":"ms","labels":{"depth":"64k"},"samples":3}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	e := base().AppendRaw(raw, SourceDriver)
-	if len(e.Metrics) != 2 || e.Metrics[1].Source != SourceDriver {
+	if len(e.Metrics) != 2 {
 		t.Fatalf("evidence = %+v", e.Metrics)
+	}
+	found := false
+	for _, m := range e.Metrics {
+		if m.Name == "prefill_ms" {
+			found = true
+			if m.Source != SourceDriver {
+				t.Fatalf("source = %q", m.Source)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("raw metric missing")
 	}
 	if err := e.Validate(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestDuplicateIdentitiesAreRejected(t *testing.T) {
+	e := base()
+	e.Metrics = append(e.Metrics, e.Metrics[0])
+	if err := e.Validate(); err == nil {
+		t.Fatal("expected a duplicate metric to be rejected")
+	}
+	// Same name with different labels is legal and ordered deterministically.
+	a := base()
+	a.Metrics = []Metric{
+		{Name: "decode_step_ms", Value: 1, Unit: "ms/step", Source: SourceDriver, Labels: map[string]string{"depth": "128k"}},
+		{Name: "decode_step_ms", Value: 2, Unit: "ms/step", Source: SourceDriver, Labels: map[string]string{"depth": "64k"}},
+	}
+	b := a
+	b.Metrics = []Metric{a.Metrics[1], a.Metrics[0]}
+	ba, err := Canonicalize(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bb, err := Canonicalize(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if Digest(ba) != Digest(bb) {
+		t.Fatalf("label-distinguished metrics must canonicalize identically:\n%s\n%s", ba, bb)
+	}
+	if err := a.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestValidityEnforcement(t *testing.T) {
+	// Collector gaps cannot coexist with a valid measurement.
+	gapped := base()
+	gapped.Collectors = []CollectorStatus{{Name: "nvidia-smi", IntervalMS: 500, Gaps: 2}}
+	if err := gapped.Validate(); err == nil {
+		t.Fatal("expected gaps with measurement_valid to be rejected")
+	}
+	gapped.MeasurementValid = false
+	gapped.InvalidReasons = []string{"collector nvidia-smi reported 2 gaps"}
+	if err := gapped.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A required source that produced nothing makes the measurement invalid.
+	e := measurementWithHarnessOnly()
+	e = EnforceRequiredSources(e, []string{"driver"})
+	if e.MeasurementValid || len(e.InvalidReasons) == 0 {
+		t.Fatalf("expected invalidity: %+v", e)
+	}
+	if err := e.Validate(); err != nil {
+		t.Fatalf("invalid evidence with reasons must validate: %v", err)
+	}
+	// Present sources keep it valid.
+	ok := measurementWithHarnessOnly()
+	ok = ok.AppendRaw(Raw{Metrics: []RawMetric{{Name: "decode_step_ms", Value: 1, Unit: "ms/step"}}}, SourceDriver)
+	ok = EnforceRequiredSources(ok, []string{"driver"})
+	if !ok.MeasurementValid || len(ok.InvalidReasons) != 0 {
+		t.Fatalf("expected a valid measurement: %+v", ok)
+	}
+	// Collector gaps are also enforced by the helper.
+	dirty := measurementWithHarnessOnly()
+	dirty.Collectors = []CollectorStatus{{Name: "nvidia-smi", IntervalMS: 500, Gaps: 1}}
+	dirty = EnforceCollectorGaps(dirty)
+	if dirty.MeasurementValid || len(dirty.InvalidReasons) == 0 {
+		t.Fatalf("expected gaps to invalidate: %+v", dirty)
+	}
+}
+
+func measurementWithHarnessOnly() Evidence {
+	e := base()
+	e.Metrics = nil
+	return WithHarnessMetric(e, "wall_clock_ms", 1000, "ms", nil)
 }

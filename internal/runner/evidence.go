@@ -1,13 +1,13 @@
 package runner
 
 import (
-	"errors"
+	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/nomanoma121/llm-bench/internal/measurement"
+	"github.com/nomanoma121/llm-bench/internal/operator"
 	"github.com/nomanoma121/llm-bench/internal/run"
 )
 
@@ -28,13 +28,35 @@ func needsEvidence(r run.Run) bool {
 	return runKind(r) == run.RunKindMeasurement || r.MeasurementProtocolDigest != ""
 }
 
+// protocolSnapshot decodes the protocol frozen at submit time. It is the
+// source of truth for the driver and for the sources a measurement must have.
+func protocolSnapshot(r run.Run) (operator.MeasurementProtocol, error) {
+	var p operator.MeasurementProtocol
+	if r.MeasurementProtocolJSON == "" {
+		return p, nil
+	}
+	if err := json.Unmarshal([]byte(r.MeasurementProtocolJSON), &p); err != nil {
+		return p, fmt.Errorf("runner: decode protocol snapshot: %w", err)
+	}
+	return p, nil
+}
+
+// driverArgv returns the frozen driver command of the run's protocol.
+func driverArgv(r run.Run) ([]string, error) {
+	p, err := protocolSnapshot(r)
+	if err != nil {
+		return nil, err
+	}
+	return p.DriverArgv, nil
+}
+
 // sealEvidence builds and seals the measurement evidence for one execution.
 //
-// The harness is the authoritative writer: raw numbers produced inside the
-// Sandbox are parsed here, tagged with their source and combined with harness
-// measurements, so identity, validity and environment always come from the
-// trusted side (docs/optimization.md §5.4/§5.5).
-func sealEvidence(r run.Run, artifactDir string, wallClock time.Duration, raw []byte) (run.Evidence, error) {
+// The harness is the authoritative writer: the driver is executed by the
+// harness and its stdout is parsed here, so identity, validity and environment
+// always come from the trusted side and the candidate cannot substitute the
+// numbers (docs/optimization.md §5.4/§5.5).
+func sealEvidence(r run.Run, artifactDir string, wallClock time.Duration, driverStdout []byte, driverErr error) (run.Evidence, error) {
 	e := measurement.Evidence{
 		SchemaVersion: measurement.SchemaVersion,
 		RunID:         r.ID,
@@ -49,18 +71,31 @@ func sealEvidence(r run.Run, artifactDir string, wallClock time.Duration, raw []
 	}
 	e = measurement.WithHarnessMetric(e, "wall_clock_ms", float64(wallClock.Milliseconds()), "ms", nil)
 
-	if len(raw) > 0 {
-		parsed, err := measurement.ParseRaw(raw)
+	switch {
+	case driverErr != nil:
+		// The driver itself failed: the measurement cannot be trusted, so the
+		// evidence is sealed as invalid with the reason instead of pretending
+		// the run produced numbers.
+		e.MeasurementValid = false
+		e.InvalidReasons = []string{"driver failed: " + driverErr.Error()}
+	case len(driverStdout) > 0:
+		parsed, err := measurement.ParseRaw(driverStdout)
 		if err != nil {
-			// A driver whose output cannot be trusted is an invalid
-			// measurement, not a silent success: the run fails on the
-			// validity gate and the reason is recorded.
 			e.MeasurementValid = false
-			e.InvalidReasons = []string{"unreadable raw measurement: " + err.Error()}
+			e.InvalidReasons = []string{"unreadable driver output: " + err.Error()}
 		} else {
 			e = e.AppendRaw(parsed, measurement.SourceDriver)
 		}
 	}
+
+	// The protocol decides which sources must be present for the measurement
+	// to count; harness timing alone is not a driver measurement.
+	protocol, err := protocolSnapshot(r)
+	if err != nil {
+		return run.Evidence{}, err
+	}
+	e = measurement.EnforceRequiredSources(e, protocol.RequiredSources)
+	e = measurement.EnforceCollectorGaps(e)
 
 	sealed, err := measurement.Seal(evidenceDir(artifactDir), e)
 	if err != nil {
@@ -72,20 +107,4 @@ func sealEvidence(r run.Run, artifactDir string, wallClock time.Duration, raw []
 		Valid:          e.MeasurementValid,
 		InvalidReasons: e.InvalidReasons,
 	}, nil
-}
-
-// readRawMeasurement reads the optional raw measurement a driver wrote into
-// the run's evidence directory. A missing file is normal.
-func readRawMeasurement(artifactDir string) ([]byte, error) {
-	b, err := os.ReadFile(filepath.Join(evidenceDir(artifactDir), measurement.RawMeasurementFileName))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("runner: read raw measurement: %w", err)
-	}
-	if len(b) > measurement.MaxEvidenceBytes {
-		return nil, fmt.Errorf("runner: raw measurement is %d bytes, over the %d byte limit", len(b), measurement.MaxEvidenceBytes)
-	}
-	return b, nil
 }

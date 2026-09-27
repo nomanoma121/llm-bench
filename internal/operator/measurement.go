@@ -348,6 +348,12 @@ func validateProtocol(p MeasurementProtocol) error {
 	if p.Driver.OutputMode != "stdout-transport" && p.Driver.OutputMode != "private-dir" {
 		return fmt.Errorf("driver.output_mode %q must be stdout-transport or private-dir", p.Driver.OutputMode)
 	}
+	if p.Driver.OutputMode == "private-dir" {
+		// A file channel is only trustworthy once the image provides a
+		// candidate-unwritable directory; until then the harness captures the
+		// driver's stdout over the transport (docs/optimization.md §5.4).
+		return errors.New(`driver.output_mode "private-dir" is not supported yet: only stdout-transport is safe without a candidate-unwritable image path`)
+	}
 	if len(p.DriverArgv) == 0 {
 		return errors.New("driver_argv is required")
 	}

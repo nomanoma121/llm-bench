@@ -210,15 +210,28 @@ func (e Evidence) Validate() error {
 	if len(e.Metrics) > MaxMetricCount {
 		return fmt.Errorf("%w: %d metrics exceeds the limit %d", ValidationError, len(e.Metrics), MaxMetricCount)
 	}
+	seenMetrics := map[string]bool{}
 	for i, m := range e.Metrics {
 		if err := m.validate(); err != nil {
 			return fmt.Errorf("%w: metrics[%d]: %v", ValidationError, i, err)
 		}
+		// A duplicate identity would be counted twice by a policy.
+		if key := metricKey(m); seenMetrics[key] {
+			return fmt.Errorf("%w: duplicate metric %q", ValidationError, m.Name)
+		} else {
+			seenMetrics[key] = true
+		}
 	}
 	total := 0
+	seenSeries := map[string]bool{}
 	for i, s := range e.Series {
 		if err := s.validate(); err != nil {
 			return fmt.Errorf("%w: series[%d]: %v", ValidationError, i, err)
+		}
+		if key := seriesKey(s); seenSeries[key] {
+			return fmt.Errorf("%w: duplicate series %q", ValidationError, s.Name)
+		} else {
+			seenSeries[key] = true
 		}
 		total += len(s.Points)
 	}
@@ -234,6 +247,11 @@ func (e Evidence) Validate() error {
 		}
 		if c.Gaps < 0 {
 			return fmt.Errorf("%w: collectors[%d].gaps must not be negative", ValidationError, i)
+		}
+		// A collector that missed samples cannot certify a clean environment
+		// (docs/optimization.md §5.5).
+		if c.Gaps > 0 && e.MeasurementValid {
+			return fmt.Errorf("%w: collector %q reported %d gaps but the measurement is marked valid", ValidationError, c.Name, c.Gaps)
 		}
 	}
 	return nil
@@ -338,17 +356,52 @@ func canonicalize(e Evidence, limit int) ([]byte, error) {
 
 // normalized returns a copy with sections ordered and slices non-nil so the
 // canonical form is stable regardless of how the caller built it.
+//
+// Metrics are identified by name *and* labels (the schema distinguishes
+// decode_step_ms at different depths), so the sort key must include every
+// field that makes two metrics distinct; sorting by name alone would leave the
+// byte order, and therefore the digest, dependent on the input order.
 func (e Evidence) normalized() Evidence {
 	out := e
 	out.InvalidReasons = append([]string(nil), e.InvalidReasons...)
 	sort.Strings(out.InvalidReasons)
 	out.Metrics = append([]Metric(nil), e.Metrics...)
-	sort.Slice(out.Metrics, func(i, j int) bool { return out.Metrics[i].Name < out.Metrics[j].Name })
+	sort.Slice(out.Metrics, func(i, j int) bool { return metricKey(out.Metrics[i]) < metricKey(out.Metrics[j]) })
 	out.Series = append([]Series(nil), e.Series...)
-	sort.Slice(out.Series, func(i, j int) bool { return out.Series[i].Name < out.Series[j].Name })
+	sort.Slice(out.Series, func(i, j int) bool { return seriesKey(out.Series[i]) < seriesKey(out.Series[j]) })
 	out.Collectors = append([]CollectorStatus(nil), e.Collectors...)
 	sort.Slice(out.Collectors, func(i, j int) bool { return out.Collectors[i].Name < out.Collectors[j].Name })
 	return out
+}
+
+// metricKey is the total order key of a metric: name, source, unit and the
+// canonical label rendering.
+func metricKey(m Metric) string {
+	return m.Name + "\x00" + string(m.Source) + "\x00" + m.Unit + "\x00" + labelKey(m.Labels)
+}
+
+// seriesKey is the total order key of a series.
+func seriesKey(s Series) string {
+	return s.Name + "\x00" + string(s.Source) + "\x00" + s.Unit
+}
+
+func labelKey(labels map[string]string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k)
+		b.WriteByte(0x1f)
+		b.WriteString(labels[k])
+		b.WriteByte(0x1e)
+	}
+	return b.String()
 }
 
 // Digest is the sha256 of the canonical bytes.
@@ -526,5 +579,47 @@ func (e Evidence) AppendRaw(r Raw, source Source) Evidence {
 		})
 	}
 	e.Series = append(e.Series, r.Series...)
+	return e
+}
+
+// EnforceRequiredSources fails a measurement closed when a source the protocol
+// requires is absent. The harness calls it before sealing, because "evidence
+// exists" must not be mistaken for "the measurement the protocol asked for
+// exists" (docs/optimization.md §5.5).
+func EnforceRequiredSources(e Evidence, required []string) Evidence {
+	if len(required) == 0 {
+		return e
+	}
+	present := map[Source]bool{}
+	for _, m := range e.Metrics {
+		present[m.Source] = true
+	}
+	for _, s := range e.Series {
+		present[s.Source] = true
+	}
+	var missing []string
+	for _, want := range required {
+		if !present[Source(want)] {
+			missing = append(missing, want)
+		}
+	}
+	if len(missing) == 0 {
+		return e
+	}
+	sort.Strings(missing)
+	e.MeasurementValid = false
+	e.InvalidReasons = append(e.InvalidReasons, "missing required metric sources: "+strings.Join(missing, ", "))
+	return e
+}
+
+// EnforceCollectorGaps marks a measurement invalid when any collector missed
+// samples.
+func EnforceCollectorGaps(e Evidence) Evidence {
+	for _, c := range e.Collectors {
+		if c.Gaps > 0 {
+			e.MeasurementValid = false
+			e.InvalidReasons = append(e.InvalidReasons, fmt.Sprintf("collector %s reported %d gaps", c.Name, c.Gaps))
+		}
+	}
 	return e
 }

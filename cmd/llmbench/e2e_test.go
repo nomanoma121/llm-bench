@@ -125,15 +125,19 @@ func fakeRuntime(t *testing.T, chunkDelay time.Duration) (host string, port int,
 
 // gateway is the GitHub side, in memory.
 type gateway struct {
-	mu       sync.Mutex
+	mu sync.Mutex
+	// ev records the claim, so a test can assert that the lease was taken
+	// before the Issue was claimed (the lease is the job mutex).
+	ev       *events
+	claimed  string
 	issues   []controller.Issue
 	labels   map[int][]string
 	comments map[int][]string
 	prs      []controller.PullRequest
 }
 
-func newGateway(issues ...controller.Issue) *gateway {
-	return &gateway{issues: issues, labels: map[int][]string{}, comments: map[int][]string{}}
+func newGateway(ev *events, claimedLabel string, issues ...controller.Issue) *gateway {
+	return &gateway{ev: ev, claimed: claimedLabel, issues: issues, labels: map[int][]string{}, comments: map[int][]string{}}
 }
 
 func (g *gateway) Pending(_ context.Context, labels operator.Labels) ([]controller.Issue, error) {
@@ -155,6 +159,9 @@ func (g *gateway) Pending(_ context.Context, labels operator.Labels) ([]controll
 }
 
 func (g *gateway) Label(_ context.Context, issue int, label string) error {
+	if g.ev != nil && label == g.claimed {
+		g.ev.add("claim")
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.labels[issue] = append(g.labels[issue], label)
@@ -223,6 +230,7 @@ func (g *gateway) pullRequests() []controller.PullRequest {
 
 // memoryLease is the GPU lease without a cluster.
 type memoryLease struct {
+	ev     *events
 	mu     sync.Mutex
 	record lease.Record
 	live   bool
@@ -237,6 +245,9 @@ func (l *memoryLease) Acquire(_ context.Context, holder string, record lease.Rec
 	}
 	record.Holder = holder
 	l.record, l.live = record, true
+	if l.ev != nil {
+		l.ev.add("lease-acquire")
+	}
 	return true, nil
 }
 
@@ -270,7 +281,17 @@ func (l *memoryLease) Release(_ context.Context, holder string) error {
 	l.record.Holder = ""
 	l.record.Phase = lease.PhaseReleased
 	l.phases = append(l.phases, lease.PhaseReleased)
+	if l.ev != nil {
+		l.ev.add("lease-release")
+	}
 	return nil
+}
+
+// recordSnapshot reads the durable record safely.
+func (l *memoryLease) recordSnapshot() lease.Record {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.record
 }
 
 func (l *memoryLease) Get(context.Context) (lease.Record, error) {
@@ -394,11 +415,11 @@ type rig struct {
 func newRig(t *testing.T, issues ...controller.Issue) *rig {
 	t.Helper()
 	root, remote := repository(t)
-	gw := newGateway(issues...)
 	ev := &events{}
+	gw := newGateway(ev, "llmbench:claimed", issues...)
 	box := newCLISandbox(t, ev, root)
 	r := &rig{
-		root: root, remote: remote, gw: gw, lease: &memoryLease{}, ev: ev, box: box,
+		root: root, remote: remote, gw: gw, lease: &memoryLease{ev: ev}, ev: ev, box: box,
 	}
 	t.Setenv(controller.SandboxTokenEnv, e2eToken)
 	// The collectors sample every 500ms in production, which a real request
@@ -451,6 +472,17 @@ func newRig(t *testing.T, issues ...controller.Issue) *rig {
 		Logf: func(format string, args ...any) { r.logs = append(r.logs, fmt.Sprintf(format, args...)) },
 	}
 	return r
+}
+
+// count returns how often a name appears in the effect log.
+func count(events []string, name string) int {
+	n := 0
+	for _, e := range events {
+		if e == name {
+			n++
+		}
+	}
+	return n
 }
 
 func (r *rig) runOnce(t *testing.T) {
@@ -506,7 +538,12 @@ func TestBenchmarkIssueBecomesAMeasuredPullRequest(t *testing.T) {
 	// The external effects happened in the order the design requires: the
 	// workload is paused before the sandbox exists, the sandbox is created
 	// before the measurement and deleted before the workload comes back.
-	wantOrder := []string{"pause", "ensure", "put", "exec", "delete", "restore"}
+	// The lease is taken *before* the Issue is claimed (it is the job mutex),
+	// the workload is paused before the sandbox exists, and the lease is
+	// released only after the workload is restored.
+	wantOrder := []string{
+		"lease-acquire", "claim", "pause", "ensure", "put", "exec", "delete", "restore", "lease-release",
+	}
 	if got := r.ev.snapshot(); !slices.Equal(got, wantOrder) {
 		t.Fatalf("effects = %v, want %v", got, wantOrder)
 	}
@@ -562,12 +599,14 @@ func TestBenchmarkIssueBecomesAMeasuredPullRequest(t *testing.T) {
 	if loaded.Runtime.BuildDigest != imageA[len("ghcr.io/example/llama.cpp@"):] {
 		t.Fatalf("build digest = %q", loaded.Runtime.BuildDigest)
 	}
-	// The commit the controller reported is the one on the remote.
-	if prs[0].Head != "llmbench/2026-09-27-issue42" {
-		t.Fatalf("head = %q", prs[0].Head)
+	// The commit the CLI reported travelled through the controller into the
+	// durable lease record, and it is the commit that is really on the remote.
+	remoteSHA := strings.TrimSpace(gitCmd(t, r.remote, "rev-parse", "refs/heads/llmbench/2026-09-27-issue42"))
+	if remoteSHA == "" {
+		t.Fatal("the branch has no commit on the remote")
 	}
-	if out := gitCmd(t, r.remote, "rev-parse", "refs/heads/llmbench/2026-09-27-issue42"); !strings.Contains(out, loaded.ResultDigest) && out == "" {
-		t.Fatalf("remote ref = %q", out)
+	if got := r.lease.recordSnapshot().Commit; got != remoteSHA {
+		t.Fatalf("the durable record has commit %q, the remote has %q", got, remoteSHA)
 	}
 }
 
@@ -588,6 +627,14 @@ func TestTwoMeasuredRunsWithDifferentBuildsAreComparable(t *testing.T) {
 	)
 	r.runOnce(t)
 	r.runOnce(t)
+	// Both jobs took and released the lease, so exactly two of each appear.
+	effects := r.ev.snapshot()
+	if n := count(effects, "lease-acquire"); n != 2 {
+		t.Fatalf("lease acquisitions = %d in %v", n, effects)
+	}
+	if n := count(effects, "lease-release"); n != 2 {
+		t.Fatalf("lease releases = %d in %v", n, effects)
+	}
 
 	baseline := filepath.Join(r.root, "experiments", "model-a", "2026-09-27-issue1")
 	candidate := filepath.Join(r.root, "experiments", "model-a", "2026-09-27-issue2")

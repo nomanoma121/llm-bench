@@ -1,315 +1,142 @@
 package main
 
 import (
-	"bytes"
-	"context"
-	"errors"
 	"fmt"
-	"io"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/nomanoma121/llm-bench/internal/agent"
 	"github.com/nomanoma121/llm-bench/internal/controller"
-	"github.com/nomanoma121/llm-bench/internal/githubapp"
+	"github.com/nomanoma121/llm-bench/internal/github"
 	"github.com/nomanoma121/llm-bench/internal/gitops"
-	"github.com/nomanoma121/llm-bench/internal/issues"
-	"github.com/nomanoma121/llm-bench/internal/kube"
-	"github.com/nomanoma121/llm-bench/internal/operator"
-	"github.com/nomanoma121/llm-bench/internal/runtime"
+	"github.com/nomanoma121/llm-bench/internal/harness"
 	"github.com/nomanoma121/llm-bench/internal/sandbox"
 )
 
-// sandboxTokenEnv is the environment variable the benchmark CLI reads the
-// short-lived installation token from. The token is minted per job and never
-// written to disk (docs/mvp.md §7).
-const sandboxTokenEnv = "LLMBENCH_GIT_TOKEN"
-
-func newControllerCmd(g *globalFlags) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "controller",
-		Short: "Run the MVP control loop: poll Issues, borrow the GPU, publish a PR",
-		Long: "The controller is a thin loop (docs/mvp.md §6): it lists Issues that carry\n" +
-			"an explicit request, takes the global GPU lease (which is also the job\n" +
-			"mutex), pauses the inference workload, runs the measurement in a sandbox,\n" +
-			"opens the result pull request, and always restores what it borrowed.\n\n" +
-			"It keeps one job in flight and holds its state in the GPU lease plus the\n" +
-			"Issue labels, so a restart recovers rather than loses the job.",
-	}
-	cmd.AddCommand(newControllerRunCmd(g))
-	return cmd
+type config struct {
+	Repository string `yaml:"repository"`
+	Branch     string `yaml:"branch"`
+	GitHubApp  struct {
+		AppID          int64  `yaml:"app_id"`
+		InstallationID int64  `yaml:"installation_id"`
+		PrivateKeyFile string `yaml:"private_key_file"`
+	} `yaml:"github_app"`
+	Models  map[string]controller.Model `yaml:"models"`
+	Sandbox struct {
+		Namespace string   `yaml:"namespace"`
+		WarmPool  string   `yaml:"warm_pool"`
+		Workdir   string   `yaml:"workdir"`
+		LLMBench  []string `yaml:"llmbench"`
+	} `yaml:"sandbox"`
+	GitOps  gitops.Target `yaml:"gitops"`
+	Harness *struct {
+		Namespace   string   `yaml:"namespace"`
+		PodSelector string   `yaml:"pod_selector"`
+		Container   string   `yaml:"container"`
+		Command     []string `yaml:"command"`
+		CWD         string   `yaml:"cwd"`
+	} `yaml:"harness"`
+	PollIntervalSeconds int `yaml:"poll_interval_seconds"`
+	PauseTimeoutMinutes int `yaml:"pause_timeout_minutes"`
 }
 
-func newControllerRunCmd(g *globalFlags) *cobra.Command {
+func loadConfig(path string) (config, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return config{}, err
+	}
+	defer f.Close()
+	cfg := config{Branch: "main", PollIntervalSeconds: 15, PauseTimeoutMinutes: 30}
+	cfg.Sandbox.Workdir = "/workspace/llm-bench"
+	cfg.Sandbox.LLMBench = []string{"llmbench"}
+	dec := yaml.NewDecoder(f)
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil {
+		return config{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+func newControllerCmd(kubeconfig *string) *cobra.Command {
 	var configPath string
-	var once bool
 	cmd := &cobra.Command{
-		Use:   "run --config <operator.yaml>",
-		Short: "Run the control loop until interrupted",
+		Use:   "controller",
+		Short: "Poll GitHub issues and run benchmark and optimize jobs on the GPU",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := operator.LoadMVP(configPath)
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := loadConfig(configPath)
 			if err != nil {
 				return err
 			}
-			ctrl, err := buildController(cmd.Context(), cfg, g, cmd.ErrOrStderr())
+			c, err := buildController(cfg, *kubeconfig)
 			if err != nil {
 				return err
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
-			if once {
-				handled, err := ctrl.RunOnce(ctx)
-				if err != nil {
-					return err
-				}
-				if !handled {
-					fmt.Fprintln(cmd.OutOrStdout(), "no pending request")
-				}
-				return nil
-			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "controller running for %s\n", cfg.Repository)
-			return ctrl.Run(ctx,
-				time.Duration(cfg.PollIntervalSeconds)*time.Second,
-				time.Duration(cfg.RecoveryIntervalSeconds)*time.Second,
-			)
+			c.Logf("controller watching %s", cfg.Repository)
+			return c.Run(ctx)
 		},
 	}
-	cmd.Flags().StringVar(&configPath, "config", "operator.yaml", "operator configuration (docs/mvp.md §9)")
-	cmd.Flags().BoolVar(&once, "once", false, "poll once and exit (for a dry run)")
+	cmd.Flags().StringVar(&configPath, "config", "/etc/llmbench/config.yaml", "controller configuration")
 	return cmd
 }
 
-// buildController wires the real adapters. Everything the controller touches
-// is constructed here, so the policy package itself stays free of SDKs.
-func buildController(ctx context.Context, cfg operator.MVP, g *globalFlags, logw io.Writer) (*controller.Controller, error) {
-	owner, repo := cfg.RepoParts()
-	if repo == "" {
-		return nil, fmt.Errorf("controller: repository %q is not owner/name", cfg.Repository)
-	}
-	app, err := githubapp.NewFromFiles(cfg.GitHubApp.AppID, cfg.GitHubApp.InstallationID, cfg.GitHubApp.PrivateKeyFile, cfg.GitHubApp.BaseURL)
+func buildController(cfg config, kubeconfig string) (*controller.Controller, error) {
+	app, err := github.NewApp(cfg.GitHubApp.AppID, cfg.GitHubApp.InstallationID, cfg.GitHubApp.PrivateKeyFile)
 	if err != nil {
 		return nil, err
 	}
-	gh, err := app.Client(ctx)
+	gh, err := app.Client()
 	if err != nil {
 		return nil, err
 	}
-	restConfig, err := clientcmd.BuildConfigFromFlags("", g.kubeconfig)
-	if err != nil {
-		return nil, fmt.Errorf("controller: kubeconfig: %w", err)
-	}
-	client, err := kubernetes.NewForConfig(restConfig)
-	if err != nil {
-		return nil, fmt.Errorf("controller: kubernetes client: %w", err)
-	}
-	leaseDuration := time.Duration(cfg.Lease.DurationSeconds) * time.Second
-	leaseStore := kube.NewGPULease(client, cfg.Lease.Namespace, cfg.Lease.Name, leaseDuration)
-
-	// The pause/restore plan is bound per job (deterministic branch names), so
-	// the pauser resolves the hook from the job id it is given.
-	checker, err := kube.NewChecker(g.kubeconfig)
-	if err != nil {
-		return nil, fmt.Errorf("controller: kubernetes checker: %w", err)
-	}
-	pause := &pauser{cfg: cfg, gh: app, checker: checker}
-	sandboxClient := &sandbox.Client{Namespace: cfg.Sandbox.Namespace, Kubeconfig: g.kubeconfig}
-	box := &sandboxAdapter{client: sandboxClient, warmPool: cfg.Sandbox.WarmPool, logf: func(format string, args ...any) {
-		fmt.Fprintf(logw, format+"\n", args...)
-	}}
-	reserved := make(map[string][]string, len(cfg.Engines))
-	for _, engine := range cfg.Engines {
-		args, err := runtime.ReservedArgs(engine)
-		if err != nil {
-			return nil, err
-		}
-		reserved[engine] = args
-	}
-	holder, err := os.Hostname()
-	if err != nil || holder == "" {
-		return nil, fmt.Errorf("controller: cannot determine the instance identity (hostname): %w", err)
-	}
-	var binder agent.Binder
-	if cfg.Agent != nil {
-		exec := cfg.Agent.Exec
-		if len(exec) == 0 {
-			exec = []string{"dsh", "--profile", "acp"}
-		}
-		cwd := cfg.Agent.CWD
-		if cwd == "" {
-			cwd = "/workspace"
-		}
-		binder = &agent.ACPBinder{
-			Transport: &kube.PodExec{
-				Client: client, REST: restConfig, Namespace: cfg.Agent.Namespace,
-				Selector: cfg.Agent.PodSelector, Container: cfg.Agent.Container, Command: exec,
-				Stderr: logw,
-			},
-			CWD:        cwd,
-			AllowTools: true,
-			Logf: func(format string, args ...any) {
-				fmt.Fprintf(logw, "agent: "+format+"\n", args...)
-			},
-		}
-	}
-	return &controller.Controller{
-		Config: controller.Config{
-			Repo:          cfg.Repository,
-			DefaultBranch: cfg.DefaultBranch,
-			Labels:        cfg.Labels,
-			Models:        cfg.Models,
-			Constraints:   cfg.Constraints(nil),
-			ReservedArgs:  reserved,
-			Sandbox:       cfg.Sandbox,
-			LLMBench:      cfg.Sandbox.LLMBench,
-			// The holder is instance-unique (the Pod name). A shared identity
-			// would let a new Pod take over a live lease and clean up a
-			// sandbox that is being measured in, so the two instances must be
-			// distinguishable.
-			HolderIdentity: "llmbench-controller-" + holder,
-			LeaseDuration:  leaseDuration,
-			// A fresh, narrowly scoped token per job: the sandbox may push to
-			// this repository and nothing else. A token lives an hour, so an
-			// optimization run that outlasts it fails its push loudly instead
-			// of publishing with stale credentials (docs/mvp.md §7).
-			Binder: binder,
-			GitToken: func(ctx context.Context) (string, error) {
-				return app.ScopedToken(ctx, githubapp.TokenOptions{
-					Repositories: []string{repo},
-					Permissions:  map[string]string{"contents": "write"},
-				})
-			},
-		},
-		Gateway: issues.NewGateway(gh, owner, repo, ""),
-		Lease:   leaseStore,
-		Pauser:  pause,
-		Sandbox: box,
-		Logf: func(format string, args ...any) {
-			fmt.Fprintf(logw, format+"\n", args...)
-		},
-	}, nil
-}
-
-// pauser adapts the GitOps hook to the controller's pause/restore contract.
-// The hook signals "wait for the human merge" with its own sentinel, which is
-// translated here so the controller never treats a pending pause as a failure.
-type pauser struct {
-	cfg     operator.MVP
-	gh      *githubapp.App
-	checker *kube.Checker
-}
-
-func (p *pauser) hook(ctx context.Context, jobID string) (*gitops.PauseRestore, error) {
-	plan, err := p.cfg.GitOpsPlanFor(jobID)
+	repo, err := github.NewRepo(gh, cfg.Repository, cfg.Branch)
 	if err != nil {
 		return nil, err
 	}
-	client, err := p.gh.Client(ctx)
+	manifests, err := github.NewRepo(gh, cfg.GitOps.Repository, cfg.GitOps.Branch)
 	if err != nil {
 		return nil, err
 	}
-	api := gitops.NewGitHubAPI(client, plan.Owner, plan.Repository, plan.BaseBranch)
-	return &gitops.PauseRestore{Plan: *plan, GH: api, Kube: p.checker}, nil
-}
-
-func (p *pauser) Pause(ctx context.Context, jobID string) error {
-	hook, err := p.hook(ctx, jobID)
-	if err != nil {
-		return err
-	}
-	if err := hook.Acquire(ctx); err != nil {
-		if errors.Is(err, gitops.ErrNotConverged) {
-			return controller.ErrNotConverged
-		}
-		return err
-	}
-	return nil
-}
-
-func (p *pauser) Restore(ctx context.Context, jobID string) error {
-	hook, err := p.hook(ctx, jobID)
-	if err != nil {
-		return err
-	}
-	if err := hook.Release(ctx); err != nil {
-		if errors.Is(err, gitops.ErrNotConverged) {
-			return controller.ErrNotConverged
-		}
-		return err
-	}
-	return nil
-}
-
-// sandboxAdapter runs the benchmark CLI in the job's sandbox.
-type sandboxAdapter struct {
-	client   *sandbox.Client
-	warmPool string
-	logf     func(format string, args ...any)
-}
-
-func (s *sandboxAdapter) Ensure(ctx context.Context, jobID string) error {
-	for {
-		ready, err := s.client.EnsureJobClaim(ctx, jobID, s.warmPool)
-		if err != nil {
-			return err
-		}
-		if ready {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(2 * time.Second):
-		}
-	}
-}
-
-func (s *sandboxAdapter) Exec(ctx context.Context, jobID string, argv []string, env map[string]string) ([]byte, error) {
-	stdout, stderr, code, err := s.client.JobExec(ctx, jobID, argv, env, "")
+	rest, err := restConfig(kubeconfig)
 	if err != nil {
 		return nil, err
 	}
-	if stderr != nil {
-		s.logf("sandbox %s stderr: %s", jobID, string(stderr))
-	}
-	if code != 0 {
-		return nil, fmt.Errorf("sandbox: the benchmark exited with %d", code)
-	}
-	return stdout, nil
-}
-
-// Delete reports whether the claim is gone. The controller retries a
-// not-yet-deleted claim without releasing the lease, so this must not block
-// until its own deadline: the retry belongs to the loop, not to the adapter.
-func (s *sandboxAdapter) Delete(ctx context.Context, jobID string) (bool, error) {
-	return s.client.DeleteJobClaim(ctx, jobID)
-}
-
-// ReadAgentResult reads the record an Agent left in the sandbox. A missing
-// record is "not finished"; anything else is an error.
-func (s *sandboxAdapter) ReadAgentResult(ctx context.Context, jobID string) (controller.AgentResult, bool, error) {
-	result, found, err := s.client.ReadAgentResult(ctx, jobID)
-	if err != nil || !found {
-		return controller.AgentResult{}, found, err
-	}
-	return controller.AgentResult{
-		Status: result.Status, Branch: result.Branch, Commit: result.Commit, Note: result.Note,
-	}, true, nil
-}
-
-// Put writes the job spec into the sandbox before the CLI is started. A file
-// rather than stdin: the CLI re-reads and validates it, and the sandbox keeps
-// the exact spec that ran next to the result.
-func (s *sandboxAdapter) Put(ctx context.Context, jobID, path string, content []byte) error {
-	name, err := s.client.FindJobClaim(ctx, jobID)
+	kube, err := kubernetes.NewForConfig(rest)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return s.client.Put(ctx, name, bytes.NewReader(content), path)
+	dyn, err := dynamic.NewForConfig(rest)
+	if err != nil {
+		return nil, err
+	}
+	logger := log.New(os.Stderr, "", log.LstdFlags)
+	c := &controller.Controller{
+		GitHub:       repo,
+		Sandbox:      &sandbox.Client{Namespace: cfg.Sandbox.Namespace, WarmPool: cfg.Sandbox.WarmPool, REST: rest},
+		GitOps:       &gitops.GitOps{Target: cfg.GitOps, Manifests: manifests, Cluster: gitops.KubeCluster{Dynamic: dyn, Client: kube}},
+		Repository:   cfg.Repository,
+		Models:       cfg.Models,
+		Workdir:      cfg.Sandbox.Workdir,
+		LLMBench:     cfg.Sandbox.LLMBench,
+		GitToken:     app.Token,
+		Interval:     time.Duration(cfg.PollIntervalSeconds) * time.Second,
+		PauseTimeout: time.Duration(cfg.PauseTimeoutMinutes) * time.Minute,
+		Logf:         logger.Printf,
+	}
+	if h := cfg.Harness; h != nil {
+		c.Harness = &harness.Harness{
+			Client: kube, REST: rest, Namespace: h.Namespace, Selector: h.PodSelector,
+			Container: h.Container, Command: h.Command, CWD: h.CWD, Stderr: os.Stderr,
+		}
+	}
+	return c, nil
 }

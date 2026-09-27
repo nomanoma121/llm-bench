@@ -1,9 +1,0 @@
-model: example-model
-benchmark: examples/prompt.md
-target: local
-runtime:
-  engine: example
-  variant: upstream
-  context_size: 4096
-invoke:
-  argv: ["go", "version"]

@@ -1,78 +1,40 @@
-# Go controller and CLI
+# Usage
 
-The Go module lives at the repository root. See [design.md](design.md) for the full workflow.
-
-The control plane validates an experiment, runs a command-backed benchmark locally or in an Agent Sandbox, exposes a chi HTTP API and a Cobra CLI, persists run state, and applies ordered acquire/release hooks. Artifacts are sealed with a digest and served as authenticated previews; there is no screenshot step, so the human A/B comparison uses the raw HTML itself. The controller never publishes: a human adopts an accepted artifact into the repository and CI builds the public site from what was merged. The hooks are configured by the controller operator, not by experiment authors. An optional GitOps hook creates pause/restore GitHub PRs and checks the configured Argo CD Application and inference Deployment/Pods.
-
-From the repository root:
+## Local
 
 ```sh
-go run ./cmd/llmbench validate examples/experiment.yaml
-go run ./cmd/llmbench serve --root . --state .state --output runs --config examples/server.yaml
-go run ./cmd/llmbench submit examples/experiment.yaml
-go run ./cmd/llmbench status <run-id>
+llmbench job init benchmark > job.yaml
+llmbench job validate job.yaml
+llmbench benchmark --job job.yaml --model-path /models/qwen38-27b --model-digest sha256:... --job-id baseline
+llmbench benchmark --job job.yaml --model-path /models/qwen38-27b --model-digest sha256:... --job-id candidate --bin ./build/bin/llama-server
+llmbench compare experiments/qwen38-27b/baseline experiments/qwen38-27b/candidate
+llmbench site --root experiments --out _site
 ```
 
-For Kubernetes-backed state and leader election, add `--coordination-namespace <namespace> --lease-name <name>` to `serve` (both or neither). Run records and target leases then live in ConfigMaps while recipe snapshots and artifacts stay on the harness persistent volume; losing the lease cancels the leader context, stops its workers, and the process re-enters the election. `--kubeconfig <path>` configures out-of-cluster access for both the Sandbox client and this coordination client. The ServiceAccount needs namespaced `get/create/update` on Leases and `get/list/create/update/delete` on ConfigMaps (a target lease is deleted on release). The current Helm chart is values-only: it neither installs this RBAC nor passes these flags. Do not start more than one replica yet: a Lease and versioned records do not alone fence an external GitHub operation or a command already running in a Sandbox after leadership loss.
+`benchmark` writes `experiments/<model>/<job-id>/{jobspec.yaml,result.json,series.jsonl,README.md,raw/}`.
+With `--push` it commits that directory and pushes it to `llmbench/<job-id>`.
+Exit codes: 0 measured (check `measurement_valid`), 2 invalid job spec, 10 no result.
 
-The HTTP API is bound to `127.0.0.1:8080` by default and refuses a non-loopback address without `LLMBENCH_API_TOKEN`; put TLS in front of it for shared deployments. `POST /v1/runs` accepts a repository-relative experiment path (absolute paths outside the repository and `..` escapes are rejected); `GET /v1/runs/{id}` returns its status including the artifact digest and any publication URL.
-
-**Candidate previews** are served by a second, deliberately unauthenticated listener: start it with `--preview-addr <addr>` (and `--preview-public` when it is not loopback). It serves `GET|HEAD /v1/runs/{id}/artifacts/{path...}` from that run's `output/` directory only, and only once the artifact is sealed (a recorded artifact digest). Put it behind an Ingress that terminates cluster authentication (OIDC): the controller does not authenticate preview requests itself, so binding it beyond loopback asserts that upstream authentication exists. Responses carry a sandbox CSP (`sandbox allow-scripts` without `allow-same-origin`, `connect-src 'none'`, `form-action 'none'`), `X-Content-Type-Options: nosniff` and `Cache-Control: private, no-store`; paths outside `output/` are refused, symlinks are refused, and a file may not exceed 8 MiB. The listener shares nothing with the control API: it reads the run record and the artifact directory, never the sandbox client, so it keeps working after the Sandbox is gone. Artifacts are written to a staging directory and atomically renamed at seal time, and a response is only sent after the payload digest has been recomputed with the exact bytes being returned (a mismatch is answered 409).
-
-Local targets are rejected over HTTP unless the operator sets `allow_http_local` on the target AND the API is authenticated. `serve` requires an operator config with explicit target names; see `../examples/server.yaml`. An experiment can only select one of those targets. For Sandbox execution, a full `input_commit` is required and checked against the recipe and prompt. The local runner does not check out the optional commit.
-
-A recipe may declare sampling conditions under `generation:` (for example `temperature`, `top_p`, `top_k`, `seed`, `max_tokens`). They are frozen into the run snapshot and participate in the BenchmarkFingerprint, so two runs that differ only in a generation parameter are not treated as A/B comparable.
-
-Experiment commands receive `LLMBENCH_RUN_ID`, `LLMBENCH_PROMPT_PATH`, `LLMBENCH_OUTPUT_DIR`, `LLMBENCH_MODEL_ID`, `LLMBENCH_MODEL_PATH`, and `LLMBENCH_CONTEXT_SIZE`. The local runner invokes argument arrays without a shell; the Sandbox runner quotes each argument before constructing a sandboxd shell script. The operator configuration can inject ordered hooks per target, such as GPU lease acquisition and inference pause. Release runs in reverse order, including after a benchmark failure or controller restart; each release command must be safe to retry. The service admits at most one active run per target; different targets may run concurrently only when their operator-owned resources are independent. The local file store is for one controller process. Kubernetes coordination uses a Lease and ConfigMap run records, but multi-replica operation stays disabled until external-effect fencing and failover validation are complete.
-
-If a release cannot finish, the run remains `needs_restore` with `cleanup_error` and blocks new runs. The controller retries pending hooks every 30 seconds by default (`serve --retry-interval`); earlier hooks are not released until later hooks succeed. A benchmark that succeeded before a temporary cleanup failure returns to `succeeded` after cleanup completes.
-Keep the same hook names and release implementation configured until every pending run has been restored; removing them would leave that run blocked for manual intervention.
-
-An operator command hook can exit with status 75 during `acquire` to signal "not ready yet". The run stays `awaiting_acquire`, records `wait_reason`, and retries that hook at the same interval or after a controller restart. Previous hooks remain acquired; the benchmark does not begin. A non-75 acquire failure starts normal rollback. Exit 75 during `release` is a cleanup failure and leaves the run in `needs_restore`. Acquire commands must be idempotent because the same command can run again after a crash; release must also tolerate an acquire that was attempted but never completed.
-
-For GitOps pause/restore, set `targets.<id>.gitops` in the operator config (see `../examples/server-gitops.yaml`) and provide `LLMBENCH_GITHUB_TOKEN` in the harness environment. The hook only changes the configured scalar at `yaml_path` in `file_path`; `active_value` and `paused_value` are compared before writing. It creates one pause PR and one restore PR per run, reuses them on retry, closes an unmerged pause PR during rollback, and waits for merge. It then requires the single-source Argo CD Application to report `Synced` at the same manifest revision the decision read (the snapshot-pinned base SHA), and checks that the configured inference Deployment and Pods have stopped or reached the configured `active_replicas`. The Sandbox is released before the restore PR wait. The Application and workload may be in separate namespaces, and the harness ServiceAccount needs read access to each. This path still needs an end-to-end test on a non-production cluster and does not support multi-source Applications.
-
-Manual Sandbox operations use the official Agent Sandbox Go SDK and require its controllers/CRDs and a configured `SandboxWarmPool`:
+## Controller
 
 ```sh
-go run ./cmd/llmbench sandbox --namespace bench acquire 0123456789abcdef0123456789abcdef my-pool
-go run ./cmd/llmbench sandbox --namespace bench run llmbench-0123456789abcdef0123456789abcdef 'cd /workspace && git status --short'
-go run ./cmd/llmbench sandbox --namespace bench pull llmbench-0123456789abcdef0123456789abcdef /workspace/output/index.html ./index.html
-go run ./cmd/llmbench sandbox --namespace bench release 0123456789abcdef0123456789abcdef
+helm upgrade --install llmbench charts/llmbench -f values.yaml
 ```
 
-The `--kubeconfig` flag is available for out-of-cluster access and is used both by the Agent Sandbox client and by the coordination store/leader election; in a Pod, both use the ServiceAccount. `run` executes the supplied string via `/bin/sh -c`; it does not replay a command on transport failure. Claim creation is idempotent by run ID. `release` deletes the Claim, so save needed artifacts first.
+`values.yaml` sets `image.repository`, `githubAppSecret` (a Secret with `private-key.pem`) and `config`, which has the shape of `examples/controller.yaml`.
 
-For an automatic Sandbox run, configure an operator target with `sandbox.namespace` and `sandbox.warm_pool` (see `../examples/server-sandbox.yaml`), start `serve` with that config, and submit an experiment targeting it with `--commit <full-SHA>`. The experiment config and prompt must match the given Git commit. The controller uploads that commit's `git archive`, executes `runtime.start` and `invoke` inside the Sandbox, downloads HTML and logs, and releases the Claim. `runtime.start.ready_timeout_seconds` defaults to 300 and readiness uses `curl` inside the development image; that image also needs `sh`, `tar`, `date`, `python3`, the runtime build tools, and access to the materialized model PVC. The runner hashes every regular file in `/models/<model-id>` before and after execution, records `output/model-identity.json` outside the Sandbox, and fails if the model changes. Symlinks and missing model files are rejected. The model files under ignored `models/` are **not** included in `git archive`; mount them separately. This path supports a single benchmark without an Agent; it does not retain one Claim over several optimization attempts.
+- Requests are open issues labelled `llmbench:benchmark` or `llmbench:optimize` with a ```yaml job spec (the issue forms fill it in).
+- The controller runs one job at a time: pause the inference deployment through a PR in the manifests repository, create the GPU sandbox, run the job, open the result PR, delete the sandbox, restore the deployment. Sandbox deletion and restore always run, also after a failure.
+- The job id is `<issue created date>-issue<number>`. The sandbox, the pause/restore branches and the result branch `llmbench/<job-id>` are named after it, so a restarted controller finds everything again: an issue still labelled `llmbench:running` is published if its result branch exists, otherwise it is marked failed, and cleaned up either way.
+- For optimize jobs the controller opens an ACP session on the harness pod, posts the session id on the issue and waits for the turn to end. The result is the branch the agent pushed. To continue a failed session, talk to the harness directly and open a new issue.
 
-`LLMBENCH_MODEL_PATH` points to `<root>/models/<model-id>` locally and `/models/<model-id>` in a Sandbox. To require an already-known model revision, add an operator-owned `targets.<id>.sandbox.model_sha256.<model-id>` value matching a previously recorded `model-identity.json` tree digest; a mismatch blocks invocation. Establish that digest from a trusted initial run before making it policy. The digest hashes file paths and contents, so it is not the same as a single weight file's SHA-256. Git submodules are rejected for Sandbox runs because `git archive` does not include their content; Git LFS materialization is also not implemented.
-
-## Issue A/B review
-
-An optional operator-owned `review` block enables the Issue record. It needs `LLMBENCH_GITHUB_TOKEN` with Issue-comment permission, `owner`/`repository`, **`bot_login`** (required: only comments from that login are interpreted as controller records, so another participant cannot forge a vote) and **`preview.base_url`**, the external preview URL prefix that the Issue comment links to. Both runs must be `succeeded` with a sealed artifact; reviewers open the two previews.
-
-```yaml
-preview:
-  base_url: https://llmbench-preview.example.internal
-```
-
-```yaml
-review:
-  owner: example
-  repository: llm-bench
-  bot_login: bench-app[bot]
-  discord_webhook_env: LLMBENCH_DISCORD_WEBHOOK
-```
-
-The Discord setting is optional; when set, provide that environment variable in the controller and Discord receives only the Issue link. Once both runs have succeeded with sealed artifacts and finished restoration, request and record a review:
+## Agent commands
 
 ```sh
-go run ./cmd/llmbench review request <baseline-run-id> <candidate-run-id> --issue 42 --config examples/server-gitops.yaml
-go run ./cmd/llmbench review vote <review-id> --choice B --notes 'The geometry is cleaner' --config examples/server-gitops.yaml
-go run ./cmd/llmbench review status <review-id> --config examples/server-gitops.yaml
+llmbench sandbox exec <job-id> -- nvidia-smi
+llmbench sandbox put <job-id> ./patch.diff /workspace/patch.diff
+llmbench sandbox get <job-id> /workspace/llm-bench/experiments/<model>/<dir>/result.json
 ```
-
-Both runs must be A/B comparable: the recorded BenchmarkFingerprint (prompt, context size, runtime engine/variant, generation conditions such as temperature/seed, target kind, controller version) must match. The recorded model tree digest is informational; when both runs use the same model ID it must be present and equal (guarding against a silent model swap), while cross-model comparisons are allowed. The Issue is the vote history and `review status` rebuilds the votes from its marker comments; a manual free-form reply is not parsed as a vote by the controller. Votes are recorded through the CLI (which posts the marker comment) or by any participant whose comment is authored by `bot_login`; the HTTP API has no vote route. Final experiment notes and PR summary are still written by an Agent, not generated by these commands.
 
 ## CI runner
 
@@ -117,67 +79,3 @@ Operational notes:
 - `verify` is a **required** status check on `main`, so pull requests cannot merge while the verify runner is down. Keep the container loop running, or stop requiring the check when the runner is decommissioned.
 - After changing a runner's labels, restart its service: a running listener only re-reads labels when it opens a new session, otherwise jobs stay queued.
 - Decommission: `./svc.sh stop && ./svc.sh uninstall` for the deploy runner, `launchctl unload ~/Library/LaunchAgents/dev.llmbench.verify-runner.plist` for the container loop, then remove both under Settings → Actions → Runners.
-
-## Measurement evidence
-
-A run with a measurement protocol records its numbers as **sealed evidence**, separate from the visual artifact: `output/index.html` stays the A/B payload, while `<output>/runs/<run-id>/evidence/metrics.json` holds the measurements the promotion decision reads.
-
-- The **harness is the authoritative writer**: a driver inside the Sandbox may write `raw-measurement.json`, but the harness validates it, tags every metric with its source (`harness` / `driver` / `external_gpu` / `runtime` / `profiler`), adds harness timing, and seals the canonical JSON with a SHA-256 digest. Identity, validity and environment always come from the harness, so the untrusted side cannot forge them.
-- `measurement_valid` answers "can this measurement be trusted" (collector gaps, foreign GPU processes, throttling, infrastructure failures). A candidate's correctness failure or OOM with clean evidence is a **rejection**, not an invalid measurement: it is recorded as a metric outcome, and the run itself still succeeds.
-- Bounds: 16 MiB per evidence file, 4096 points per series, 65536 points in total, 64 labels per metric. A driver cannot raise them.
-- Read it with `llmbench metrics <run-id>` (or `--raw` for the exact sealed bytes). Over HTTP it is `GET /v1/runs/{id}/metrics` on the authenticated control API — never on the preview listener. A recorded digest that no longer matches the file is an error, not an empty answer.
-
-```sh
-go run ./cmd/llmbench metrics <run-id>
-```
-
-## Publication gate
-
-The controller never publishes. Publishing is triggered by a merge to `main`, so the repository must protect `main`: require pull requests (no direct pushes) and keep force pushes and branch deletion disabled. With that in place, "the artifact is on `main`" and "a human accepted it" are the same statement, which is what the published site claims.
-
-## MVP: Issue から PR まで(docs/mvp.md)
-
-```sh
-# 1. 設定する(モデル・allowlist・lease・pause 対象・sandbox)
-cp examples/operator-mvp.yaml operator.yaml
-$EDITOR operator.yaml
-
-# 2. Controller を入れる(単一 replica。run store も leader election も無い)
-helm upgrade --install llmbench charts/llmbench \
-  --set mvp.image.repository=ghcr.io/<owner>/llmbench \
-  --set mvp.repository=<owner>/llm-bench \
-  --set mvp.githubApp.existingSecret=llmbench-github-app \
-  --set mvp.gitops.owner=<owner> --set mvp.gitops.repository=manifests \
-  --set mvp.gitops.filePath=apps/inference/deployment.yaml \
-  --set mvp.gitops.application.name=inference \
-  --set mvp.gitops.workload.namespace=llmbench \
-  --set mvp.gitops.workload.deployment=llama-server \
-  --set mvp.sandbox.warmPool=gpu-sandbox
-
-# 3. 要求は Issue(GitHub Issue Form が JobSpec を埋める)。ローカルで先に検証できる
-llmbench job init --kind benchmark > job.yaml
-llmbench job validate job.yaml
-#    Issue を作る → ラベル llmbench:benchmark が付く → Controller が拾う
-
-# 4. 進行を見る(Controller のログ、Issue のラベル claimed/done/failed)
-kubectl -n llmbench logs deploy/llmbench-llmbench -f
-
-# 5. 結果は PR。事実の比較は CLI(採否は Agent / 人間が決める)
-llmbench compare --kind runtime experiments/<model>/<baseline> experiments/<model>/<candidate>
-```
-
-Agent(optimization)から sandbox を触るときは、job id を指定するだけでよい。
-sandbox が差し替わっても次の呼び出しが新しい sandbox を見つける(rebind は discovery):
-
-```sh
-llmbench sandbox job exec <job-id> -- ls -la /workspace
-llmbench sandbox job push <job-id> ./patch.diff /workspace/patch.diff
-llmbench sandbox job pull <job-id> /workspace/out.txt ./out.txt
-llmbench job done --job <job-id> --status complete --branch llmbench/<job-id> --commit <sha>
-```
-
-optimization は常駐の harness(DeepSeek Harness)に任せる。`operator.yaml` の `agent` を設定すると、Controller が job ごとに ACP でセッションを作り、task を1回渡して以後は干渉しない(権限要求には自動応答)。完了は sandbox 内の記録で判定し、PR を作る。
-
-一時停止と復元は GitOps の PR を通す。pause の PR がマージされるまで Controller は
-待ち、restore の PR がマージされて Argo が同期し workload が戻るまで **GPU Lease を
-手放さない**(Lease を離すのは復元が完了してから)。

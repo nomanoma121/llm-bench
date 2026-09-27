@@ -1,107 +1,57 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 
 	"github.com/spf13/cobra"
 
 	"github.com/nomanoma121/llm-bench/internal/job"
+	"github.com/nomanoma121/llm-bench/internal/site"
 )
 
-func newJobCmd(g *globalFlags) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "job",
-		Short: "Validate and render MVP job specs (the request carried by an Issue)",
-	}
-	cmd.AddCommand(newJobValidateCmd(), newJobInitCmd(), newJobDoneCmd(g))
-	return cmd
-}
-
-func newJobValidateCmd() *cobra.Command {
-	var (
-		issue  bool
-		asJSON bool
+func newJobCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "job", Short: "Write and check job specs"}
+	cmd.AddCommand(
+		&cobra.Command{
+			Use:   "init benchmark|optimize",
+			Short: "Print a job spec template",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				kind := job.Kind(args[0])
+				if kind != job.Benchmark && kind != job.Optimize {
+					return fmt.Errorf("%w: kind must be benchmark or optimize", job.ErrInvalid)
+				}
+				fmt.Fprint(cmd.OutOrStdout(), job.Template(kind))
+				return nil
+			},
+		},
+		&cobra.Command{
+			Use:   "validate <spec.yaml>",
+			Short: "Check a job spec",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if _, err := job.Load(args[0]); err != nil {
+					return err
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), "ok")
+				return nil
+			},
+		},
 	)
-	cmd := &cobra.Command{
-		Use:   "validate <file|->",
-		Short: "Validate a job spec, or an Issue body with --issue",
-		Long: "Parse and validate a job spec with the same code the controller runs.\n" +
-			"With --issue, the input is a GitHub Issue body and the first ```yaml\n" +
-			"block is validated. Exit code 2 means the spec is invalid.",
-		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			data, err := jobInput(args[0])
-			if err != nil {
-				return err
-			}
-			var spec job.Spec
-			if issue {
-				spec, err = job.FromIssueBody(string(data))
-			} else {
-				spec, err = job.Parse(bytes.NewReader(data))
-			}
-			if err != nil {
-				return err
-			}
-			if err := spec.Validate(); err != nil {
-				return err
-			}
-			digest, err := spec.Digest()
-			if err != nil {
-				return err
-			}
-			out := cmd.OutOrStdout()
-			if asJSON {
-				enc := json.NewEncoder(out)
-				enc.SetIndent("", "  ")
-				return enc.Encode(map[string]any{
-					"valid":      true,
-					"kind":       spec.Kind,
-					"model":      spec.Model.ID,
-					"engine":     spec.Runtime.Engine,
-					"output_dir": spec.Output.Dir,
-					"digest":     digest,
-				})
-			}
-			fmt.Fprintf(out, "OK kind=%s model=%s engine=%s output=%s digest=%s\n",
-				spec.Kind, spec.Model.ID, spec.Runtime.Engine, spec.Output.Dir, digest)
-			return nil
-		},
-	}
-	cmd.Flags().BoolVar(&issue, "issue", false, "treat the input as a GitHub Issue body and validate its first ```yaml block")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "print a machine-readable summary")
 	return cmd
 }
 
-func newJobInitCmd() *cobra.Command {
-	var kind string
+func newSiteCmd() *cobra.Command {
+	var root, out string
 	cmd := &cobra.Command{
-		Use:   "init",
-		Short: "Print a job spec template for an Issue",
-		Long: "Print the same template the Issue forms pre-fill, so a spec can be\n" +
-			"prepared and validated locally before opening the Issue.",
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			text, err := job.Template(job.Kind(kind))
-			if err != nil {
-				return err
-			}
-			fmt.Fprint(cmd.OutOrStdout(), text)
-			return nil
+		Use:   "site",
+		Short: "Build the static results site from experiments/",
+		Args:  cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return site.Build(root, out)
 		},
 	}
-	cmd.Flags().StringVar(&kind, "kind", string(job.KindBenchmark), "benchmark or optimize")
+	cmd.Flags().StringVar(&root, "root", "experiments", "experiments directory")
+	cmd.Flags().StringVar(&out, "out", "_site", "output directory")
 	return cmd
-}
-
-// jobInput reads a job spec from a path, or from stdin for "-".
-func jobInput(path string) ([]byte, error) {
-	if path == "-" {
-		return io.ReadAll(os.Stdin)
-	}
-	return os.ReadFile(path)
 }

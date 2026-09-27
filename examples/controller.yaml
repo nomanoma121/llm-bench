@@ -1,0 +1,42 @@
+repository: nomanoma121/llm-bench
+branch: main
+
+github_app:
+  app_id: 123456
+  installation_id: 12345678
+  private_key_file: /etc/llmbench/keys/private-key.pem
+
+models:
+  qwen38-27b:
+    path: /models/qwen38-27b
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+sandbox:
+  namespace: llmbench
+  warm_pool: gpu-sandbox
+  workdir: /workspace/llm-bench
+  llmbench: [llmbench]
+
+gitops:
+  repository: nomanoma121/manifests
+  branch: main
+  file: apps/inference/deployment.yaml
+  path: [spec, replicas]
+  active_value: "1"
+  paused_value: "0"
+  application:
+    namespace: argocd
+    name: inference
+  deployment:
+    namespace: inference
+    name: llama-server
+    replicas: 1
+
+harness:
+  namespace: dsh
+  pod_selector: app.kubernetes.io/name=dsh
+  command: [dsh, --profile, acp]
+  cwd: /workspace
+
+poll_interval_seconds: 15
+pause_timeout_minutes: 30

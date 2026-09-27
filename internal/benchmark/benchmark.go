@@ -1,494 +1,387 @@
-// Package benchmark runs one measurement job inside the GPU sandbox: it starts
-// the runtime, waits for it, measures each workload case, collects the
-// configured metrics, and writes the result directory.
-//
-// The package is the harness. It owns identity (job id, spec digest, image
-// digest, environment), validity (whether the measurement channel can be
-// trusted) and the canonical output; the runtime adapter owns only the
-// engine-specific commands and metrics. Nothing here decides whether a
-// candidate is better than another — the Agent does that, from the facts this
-// package records (docs/mvp.md §4).
 package benchmark
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"sort"
-	"strings"
-	"syscall"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/nomanoma121/llm-bench/internal/job"
-	"github.com/nomanoma121/llm-bench/internal/measurement"
 	"github.com/nomanoma121/llm-bench/internal/runtime"
 )
 
-// Sentinel errors the CLI maps to its exit codes (docs/mvp.md §5).
-var (
-	// ErrNoResult means the run could not produce a result at all: the runtime
-	// never started or never became ready.
-	ErrNoResult = errors.New("benchmark: no result")
-	// ErrTimeout means a bounded step (readiness) ran out of time.
-	ErrTimeout = errors.New("benchmark: timeout")
-	// ErrAborted means the job was cancelled (the controller is shutting down
-	// or moved on). An aborted run produces no result and publishes nothing.
-	ErrAborted = errors.New("benchmark: aborted")
-)
+var ErrNoResult = errors.New("benchmark: no result")
 
-// DefaultSampleInterval is how often the GPU and runtime collectors sample
-// while the workload runs. It has to be shorter than a case for a peak to be
-// visible at all, and long enough not to disturb the measurement.
-const DefaultSampleInterval = 500 * time.Millisecond
-
-// DefaultRequestTimeout bounds one measured request. It is deliberately
-// generous: a long-context prefill on a consumer GPU can take minutes, and a
-// timeout would otherwise be recorded as a candidate failure.
-const DefaultRequestTimeout = 10 * time.Minute
-
-// readyPollInterval is how often the harness asks the runtime whether it is up.
-const readyPollInterval = 500 * time.Millisecond
-
-// readyProbeTimeout bounds a single readiness probe.
-const readyProbeTimeout = 5 * time.Second
-
-// stopGrace is how long the runtime gets to exit after SIGTERM.
-const stopGrace = 15 * time.Second
-
-// Config is one measurement job.
 type Config struct {
-	Spec job.Spec
-	// JobID names the output directory (docs/mvp.md §3.3).
-	JobID string
-	// RepoRoot is the checkout the result is written under and the root that
-	// relative case prompts resolve against.
-	RepoRoot string
-	// OutputDir is the absolute directory the result is written to.
-	OutputDir string
-	// ModelPath is the resolved weights path or repository id. The operator
-	// resolves it; a job spec never names it.
-	ModelPath string
-	// RequestTimeout overrides DefaultRequestTimeout.
-	RequestTimeout time.Duration
-	// ModelDigest is the operator-pinned digest of the weights. Empty means
-	// the operator did not pin one.
-	ModelDigest string
-	// SampleInterval overrides DefaultSampleInterval.
+	Spec           job.Spec
+	JobID          string
+	Root           string
+	OutDir         string
+	Model          Model
+	Binary         string
 	SampleInterval time.Duration
-	// Logf receives human-readable progress lines.
-	Logf func(format string, args ...any)
+	Logf           func(format string, args ...any)
 }
 
-func (c Config) logf(format string, args ...any) {
-	if c.Logf != nil {
-		c.Logf(format, args...)
-	}
+type run struct {
+	cfg     Config
+	adapter runtime.Adapter
+	start   time.Time
+
+	mu          sync.Mutex
+	currentCase string
+	samples     []Sample
+	invalid     []string
+	gpu         gpuReading
 }
 
-// Seams are the collaborators the harness needs but does not own. Tests
-// replace them; production uses DefaultSeams.
-type Seams struct {
-	// Starter launches the runtime process.
-	Starter Starter
-	// GPU reads GPU state for the nvidia collector. A nil reader makes the
-	// collector report a gap, which invalidates the measurement when the
-	// spec asked for it.
-	GPU GPUReader
-	// Now is the clock, for tests and for offsetting samples.
-	Now func() time.Time
-	// ProbeTimeout bounds one readiness probe so an engine that accepts the
-	// connection and then stops answering cannot hang the probe past the
-	// readiness timeout.
-	ProbeTimeout time.Duration
-}
-
-// DefaultSeams returns the production collaborators.
-func DefaultSeams() Seams {
-	return Seams{Starter: ExecStarter{}, GPU: NvidiaSMI{}, Now: time.Now, ProbeTimeout: readyProbeTimeout}
-}
-
-// Outcome is what a completed run produced.
-type Outcome struct {
-	Dir      string
-	Result   measurement.Result
-	Sealed   measurement.Sealed
-	Duration time.Duration
-}
-
-// Run measures the job and writes its output directory.
-//
-// A run that produced a result document returns normally even when the
-// measurement is invalid: an invalid measurement is a fact worth recording, and
-// the caller reports it through ExitCode. Only a run that could not produce a
-// result at all (the runtime never came up, the output could not be written)
-// returns an error.
-func Run(ctx context.Context, cfg Config, adapter runtime.Adapter, seams Seams) (Outcome, error) {
-	if seams.Starter == nil {
-		seams.Starter = ExecStarter{}
+func Run(ctx context.Context, cfg Config) (Result, error) {
+	if cfg.SampleInterval == 0 {
+		cfg.SampleInterval = time.Second
 	}
-	if seams.GPU == nil {
-		seams.GPU = NvidiaSMI{}
+	if cfg.Logf == nil {
+		cfg.Logf = func(string, ...any) {}
 	}
-	if seams.Now == nil {
-		seams.Now = time.Now
-	}
-	if seams.ProbeTimeout <= 0 {
-		seams.ProbeTimeout = readyProbeTimeout
-	}
-	if cfg.RequestTimeout <= 0 {
-		cfg.RequestTimeout = DefaultRequestTimeout
-	}
-	specDigest, err := cfg.Spec.Digest()
+	spec := cfg.Spec
+	adapter, err := runtime.New(spec.Runtime.Engine, runtime.Options{
+		Binary:    cfg.Binary,
+		ModelID:   spec.Model,
+		ModelPath: cfg.Model.Path,
+		Port:      spec.Runtime.ListenPort(),
+		Args:      spec.Runtime.Args,
+	})
 	if err != nil {
-		return Outcome{}, err
+		return Result{}, err
 	}
-	if err := os.MkdirAll(filepath.Join(cfg.OutputDir, rawDir), 0o755); err != nil {
-		return Outcome{}, fmt.Errorf("benchmark: output dir: %w", err)
-	}
-	jobspecYAML, err := yaml.Marshal(cfg.Spec)
+	prompts, promptDigests, err := readPrompts(cfg.Root, spec.Workload)
 	if err != nil {
-		return Outcome{}, fmt.Errorf("benchmark: freeze spec: %w", err)
+		return Result{}, err
 	}
-
-	state := newRunState(cfg, adapter, seams, cfg.Spec.Metrics.Collectors)
-	state.probeEnvironment(context.WithoutCancel(ctx))
-
-	proc, err := state.startRuntime(ctx)
+	if err := os.MkdirAll(filepath.Join(cfg.OutDir, "raw"), 0o755); err != nil {
+		return Result{}, err
+	}
+	jobspec, err := yaml.Marshal(spec)
 	if err != nil {
-		return Outcome{}, err
+		return Result{}, err
 	}
-	defer state.stopRuntime(context.WithoutCancel(ctx), proc)
+	if err := os.WriteFile(filepath.Join(cfg.OutDir, "jobspec.yaml"), jobspec, 0o644); err != nil {
+		return Result{}, err
+	}
 
-	if err := state.waitReady(ctx); err != nil {
-		switch {
-		case ctx.Err() != nil:
-			// The job was cancelled while waiting, not the runtime failing.
-			return Outcome{}, fmt.Errorf("%w: %w", ErrAborted, ctx.Err())
-		case errors.Is(err, runtime.ErrUnavailable):
-			return Outcome{}, fmt.Errorf("%w: %w", ErrNoResult, err)
-		default:
-			return Outcome{}, fmt.Errorf("%w: %w", ErrTimeout, err)
-		}
+	r := &run{cfg: cfg, adapter: adapter, start: time.Now()}
+	if gpu, err := readGPU(ctx); err == nil {
+		r.gpu = gpu
 	}
-	if err := state.resolveInputs(); err != nil {
-		return Outcome{}, err
+
+	argv := adapter.Argv()
+	cfg.Logf("starting %v", argv)
+	proc, err := startProcess(argv, filepath.Join(cfg.OutDir, "raw", "runtime.log"))
+	if err != nil {
+		return Result{}, fmt.Errorf("%w: start runtime: %w", ErrNoResult, err)
 	}
-	if strings.TrimSpace(cfg.ModelDigest) == "" {
-		// Without a pinned digest the result cannot prove which weights were
-		// measured, so the measurement is not comparable even though it ran.
-		state.invalidate("no model digest is pinned, so the measured weights cannot be identified")
+	defer proc.stop()
+	if err := r.waitReady(ctx, proc); err != nil {
+		return Result{}, fmt.Errorf("%w: %w", ErrNoResult, err)
 	}
-	stopSampling := state.startSampling(ctx)
-	// One reading of every requested collector before the workload, so a short
-	// job still has a value for each source the operator asked for.
-	state.collectRuntime(ctx)
-	state.measure(ctx)
+
+	stopSampling := r.sample(ctx)
+	r.measure(ctx, prompts)
 	stopSampling()
+	proc.stop()
 	if err := ctx.Err(); err != nil {
-		// The controller cancelled the job. Nothing may be published, so the
-		// run ends here with no result.
-		return Outcome{}, fmt.Errorf("%w: %w", ErrAborted, err)
+		return Result{}, fmt.Errorf("%w: %w", ErrNoResult, err)
 	}
-	state.stopRuntime(context.WithoutCancel(ctx), proc)
-	proc = nil
 
-	state.finalizeValidity()
-	// The raw samples are rendered before the result is built: a sample that
-	// cannot be encoded has to appear in invalid_reasons.
-	seriesJSONL := state.seriesJSONL()
-	result := state.buildResult(specDigest)
-	sealed, err := measurement.WriteResultDir(cfg.OutputDir, jobspecYAML, seriesJSONL, result)
+	series := r.seriesJSONL()
+	if err := os.WriteFile(filepath.Join(cfg.OutDir, "series.jsonl"), series, 0o644); err != nil {
+		return Result{}, err
+	}
+	result := r.result(jobspec, series, promptDigests)
+	b, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
-		return Outcome{}, err
+		return Result{}, err
 	}
-	loaded, err := measurement.VerifyResultDir(cfg.OutputDir)
-	if err != nil {
-		// The directory we just wrote must verify: if it does not, the result
-		// is not trustworthy and must not be reported as a success.
-		return Outcome{}, fmt.Errorf("benchmark: self-check: %w", err)
+	if err := os.WriteFile(filepath.Join(cfg.OutDir, "result.json"), append(b, '\n'), 0o644); err != nil {
+		return Result{}, err
 	}
-	state.recordDigests(loaded)
-	if err := state.writeHumanOutputs(loaded.ResultDigest, sealed.Digest); err != nil {
-		return Outcome{}, err
-	}
-	return Outcome{Dir: cfg.OutputDir, Result: loaded, Sealed: sealed, Duration: seams.Now().Sub(state.start)}, nil
+	return result, os.WriteFile(filepath.Join(cfg.OutDir, "README.md"), []byte(result.readme()), 0o644)
 }
 
-// startRuntime launches the process and returns its handle.
-func (s *runState) startRuntime(ctx context.Context) (Process, error) {
-	logPath := filepath.Join(s.cfg.OutputDir, rawDir, runtimeLogName)
-	argv := s.adapter.Argv()
-	s.cfg.logf("starting runtime: %s", strings.Join(argv, " "))
-	proc, err := s.seams.Starter.Start(ctx, argv, logPath)
-	if err != nil {
-		return nil, fmt.Errorf("%w: start runtime: %w", ErrNoResult, err)
-	}
-	return proc, nil
-}
-
-// stopRuntime stops the runtime and records why, so a failed case can be read
-// back from the raw log. It is safe to call twice: Run stops the runtime right
-// after measuring and the deferred call then only clears the handle.
-func (s *runState) stopRuntime(ctx context.Context, proc Process) {
-	if proc == nil || s.stopped {
-		return
-	}
-	s.stopped = true
-	if err := proc.Stop(ctx); err != nil && !isSignalExit(err) {
-		// Stopping escalates to SIGKILL, so a signal exit is the expected
-		// outcome; anything else is worth a line in the run log.
-		s.cfg.logf("stopping the runtime: %v", err)
-	}
-	if err := proc.Wait(); err != nil && !isSignalExit(err) {
-		s.cfg.logf("runtime exited with: %v", err)
-	}
-}
-
-// waitReady polls the adapter until the runtime serves, the readiness timeout
-// expires, or the runtime reports that it cannot serve.
-func (s *runState) waitReady(ctx context.Context) error {
-	deadline := s.seams.Now().Add(time.Duration(s.cfg.Spec.Runtime.Ready.Timeout()) * time.Second)
-	var last error
-	for {
-		// Every attempt is bounded on its own: an engine that accepts the
-		// connection and then stops answering must not hang the probe past
-		// the readiness timeout.
-		attempt := s.seams.ProbeTimeout
-		if remaining := time.Until(deadline); remaining < attempt {
-			attempt = remaining
+func readPrompts(root string, cases []job.Case) (map[string]string, map[string]string, error) {
+	prompts, digests := map[string]string{}, map[string]string{}
+	for _, c := range cases {
+		text := c.PromptText
+		if c.Prompt != "" {
+			b, err := os.ReadFile(filepath.Join(root, c.Prompt))
+			if err != nil {
+				return nil, nil, fmt.Errorf("%w: %w", job.ErrInvalid, err)
+			}
+			text = string(b)
 		}
-		probeCtx, cancel := context.WithTimeout(ctx, attempt)
-		err := s.adapter.Ready(probeCtx)
-		cancel()
+		prompts[c.Name] = text
+		digests[c.Name] = digest([]byte(text))
+	}
+	return prompts, digests, nil
+}
+
+func (r *run) waitReady(ctx context.Context, proc *process) error {
+	timeout := time.Duration(r.cfg.Spec.Runtime.ReadyTimeoutSecondsOrDefault()) * time.Second
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	for {
+		probe, cancelProbe := context.WithTimeout(ctx, 5*time.Second)
+		err := r.adapter.Ready(probe)
+		cancelProbe()
 		switch {
 		case err == nil:
-			s.cfg.logf("runtime is ready after %s", s.seams.Now().Sub(s.start).Round(time.Millisecond))
+			r.cfg.Logf("runtime ready after %s", time.Since(r.start).Round(time.Second))
 			return nil
 		case errors.Is(err, runtime.ErrUnavailable):
 			return err
-		default:
-			last = err
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if !s.seams.Now().Before(deadline) {
-			return fmt.Errorf("readiness timeout after %s: %w", s.seams.Now().Sub(s.start).Round(time.Millisecond), last)
 		}
 		select {
+		case <-proc.exited:
+			return fmt.Errorf("runtime exited before becoming ready (see raw/runtime.log)")
 		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(readyPollInterval):
+			return fmt.Errorf("runtime not ready after %s: %w", timeout, err)
+		case <-time.After(time.Second):
 		}
 	}
 }
 
-// measure runs every case the configured number of times.
-func (s *runState) measure(ctx context.Context) {
-
-	now := s.seams.Now
-	for _, c := range s.cfg.Spec.Workload.Cases {
-		repeats := c.RepeatCount()
-		s.setCase(c.Name)
-		for i := 1; i <= repeats; i++ {
-			reqCtx, cancel := context.WithTimeout(ctx, s.cfg.RequestTimeout)
-			temp, topP, seed := samplingOf(s.cfg.Spec.Workload)
-			req := runtime.Request{
-				Prompt:      s.prompt(c),
-				MaxTokens:   c.MaxTokens,
-				Temperature: temp,
-				TopP:        topP,
-				Seed:        seed,
-			}
-			completion, err := s.adapter.Complete(reqCtx, req)
-			cancel()
-			at := now().Sub(s.start)
-			switch {
-			case err == nil:
-				s.recordCompletion(c, i, at, completion)
-			case ctx.Err() != nil:
-				// The job was cancelled, not the request: the caller must
-				// abort rather than record a candidate failure and publish.
-				s.setCase("")
-				return
-			default:
-				// The request itself failed or timed out. That is a fact
-				// about this attempt, so it invalidates the measurement and
-				// the next repeat still runs.
-				s.recordCaseError(c.Name, i, at, err)
-			}
+func (r *run) measure(ctx context.Context, prompts map[string]string) {
+	var sampling job.Sampling
+	if r.cfg.Spec.Sampling != nil {
+		sampling = *r.cfg.Spec.Sampling
+	}
+	for _, c := range r.cfg.Spec.Workload {
+		r.setCase(c.Name)
+		for i := 1; i <= c.RepeatCount(); i++ {
 			if ctx.Err() != nil {
-				s.setCase("")
 				return
 			}
+			got, err := r.adapter.Complete(ctx, runtime.Request{
+				Prompt: prompts[c.Name], MaxTokens: c.MaxTokens,
+				Temperature: sampling.Temperature, TopP: sampling.TopP, Seed: sampling.Seed,
+			})
+			if err != nil {
+				r.invalidate(fmt.Sprintf("case %s repeat %d failed: %v", c.Name, i, err))
+				continue
+			}
+			if got.CompletionTokens == 0 {
+				r.invalidate(fmt.Sprintf("case %s repeat %d reported no completion tokens", c.Name, i))
+			}
+			r.recordCompletion(c.Name, i, got)
 		}
-		s.setCase("")
+	}
+	r.setCase("")
+}
+
+func (r *run) recordCompletion(caseName string, repeat int, got runtime.Completion) {
+	values := map[string]float64{
+		"ttft_ms":    ms(got.TTFT),
+		"latency_ms": ms(got.Total),
+		"tokens_in":  float64(got.PromptTokens),
+		"tokens_out": float64(got.CompletionTokens),
+	}
+	if got.CompletionTokens > 1 && got.Total > got.TTFT {
+		values["decode_tok_per_s"] = float64(got.CompletionTokens-1) / (got.Total - got.TTFT).Seconds()
+	}
+	if got.PromptTokens > 0 && got.TTFT > 0 {
+		values["prefill_tok_per_s"] = float64(got.PromptTokens) / got.TTFT.Seconds()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	at := time.Since(r.start).Milliseconds()
+	for name, v := range values {
+		r.samples = append(r.samples, Sample{AtMS: at, Source: "harness", Name: name, Case: caseName, Repeat: repeat, Value: v})
 	}
 }
 
-// isSignalExit reports whether a process ended because it was signalled, which
-// is what Stop does on purpose.
-func isSignalExit(err error) bool {
-	var exit *exec.ExitError
-	if !errors.As(err, &exit) {
-		return false
+func (r *run) sample(ctx context.Context) func() {
+	wantGPU, wantRuntime := r.cfg.Spec.Wants(job.MetricGPU), r.cfg.Spec.Wants(job.MetricRuntime)
+	if !wantGPU && !wantRuntime {
+		return func() {}
 	}
-	status, ok := exit.Sys().(syscall.WaitStatus)
-	return ok && status.Signaled()
-}
-
-// samplingOf reads the optional sampling settings. A spec without them leaves
-// every field unset, which tells the runtime to use its own defaults.
-func samplingOf(w job.Workload) (temperature, topP *float64, seed *int64) {
-	if w.Sampling == nil {
-		return nil, nil, nil
-	}
-	return w.Sampling.Temperature, w.Sampling.TopP, w.Sampling.Seed
-}
-
-// workloadDigest identifies what was measured beyond the model: the cases with
-// their token budgets and effective repeat counts, the effective concurrency,
-// the sampling, and the collector set. Two runs whose workload digests differ
-// answered different questions, even if their prompts happen to be identical.
-//
-// It hashes the *effective* workload rather than the raw spec: repeats 0 and
-// repeats 1 are the same measurement, a collector list in another order is the
-// same set, and how a prompt was delivered (a file path or inline text) is not
-// part of the workload identity — the bytes are, and those are recorded in
-// Inputs.Prompts.
-func workloadDigest(spec job.Spec) (string, error) {
-	type canonicalCase struct {
-		Name      string `json:"name"`
-		MaxTokens int    `json:"max_tokens"`
-		Repeats   int    `json:"repeats"`
-	}
-	canonical := struct {
-		Cases       []canonicalCase `json:"cases"`
-		Concurrency int             `json:"concurrency"`
-		Sampling    *job.Sampling   `json:"sampling,omitempty"`
-		Collectors  []string        `json:"collectors"`
-	}{
-		Concurrency: spec.Workload.EffectiveConcurrency(),
-		Sampling:    spec.Workload.Sampling,
-		Collectors:  make([]string, 0, len(spec.Metrics.Collectors)),
-	}
-	for _, c := range spec.Workload.Cases {
-		canonical.Cases = append(canonical.Cases, canonicalCase{
-			Name: c.Name, MaxTokens: c.MaxTokens, Repeats: c.RepeatCount(),
-		})
-	}
-	for _, c := range spec.Metrics.Collectors {
-		canonical.Collectors = append(canonical.Collectors, string(c))
-	}
-	sort.Strings(canonical.Collectors)
-	b, err := json.Marshal(canonical)
-	if err != nil {
-		return "", fmt.Errorf("benchmark: workload digest: %w", err)
-	}
-	return measurement.Digest(b), nil
-}
-
-// prompt returns the frozen prompt bytes of a case. The bytes were read once,
-// so what the harness digests and what it sends are the same string.
-func (s *runState) prompt(c job.Case) string {
-	s.mu.Lock()
-	text, ok := s.prompts[c.Name]
-	s.mu.Unlock()
-	if !ok {
-		s.recordCaseError(c.Name, 0, s.seams.Now().Sub(s.start), fmt.Errorf("prompt for case %q could not be read", c.Name))
-		return ""
-	}
-	return text
-}
-
-// readPrompt resolves the case prompt: an inline prompt_text, or a file read
-// from the repository root.
-func (s *runState) readPrompt(c job.Case) (string, error) {
-	if c.PromptText != "" {
-		return c.PromptText, nil
-	}
-	b, err := os.ReadFile(filepath.Join(s.cfg.RepoRoot, c.Prompt))
-	if err != nil {
-		return "", fmt.Errorf("prompt %s: %w", c.Prompt, err)
-	}
-	return string(b), nil
-}
-
-// resolveInputs freezes what the job will measure: the resolved model, the
-// digest of every prompt's bytes, and the bytes themselves. The measurement
-// sends exactly the frozen bytes, so the recorded digest cannot describe
-// something other than what ran even if the prompt file changes mid-run.
-func (s *runState) resolveInputs() error {
-	workloadDigest, err := workloadDigest(s.cfg.Spec)
-	if err != nil {
-		return err
-	}
-	in := measurement.Inputs{
-		ModelID:        s.cfg.Spec.Model.ID,
-		ModelPath:      s.cfg.ModelPath,
-		ModelDigest:    s.cfg.ModelDigest,
-		Prompts:        map[string]string{},
-		WorkloadDigest: workloadDigest,
-	}
-	prompts := map[string]string{}
-	for _, c := range s.cfg.Spec.Workload.Cases {
-		text, err := s.readPrompt(c)
-		if err != nil {
-			// The case fails on its own; the input section cannot claim a
-			// digest it could not read.
-			continue
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(r.cfg.SampleInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			if wantGPU {
+				r.sampleGPU(ctx)
+			}
+			if wantRuntime {
+				r.sampleRuntime(ctx)
+			}
 		}
-		prompts[c.Name] = text
-		in.Prompts[c.Name] = measurement.Digest([]byte(text))
-	}
-	s.mu.Lock()
-	s.prompts = prompts
-	s.inputs = in
-	s.mu.Unlock()
-	return nil
-}
-
-// buildResult assembles the canonical document from the recorded samples.
-func (s *runState) buildResult(specDigest string) measurement.Result {
-	return measurement.Result{
-		SchemaVersion:    measurement.SchemaVersion,
-		JobID:            s.cfg.JobID,
-		Kind:             string(s.cfg.Spec.Kind),
-		JobSpecDigest:    specDigest,
-		TrustLevel:       measurement.TrustUnverifiedDriver,
-		MeasurementValid: len(s.invalidReasons) == 0,
-		InvalidReasons:   s.invalidReasons,
-		Metrics:          s.metrics(),
-		Series:           s.series(),
-		Collectors:       s.collectorStatus(),
-		Environment:      s.environment(),
-		Runtime:          s.runtimeRef(),
-		Inputs:           s.inputs,
+	}()
+	return func() {
+		close(done)
+		wg.Wait()
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		for _, source := range []struct {
+			want bool
+			name string
+		}{{wantGPU, "gpu"}, {wantRuntime, "runtime"}} {
+			if source.want && !r.hasSourceLocked(source.name) {
+				r.invalid = append(r.invalid, source.name+" metrics were requested but never sampled")
+			}
+		}
 	}
 }
 
-// runtimeRef identifies what was measured. BuildDigest is filled only when the
-// spec pins the image by digest, which is how the operator guarantees the
-// binary that ran.
-func (s *runState) runtimeRef() measurement.RuntimeRef {
-	spec, err := json.Marshal(struct {
-		Engine string   `json:"engine"`
-		Image  string   `json:"image"`
-		Args   []string `json:"args,omitempty"`
-	}{s.cfg.Spec.Runtime.Engine, s.cfg.Spec.Runtime.Image, s.cfg.Spec.Runtime.Args})
+func (r *run) sampleGPU(ctx context.Context) {
+	reading, err := readGPU(ctx)
 	if err != nil {
-		s.invalidate(fmt.Sprintf("runtime spec is not encodable: %v", err))
-		return measurement.RuntimeRef{}
+		return
 	}
-	ref := measurement.RuntimeRef{SpecDigest: measurement.Digest(spec)}
-	if i := strings.LastIndex(s.cfg.Spec.Runtime.Image, "@sha256:"); i >= 0 {
-		ref.BuildDigest = s.cfg.Spec.Runtime.Image[i+len("@"):]
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	at := time.Since(r.start).Milliseconds()
+	for _, g := range reading.GPUs {
+		labels := map[string]string{"gpu": g.Name}
+		r.samples = append(r.samples,
+			Sample{AtMS: at, Source: "gpu", Name: "vram_used_mib", Case: r.currentCase, Value: g.UsedMiB, Labels: labels},
+			Sample{AtMS: at, Source: "gpu", Name: "gpu_util_percent", Case: r.currentCase, Value: g.UtilPercent, Labels: labels},
+		)
 	}
-	return ref
 }
+
+func (r *run) sampleRuntime(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	metrics, err := r.adapter.Metrics(ctx)
+	if err != nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	at := time.Since(r.start).Milliseconds()
+	for _, m := range metrics {
+		r.samples = append(r.samples, Sample{AtMS: at, Source: "runtime", Name: m.Name, Case: r.currentCase, Value: m.Value, Labels: m.Labels})
+	}
+}
+
+func (r *run) hasSourceLocked(source string) bool {
+	for _, s := range r.samples {
+		if s.Source == source {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *run) setCase(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.currentCase = name
+}
+
+func (r *run) invalidate(reason string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.invalid = append(r.invalid, reason)
+}
+
+func (r *run) seriesJSONL() []byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	for _, s := range r.samples {
+		_ = enc.Encode(s)
+	}
+	return buf.Bytes()
+}
+
+var harnessMetrics = []struct {
+	name, unit string
+	agg        func([]float64) float64
+}{
+	{"ttft_ms", "ms", median},
+	{"latency_ms", "ms", median},
+	{"decode_tok_per_s", "tok/s", median},
+	{"prefill_tok_per_s", "tok/s", median},
+	{"tokens_in", "tokens", median},
+	{"tokens_out", "tokens", median},
+}
+
+func (r *run) result(jobspec, series []byte, prompts map[string]string) Result {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	spec := r.cfg.Spec
+	values := func(source, name, caseName string) []float64 {
+		var out []float64
+		for _, s := range r.samples {
+			if s.Source == source && s.Name == name && (caseName == "" || s.Case == caseName) {
+				out = append(out, s.Value)
+			}
+		}
+		return out
+	}
+	var metrics []Metric
+	for _, c := range spec.Workload {
+		for _, h := range harnessMetrics {
+			if m, ok := summarize(h.name, c.Name, h.unit, values("harness", h.name, c.Name), h.agg); ok {
+				metrics = append(metrics, m)
+			}
+		}
+	}
+	if m, ok := summarize("vram_used_mib", "", "MiB", values("gpu", "vram_used_mib", ""), maximum); ok {
+		metrics = append(metrics, m)
+	}
+	if m, ok := summarize("gpu_util_percent", "", "%", values("gpu", "gpu_util_percent", ""), mean); ok {
+		metrics = append(metrics, m)
+	}
+
+	workload, _ := json.Marshal(struct {
+		Workload []job.Case
+		Sampling *job.Sampling
+		Prompts  map[string]string
+	}{spec.Workload, spec.Sampling, prompts})
+
+	var gpus []string
+	for _, g := range r.gpu.GPUs {
+		gpus = append(gpus, g.Name)
+	}
+	return Result{
+		JobID:            r.cfg.JobID,
+		Kind:             string(spec.Kind),
+		StartedAt:        r.start.UTC(),
+		DurationSeconds:  time.Since(r.start).Seconds(),
+		Model:            Model{ID: spec.Model, Path: r.cfg.Model.Path, Digest: r.cfg.Model.Digest},
+		Runtime:          Runtime{Engine: spec.Runtime.Engine, Binary: r.adapter.Argv()[0], Args: spec.Runtime.Args},
+		GPUs:             gpus,
+		Driver:           r.gpu.Driver,
+		MeasurementValid: len(r.invalid) == 0,
+		InvalidReasons:   r.invalid,
+		Metrics:          metrics,
+		Digests: Digests{
+			JobSpec:  digest(jobspec),
+			Series:   digest(series),
+			Workload: digest(workload),
+			Prompts:  prompts,
+		},
+	}
+}
+
+func ms(d time.Duration) float64 { return float64(d) / float64(time.Millisecond) }

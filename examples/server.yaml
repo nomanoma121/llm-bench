@@ -1,9 +1,0 @@
-targets:
-  local:
-    hooks: []
-
-# Candidate previews are served on a separate listener (serve --preview-addr).
-# base_url is the external URL that review comments link to; put an Ingress
-# that terminates cluster authentication in front of the listener.
-preview:
-  base_url: http://127.0.0.1:8081

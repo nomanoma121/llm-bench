@@ -7,9 +7,4 @@
 /renders/
 /.state/
 /bin/
-
-# Adoption staging (docs/architecture.md §4.12): the lock file is created once
-# and never deleted, and the staging/backup directories only exist during a run.
-.adopt.lock
-.adopt-tmp-*/
-.adopt-bak-*/
+/_site/

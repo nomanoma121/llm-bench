@@ -123,7 +123,8 @@ output:
 `image` と `model` を operator allowlist で縛っても、`runtime.args` に任意の flag を書ければ **adapter が管理する設定を上書きできる**(別の model path を指す、listen アドレスを変える、metrics / log の出力を消す、config ファイルを差し替える)。したがって:
 
 - **adapter が所有する flag**(model path、listen host/port、metrics endpoint、log 出力、config ファイル、runtime の識別情報)は **JobSpec から設定できない**。runtime adapter がその一覧を宣言し、`internal/job` の `Constraints.ReservedArgs` として CLI と Controller の両方で**拒否**する(unknown field と同じ fail-closed)。
-- JobSpec の `args` に書けるのは **tuning 系**(`-ngl`、`-c`、batch、thread 数など)だけ。
+- 予約リストは **モデルの取得元を変える flag をすべて含む**。llama.cpp は `-m/--model` だけでなく `-mu/--model-url`、`-dr/--docker-repo`、`-hf/-hfr/--hf-repo`、`-hff/--hf-file`、`--lora*`、`--mmproj` も予約する。FreeToken は `--model/--model-path/--model-source`、`--dummy-weight`、`--gpu` も予約する。**upstream がモデル選択 flag を増やしたら adapter の予約リストも更新する**(adapter の契約の一部)。
+- JobSpec の `args` に書けるのは **tuning 系**(`-ngl`、`-c`、batch、thread 数、MoE cache、attention backend など)だけ。
 - adapter が組み立てる argv は「adapter 所有の必須引数 + spec の tuning 引数」の順で、必須引数を spec が上書きできないことを保証する。
 
 ---
@@ -163,7 +164,7 @@ runtime adapter が持つのは次の 3 点だけ:
 
 | ファイル | 内容 | digest |
 |---|---|---|
-| `jobspec.yaml` | 受理した JobSpec の凍結コピー(operator 適用後の解決済み値も含む) | `jobspec_digest` |
+| `jobspec.yaml` | 受理した JobSpec の凍結コピー(operator 適用後の解決済み値も含む) | `jobspec_digest`(意味的 identity)+ `jobspec_file_digest`(ファイルのバイト) |
 | `result.json` | canonical な結果。metrics / series の要約 / environment / runtime / collectors / validity + 下記の digest | `result_digest` |
 | `series.jsonl` | per-request / per-step の生サンプル(1 行 1 サンプル、計測順に追記) | `series_digest` |
 | `README.md` | 人間向け要約(自動生成) | × |
@@ -173,9 +174,11 @@ runtime adapter が持つのは次の 3 点だけ:
 - **digest は `result.json` の中に閉じる**(外部ファイルの digest を各自で計算し直さなくても identity が決まる):
   - `jobspec_digest` = canonical な JobSpec(`internal/job.Digest()`)の SHA-256。operator が解決した値も含めた実効 spec の digest。
   - `series_digest` = `series.jsonl` の全バイトの SHA-256。**計測順を固定**し、後から並べ替えられないようにする。
-  - `result_digest` = `jobspec_digest` と `series_digest` を**含む** canonical な `result.json` payload(`result_digest` 自身を除く)の SHA-256。
+  - `jobspec_file_digest` = `jobspec.yaml` のバイト列の SHA-256。意味的な digest(`jobspec_digest`)は整形に依存しないが、こちらは隣に置かれた実ファイルと結果を結びつける。
+  - `result_digest` = `jobspec_digest` / `jobspec_file_digest` / `series_digest` を**含む** canonical な `result.json` payload(`result_digest` 自身を除く)の SHA-256。
   - したがって **`jobspec.yaml` や `series.jsonl` を書き換えると `series_digest` → `result_digest` が変わり、identity が変わる**(「digest 対象」の矛盾はここで閉じる)。
 - **identity は `result_digest`**。baseline と candidate の比較、PR の記述、後続の追跡はこの digest で行う。
+- **検証はディレクトリ単位で行う**(`VerifyResultDir` 相当): `result.json` 自身の digest だけでなく、`jobspec.yaml` / `series.jsonl` の実バイトを記録された digest と照合する。`result.json` だけを検証すると、`series.jsonl` を差し替えても valid のままになってしまう。
 - **trust level を記録する**: driver の隔離(候補が書けない場所からの実行と `Driver.ContentDigest` の実行時検証)は F で行うため、それまでの結果には `provenance.trust_level`(例 `unverified-driver`)を書く。後から「この結果はどの程度信頼できるか」が変に読み替えられないようにする。
 - `raw/` と `README.md` は digest の対象外(後から再生成・追記できる)。
 

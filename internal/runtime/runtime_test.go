@@ -172,14 +172,18 @@ func TestLlamaCppMetrics(t *testing.T) {
 # TYPE llamacpp:prompt_tokens_total counter
 llamacpp:prompt_tokens_total 120
 llamacpp:kv_cache_usage_ratio{device="0"} 0.42
+llamacpp:requests_processing 2
+llamacpp:predicted_tokens_seconds 44.5
+llamacpp:prompt_seconds_total 12.5
+llamacpp:some_new_gauge 7
 `)
 	}))
 	metrics, err := a.Metrics(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(metrics) != 2 {
-		t.Fatalf("metrics = %d, want 2", len(metrics))
+	if len(metrics) != 6 {
+		t.Fatalf("metrics = %d, want 6", len(metrics))
 	}
 	byName := map[string]measurement.Metric{}
 	for _, m := range metrics {
@@ -193,6 +197,36 @@ llamacpp:kv_cache_usage_ratio{device="0"} 0.42
 	}
 	if got := byName["llamacpp:kv_cache_usage_ratio"].Labels["device"]; got != "0" {
 		t.Fatalf("label device = %q", got)
+	}
+	// A metric this build does not know is recorded without a unit rather
+	// than with a guessed one, and the schema has to accept that.
+	if got := byName["llamacpp:some_new_gauge"]; got.Unit != "" {
+		t.Fatalf("unknown gauge unit = %q, want empty", got.Unit)
+	}
+	// A rate named ..._tokens_seconds must not be labelled "seconds".
+	if got := byName["llamacpp:predicted_tokens_seconds"]; got.Unit != "tok/s" {
+		t.Fatalf("predicted_tokens_seconds unit = %q, want tok/s", got.Unit)
+	}
+	if got := byName["llamacpp:prompt_seconds_total"]; got.Unit != "seconds" {
+		t.Fatalf("prompt_seconds_total unit = %q, want seconds", got.Unit)
+	}
+}
+
+func TestLlamaCppDoesNotInventTokenCounts(t *testing.T) {
+	// No timings block: the token count is unknown, so it must stay 0 rather
+	// than fall back to the number of streamed chunks.
+	a := newAdapter(t, "llamacpp", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sse(w, `{"content":"a"}`, `{"content":"b"}`, `{"content":"c"}`)
+	}))
+	got, err := a.Complete(context.Background(), Request{Prompt: "hi", MaxTokens: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CompletionTokens != 0 {
+		t.Fatalf("CompletionTokens = %d, want 0 (chunks are not tokens)", got.CompletionTokens)
+	}
+	if got.DecodeTokensPerSecond() != 0 {
+		t.Fatal("a decode rate was derived without a token count")
 	}
 }
 
@@ -246,6 +280,54 @@ func TestFreeTokenComplete(t *testing.T) {
 	}
 	if got.TTFT <= 0 || got.DecodeTokensPerSecond() <= 0 {
 		t.Fatalf("timings = ttft %s total %s", got.TTFT, got.Total)
+	}
+}
+
+func TestFreeTokenReasoningCountsAsFirstOutput(t *testing.T) {
+	a := newAdapter(t, "freetoken", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sse(w,
+			`{"choices":[{"delta":{"reasoning_content":"thinking"}}]}`,
+			`{"choices":[{"delta":{"reasoning_content":" more"}}]}`,
+			`{"choices":[{"delta":{"content":"answer"}}]}`,
+			`{"choices":[{"delta":{}}],"usage":{"prompt_tokens":10,"completion_tokens":4}}`,
+		)
+	}))
+	got, err := a.Complete(context.Background(), Request{Prompt: "hi", MaxTokens: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The visible answer is the content only; reasoning stays out of it.
+	if got.Content != "answer" {
+		t.Fatalf("content = %q", got.Content)
+	}
+	// TTFT is the first reasoning token, so it is earlier than the answer.
+	if len(got.Steps) != 3 {
+		t.Fatalf("steps = %d, want 3", len(got.Steps))
+	}
+	if got.Steps[0].At >= got.Steps[2].At {
+		t.Fatalf("reasoning deltas were not observed: %+v", got.Steps)
+	}
+	if got.CompletionTokens != 4 {
+		t.Fatalf("CompletionTokens = %d, want 4 from usage", got.CompletionTokens)
+	}
+	if got.DecodeTokensPerSecond() <= 0 {
+		t.Fatal("decode rate was not derived from the reported token count")
+	}
+}
+
+func TestFreeTokenDoesNotInventTokenCounts(t *testing.T) {
+	a := newAdapter(t, "freetoken", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sse(w, `{"choices":[{"delta":{"content":"a"}}]}`, `{"choices":[{"delta":{"content":"b"}}]}`)
+	}))
+	got, err := a.Complete(context.Background(), Request{Prompt: "hi", MaxTokens: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CompletionTokens != 0 {
+		t.Fatalf("CompletionTokens = %d, want 0 without a usage block", got.CompletionTokens)
+	}
+	if got.DecodeTokensPerSecond() != 0 {
+		t.Fatal("a decode rate was derived without usage")
 	}
 }
 

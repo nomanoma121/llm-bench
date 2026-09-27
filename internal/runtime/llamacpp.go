@@ -28,10 +28,24 @@ const llamaCppBinary = "llama-server"
 
 func (llamaCpp) Name() string { return "llamacpp" }
 
-// ReservedArgs are the llama.cpp flags that decide what is measured.
+// ReservedArgs are the llama.cpp flags that decide what is measured: the
+// model sources, the listen address, the metrics and log destinations, and
+// anything else that changes which weights are served. Upstream adds new
+// model-selection flags over time, so this list is part of the adapter's
+// contract and must be extended when a flag that changes the measured target
+// is added (docs/mvp.md §3.4).
 func (llamaCpp) ReservedArgs() []string {
 	return []string{
-		"--model", "-m",
+		// Model sources: any of these replaces the weights we meant to measure.
+		"-m", "--model",
+		"-mu", "--model-url",
+		"-dr", "--docker-repo",
+		"-hf", "-hfr", "--hf-repo",
+		"-hff", "--hf-file",
+		"--lora", "--lora-scaled",
+		"--control-vector", "--control-vector-scaled",
+		"--mmproj",
+		// Identity and transport of the measurement itself.
 		"--host", "--port",
 		"--metrics",
 		"--log-file", "--log-verbosity",
@@ -121,8 +135,8 @@ func (a llamaCpp) Complete(ctx context.Context, req Request) (Completion, error)
 			if first == 0 {
 				first = time.Since(start)
 			}
-			// llama.cpp streams one chunk per decoded token, so a chunk (not a
-			// byte) is the step granularity used for the decode series.
+			// Steps are observed stream chunks, not tokens: they drive the
+			// shape of the decode series, never a token count.
 			out.Steps = append(out.Steps, Step{Index: len(out.Steps), At: time.Since(start)})
 			sb.WriteString(chunk.Content)
 		}
@@ -138,16 +152,21 @@ func (a llamaCpp) Complete(ctx context.Context, req Request) (Completion, error)
 	out.Content = sb.String()
 	out.TTFT = first
 	out.Total = time.Since(start)
-	if out.CompletionTokens == 0 {
-		out.CompletionTokens = len(out.Steps)
-	}
+	// CompletionTokens comes from the runtime's `timings` only. A stream chunk
+	// is not guaranteed to be one token, so counting chunks would silently
+	// invent a decode rate; a missing count stays 0 and the caller treats the
+	// measurement as invalid.
 	return out, nil
 }
 
 // Metrics returns the llama.cpp server metrics. Prometheus names are passed
 // through unchanged (with the engine prefix kept) so a later comparison does
 // not depend on a mapping table this package would have to keep in step with
-// upstream.
+// upstream. Units come from an explicit table: llama.cpp names a *rate* with a
+// "_tokens_seconds" suffix and a *duration counter* with "_seconds_total", so
+// guessing from the suffix records the wrong unit (docs/mvp.md §4.2). A name
+// this build does not know is recorded without a unit rather than with a
+// guessed one.
 func (a llamaCpp) Metrics(ctx context.Context) ([]measurement.Metric, error) {
 	base := a.opts.BaseURL()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/metrics", nil)
@@ -171,7 +190,7 @@ func (a llamaCpp) Metrics(ctx context.Context) ([]measurement.Metric, error) {
 		metrics = append(metrics, measurement.Metric{
 			Name:   s.Name,
 			Value:  s.Value,
-			Unit:   prometheusUnit(s.Name),
+			Unit:   llamaCppUnits[s.Name],
 			Source: measurement.SourceRuntime,
 			Labels: s.Labels,
 			// Counters and gauges are instantaneous readings: one sample.
@@ -181,20 +200,23 @@ func (a llamaCpp) Metrics(ctx context.Context) ([]measurement.Metric, error) {
 	return metrics, nil
 }
 
-// prometheusUnit guesses a unit from the metric suffix so the summary is
-// readable. Unknown suffixes stay unitless rather than claiming a wrong unit.
-func prometheusUnit(name string) string {
-	switch {
-	case strings.HasSuffix(name, "_seconds_total"), strings.HasSuffix(name, "_seconds"):
-		return "seconds"
-	case strings.HasSuffix(name, "_bytes"), strings.HasSuffix(name, "_bytes_total"):
-		return "bytes"
-	case strings.HasSuffix(name, "_ratio"):
-		return "ratio"
-	case strings.HasSuffix(name, "_total"):
-		return "count"
-	}
-	return ""
+// llamaCppUnits are the units of the metrics llama.cpp exposes. The names are
+// from the server's metrics registry; an entry is added when upstream adds one.
+var llamaCppUnits = map[string]string{
+	"llamacpp:prompt_tokens_total":            "count",
+	"llamacpp:tokens_predicted_total":         "count",
+	"llamacpp:prompt_tokens_seconds":          "tok/s",
+	"llamacpp:tokens_predicted_seconds":       "tok/s",
+	"llamacpp:predicted_tokens_seconds":       "tok/s",
+	"llamacpp:prompt_seconds_total":           "seconds",
+	"llamacpp:tokens_predicted_seconds_total": "seconds",
+	"llamacpp:n_decode_total":                 "count",
+	"llamacpp:n_busy_slots_per_decode":        "slots",
+	"llamacpp:requests_processing":            "count",
+	"llamacpp:requests_deferred":              "count",
+	"llamacpp:kv_cache_usage_ratio":           "ratio",
+	"llamacpp:kv_cache_tokens":                "count",
+	"llamacpp:kv_cache_used_cells":            "cells",
 }
 
 func hostOrLoopback(host string) string {

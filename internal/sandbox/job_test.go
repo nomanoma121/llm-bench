@@ -2,8 +2,12 @@ package sandbox
 
 import (
 	"context"
+	"errors"
+	"os"
 	"strings"
 	"testing"
+
+	sandboxsdk "sigs.k8s.io/agent-sandbox/clients/go/sandbox"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -123,5 +127,51 @@ func TestAgentResultNeedsASandbox(t *testing.T) {
 	}
 	if _, _, err := c.ReadAgentResult(ctx, "job-a"); err == nil {
 		t.Fatal("reading a result without a sandbox succeeded")
+	}
+}
+
+func TestAgentResultContractIsEnforcedOnRead(t *testing.T) {
+	// The record is written inside the Agent's sandbox, so the reader has to
+	// enforce the same contract the CLI would: a hand-written file must not
+	// satisfy the controller.
+	cases := []struct {
+		name    string
+		result  AgentResult
+		wantErr bool
+	}{
+		{"complete with branch and commit", AgentResult{Status: "complete", Branch: "b", Commit: "c"}, false},
+		{"failed without a branch", AgentResult{Status: "failed"}, false},
+		{"complete without a branch", AgentResult{Status: "complete", Commit: "c"}, true},
+		{"complete without a commit", AgentResult{Status: "complete", Branch: "b"}, true},
+		{"unknown status", AgentResult{Status: "done", Branch: "b", Commit: "c"}, true},
+		{"empty status", AgentResult{}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.result.Validate()
+			if tc.wantErr && err == nil {
+				t.Fatal("an invalid agent result was accepted")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("a valid agent result was rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestIsNotFoundOnlyMatchesAMissingFile(t *testing.T) {
+	// A broken port-forward or a dead sandboxd must not look like "the Agent
+	// has not finished yet", or the controller would wait forever.
+	if !isNotFound(&sandboxsdk.HTTPError{StatusCode: 404}) {
+		t.Fatal("a 404 was not recognised")
+	}
+	if isNotFound(&sandboxsdk.HTTPError{StatusCode: 500}) {
+		t.Fatal("a 500 was treated as a missing file")
+	}
+	if isNotFound(errors.New("connection reset")) {
+		t.Fatal("a transport error was treated as a missing file")
+	}
+	if !isNotFound(os.ErrNotExist) {
+		t.Fatal("a missing local file was not recognised")
 	}
 }

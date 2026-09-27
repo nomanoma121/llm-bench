@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"os"
 
 	sandboxsdk "sigs.k8s.io/agent-sandbox/clients/go/sandbox"
 
@@ -71,10 +74,10 @@ func (c *Client) EnsureJobClaim(ctx context.Context, jobID, warmPool string) (bo
 		if getErr != nil {
 			return false, fmt.Errorf("sandbox: get claim %s: %w", name, getErr)
 		}
-		// A claim without the job label belongs to something else; reusing it
-		// would run this job in a sandbox that is not ours.
-		if stored.Labels[JobLabel] != jobID {
-			return false, fmt.Errorf("sandbox: claim %s exists without the job label %s=%s", name, JobLabel, jobID)
+		// A claim that is not this job's belongs to something else; attaching
+		// to it would run this job in a sandbox that is not ours.
+		if err := ownsClaim(stored, jobID); err != nil {
+			return false, err
 		}
 		if stored.Spec.WarmPoolRef.Name != warmPool {
 			return false, fmt.Errorf("sandbox: claim %s exists with warm pool %q, want %q", name, stored.Spec.WarmPoolRef.Name, warmPool)
@@ -177,7 +180,16 @@ func (c *Client) WriteAgentResult(ctx context.Context, jobID string, result Agen
 	return nil
 }
 
-// ReadAgentResult reads the Agent's completion record, if it wrote one.
+// ReadAgentResult reads and validates the Agent's completion record.
+//
+// The record is written inside the Agent's own sandbox, so its contents are
+// not trustworthy just because the CLI would have validated them: the reader
+// enforces the same contract (a known status, and a branch and commit for a
+// completed round) so a hand-written file cannot satisfy the controller.
+//
+// A missing file is "the Agent has not finished"; any other read failure is an
+// error, because treating an unreachable sandbox as "still working" would make
+// the controller wait forever on an infrastructure fault.
 func (c *Client) ReadAgentResult(ctx context.Context, jobID string) (AgentResult, bool, error) {
 	name, err := c.FindJobClaim(ctx, jobID)
 	if err != nil {
@@ -185,14 +197,43 @@ func (c *Client) ReadAgentResult(ctx context.Context, jobID string) (AgentResult
 	}
 	payload, err := c.Pull(ctx, name, AgentResultPath)
 	if err != nil {
-		// A missing record is "the Agent has not finished", not a failure.
-		return AgentResult{}, false, nil
+		if isNotFound(err) {
+			return AgentResult{}, false, nil
+		}
+		return AgentResult{}, false, fmt.Errorf("sandbox: read the agent result: %w", err)
 	}
 	var result AgentResult
 	if err := json.Unmarshal(bytes.TrimSpace(payload), &result); err != nil {
 		return AgentResult{}, false, fmt.Errorf("sandbox: decode the agent result: %w", err)
 	}
+	if err := result.Validate(); err != nil {
+		return AgentResult{}, false, err
+	}
 	return result, true, nil
+}
+
+// Validate enforces the completion contract on a record read from a sandbox.
+func (r AgentResult) Validate() error {
+	switch r.Status {
+	case "complete":
+		if r.Branch == "" || r.Commit == "" {
+			return fmt.Errorf("sandbox: a completed agent result needs a branch and a commit")
+		}
+	case "failed":
+	default:
+		return fmt.Errorf("sandbox: unknown agent result status %q", r.Status)
+	}
+	return nil
+}
+
+// isNotFound reports whether a read failed because the file is absent. Any
+// other failure (a broken port-forward, a dead sandboxd) is not an answer.
+func isNotFound(err error) bool {
+	var httpErr *sandboxsdk.HTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode == http.StatusNotFound
+	}
+	return errors.Is(err, os.ErrNotExist)
 }
 
 // JobExec runs a command in the job's current sandbox.

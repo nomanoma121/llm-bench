@@ -30,6 +30,7 @@ func newRootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&g.kubeconfig, "kubeconfig", "", "kubeconfig path for cluster integrations (defaults to in-cluster, then ~/.kube/config)")
 	cmd.AddCommand(
 		newValidateCmd(&g),
+		newJobCmd(),
 		newSubmitCmd(&g),
 		newStatusCmd(&g),
 		newServeCmd(&g),

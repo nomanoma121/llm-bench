@@ -36,7 +36,15 @@ var (
 	ErrNoResult = errors.New("benchmark: no result")
 	// ErrTimeout means a bounded step (readiness) ran out of time.
 	ErrTimeout = errors.New("benchmark: timeout")
+	// ErrAborted means the job was cancelled (the controller is shutting down
+	// or moved on). An aborted run produces no result and publishes nothing.
+	ErrAborted = errors.New("benchmark: aborted")
 )
+
+// DefaultSampleInterval is how often the GPU and runtime collectors sample
+// while the workload runs. It has to be shorter than a case for a peak to be
+// visible at all, and long enough not to disturb the measurement.
+const DefaultSampleInterval = 500 * time.Millisecond
 
 // DefaultRequestTimeout bounds one measured request. It is deliberately
 // generous: a long-context prefill on a consumer GPU can take minutes, and a
@@ -45,6 +53,9 @@ const DefaultRequestTimeout = 10 * time.Minute
 
 // readyPollInterval is how often the harness asks the runtime whether it is up.
 const readyPollInterval = 500 * time.Millisecond
+
+// readyProbeTimeout bounds a single readiness probe.
+const readyProbeTimeout = 5 * time.Second
 
 // stopGrace is how long the runtime gets to exit after SIGTERM.
 const stopGrace = 15 * time.Second
@@ -64,6 +75,11 @@ type Config struct {
 	ModelPath string
 	// RequestTimeout overrides DefaultRequestTimeout.
 	RequestTimeout time.Duration
+	// ModelDigest is the operator-pinned digest of the weights. Empty means
+	// the operator did not pin one.
+	ModelDigest string
+	// SampleInterval overrides DefaultSampleInterval.
+	SampleInterval time.Duration
 	// Logf receives human-readable progress lines.
 	Logf func(format string, args ...any)
 }
@@ -85,11 +101,15 @@ type Seams struct {
 	GPU GPUReader
 	// Now is the clock, for tests and for offsetting samples.
 	Now func() time.Time
+	// ProbeTimeout bounds one readiness probe so an engine that accepts the
+	// connection and then stops answering cannot hang the probe past the
+	// readiness timeout.
+	ProbeTimeout time.Duration
 }
 
 // DefaultSeams returns the production collaborators.
 func DefaultSeams() Seams {
-	return Seams{Starter: ExecStarter{}, GPU: NvidiaSMI{}, Now: time.Now}
+	return Seams{Starter: ExecStarter{}, GPU: NvidiaSMI{}, Now: time.Now, ProbeTimeout: readyProbeTimeout}
 }
 
 // Outcome is what a completed run produced.
@@ -116,6 +136,9 @@ func Run(ctx context.Context, cfg Config, adapter runtime.Adapter, seams Seams) 
 	}
 	if seams.Now == nil {
 		seams.Now = time.Now
+	}
+	if seams.ProbeTimeout <= 0 {
+		seams.ProbeTimeout = readyProbeTimeout
 	}
 	if cfg.RequestTimeout <= 0 {
 		cfg.RequestTimeout = DefaultRequestTimeout
@@ -146,11 +169,26 @@ func Run(ctx context.Context, cfg Config, adapter runtime.Adapter, seams Seams) 
 		}
 		return Outcome{}, fmt.Errorf("%w: %w", ErrTimeout, err)
 	}
-	state.collectGPU(ctx, "startup")
+	inputs, err := state.resolveInputs()
+	if err != nil {
+		return Outcome{}, err
+	}
+	state.setInputs(inputs)
+	stopSampling := state.startSampling(ctx)
+	// One reading of every requested collector before the workload, so a short
+	// job still has a value for each source the operator asked for.
+	state.collectRuntime(ctx)
 	state.measure(ctx)
+	stopSampling()
+	if err := ctx.Err(); err != nil {
+		// The controller cancelled the job. Nothing may be published, so the
+		// run ends here with no result.
+		return Outcome{}, fmt.Errorf("%w: %w", ErrAborted, err)
+	}
 	state.stopRuntime(context.WithoutCancel(ctx), proc)
 	proc = nil
 
+	state.finalizeValidity()
 	// The raw samples are rendered before the result is built: a sample that
 	// cannot be encoded has to appear in invalid_reasons.
 	seriesJSONL := state.seriesJSONL()
@@ -208,7 +246,16 @@ func (s *runState) waitReady(ctx context.Context) error {
 	deadline := s.seams.Now().Add(time.Duration(s.cfg.Spec.Runtime.Ready.Timeout()) * time.Second)
 	var last error
 	for {
-		err := s.adapter.Ready(ctx)
+		// Every attempt is bounded on its own: an engine that accepts the
+		// connection and then stops answering must not hang the probe past
+		// the readiness timeout.
+		attempt := s.seams.ProbeTimeout
+		if remaining := time.Until(deadline); remaining < attempt {
+			attempt = remaining
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, attempt)
+		err := s.adapter.Ready(probeCtx)
+		cancel()
 		switch {
 		case err == nil:
 			s.cfg.logf("runtime is ready after %s", s.seams.Now().Sub(s.start).Round(time.Millisecond))
@@ -234,9 +281,11 @@ func (s *runState) waitReady(ctx context.Context) error {
 
 // measure runs every case the configured number of times.
 func (s *runState) measure(ctx context.Context) {
+
 	now := s.seams.Now
 	for _, c := range s.cfg.Spec.Workload.Cases {
 		repeats := c.RepeatCount()
+		s.setCase(c.Name)
 		for i := 1; i <= repeats; i++ {
 			reqCtx, cancel := context.WithTimeout(ctx, s.cfg.RequestTimeout)
 			temp, topP, seed := samplingOf(s.cfg.Spec.Workload)
@@ -250,14 +299,26 @@ func (s *runState) measure(ctx context.Context) {
 			completion, err := s.adapter.Complete(reqCtx, req)
 			cancel()
 			at := now().Sub(s.start)
-			if err != nil {
+			switch {
+			case err == nil:
+				s.recordCompletion(c, i, at, completion)
+			case ctx.Err() != nil:
+				// The job was cancelled, not the request: the caller must
+				// abort rather than record a candidate failure and publish.
+				s.setCase("")
+				return
+			default:
+				// The request itself failed or timed out. That is a fact
+				// about this attempt, so it invalidates the measurement and
+				// the next repeat still runs.
 				s.recordCaseError(c.Name, i, at, err)
-				continue
 			}
-			s.recordCompletion(c, i, at, completion)
+			if ctx.Err() != nil {
+				s.setCase("")
+				return
+			}
 		}
-		s.collectRuntime(ctx, c.Name)
-		s.collectGPU(ctx, c.Name)
+		s.setCase("")
 	}
 }
 
@@ -285,15 +346,48 @@ func samplingOf(w job.Workload) (temperature, topP *float64, seed *int64) {
 // the repository root. A missing file is a case error, not a job failure: the
 // rest of the cases still produce evidence.
 func (s *runState) prompt(c job.Case) string {
+	text, err := s.promptBytes(c)
+	if err != nil {
+		s.recordCaseError(c.Name, 0, s.seams.Now().Sub(s.start), err)
+		return ""
+	}
+	return text
+}
+
+// promptBytes returns the exact bytes a case measures.
+func (s *runState) promptBytes(c job.Case) (string, error) {
 	if c.PromptText != "" {
-		return c.PromptText
+		return c.PromptText, nil
 	}
 	b, err := os.ReadFile(filepath.Join(s.cfg.RepoRoot, c.Prompt))
 	if err != nil {
-		s.recordCaseError(c.Name, 0, s.seams.Now().Sub(s.start), fmt.Errorf("prompt %s: %w", c.Prompt, err))
-		return ""
+		return "", fmt.Errorf("prompt %s: %w", c.Prompt, err)
 	}
-	return string(b)
+	return string(b), nil
+}
+
+// resolveInputs freezes what the job will measure: the resolved model and the
+// digest of every prompt's bytes. It is computed from the same bytes the
+// measurement sends, so it cannot drift from what ran.
+func (s *runState) resolveInputs() (measurement.Inputs, error) {
+	in := measurement.Inputs{
+		ModelID:     s.cfg.Spec.Model.ID,
+		ModelPath:   s.cfg.ModelPath,
+		ModelDigest: s.cfg.ModelDigest,
+		Prompts:     map[string]string{},
+	}
+	for _, c := range s.cfg.Spec.Workload.Cases {
+		text, err := s.promptBytes(c)
+		if err != nil {
+			// The case will fail on its own; the input section simply cannot
+			// claim a digest it could not read.
+			continue
+		}
+		in.Prompts[c.Name] = measurement.Digest([]byte(text))
+	}
+	// A prompt that cannot be read leaves its case to fail on its own; the
+	// run still produces evidence that says so rather than aborting.
+	return in, nil
 }
 
 // buildResult assembles the canonical document from the recorded samples.
@@ -311,6 +405,7 @@ func (s *runState) buildResult(specDigest string) measurement.Result {
 		Collectors:       s.collectorStatus(),
 		Environment:      s.environment(),
 		Runtime:          s.runtimeRef(),
+		Inputs:           s.inputs,
 	}
 }
 

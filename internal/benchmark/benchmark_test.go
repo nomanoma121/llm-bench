@@ -106,6 +106,9 @@ type harness struct {
 	dir      string
 	spec     job.Spec
 	override runtime.Adapter
+	// sampleInterval keeps the periodic collectors firing inside a test that
+	// finishes in milliseconds; production uses DefaultSampleInterval.
+	sampleInterval time.Duration
 }
 
 // newHarness starts a fake runtime, builds the job spec against its port, and
@@ -179,14 +182,20 @@ func (h harness) run(t *testing.T) Outcome {
 
 func (h harness) tryRun(t *testing.T) (Outcome, error) {
 	t.Helper()
+	interval := h.sampleInterval
+	if interval == 0 {
+		interval = time.Millisecond
+	}
 	return Run(context.Background(), Config{
 		Spec:           h.spec,
 		JobID:          "2026-09-27-issue42",
 		RepoRoot:       h.repoRoot,
 		OutputDir:      h.dir,
 		ModelPath:      "/models/x",
+		ModelDigest:    strings.Repeat("d", 64),
 		RequestTimeout: 5 * time.Second,
-	}, h.adapter(t), Seams{Starter: h.starter, GPU: h.gpu, Now: time.Now})
+		SampleInterval: interval,
+	}, h.adapter(t), Seams{Starter: h.starter, GPU: h.gpu, Now: time.Now, ProbeTimeout: 250 * time.Millisecond})
 }
 
 // llamaOK answers readiness, two streamed tokens with timings, and metrics.
@@ -196,6 +205,10 @@ func llamaOK(tokens int) http.HandlerFunc {
 		case "/health":
 			fmt.Fprint(w, `{"status":"ok"}`)
 		case "/completion":
+			// A real request takes longer than the sampler's interval; a
+			// couple of milliseconds keeps that true without slowing the
+			// suite down.
+			time.Sleep(2 * time.Millisecond)
 			for i := range tokens {
 				fmt.Fprintf(w, "data: {\"content\":\"tok%d\"}\n\n", i)
 			}
@@ -272,8 +285,24 @@ func TestRunProducesAVerifiedResultDirectory(t *testing.T) {
 	if _, ok := byKey["external_gpu/vram_used_mib"]; !ok {
 		t.Fatalf("no GPU metric in %v", r.Metrics)
 	}
-	if m, ok := byKey["runtime/llamacpp:kv_cache_usage_ratio"]; !ok || m.Labels["case"] != "short" {
-		t.Fatalf("no per-case runtime metric: %+v", byKey)
+	// Runtime metrics are never summarized: a single reading of a cumulative
+	// counter or a sliding-window rate cannot be labelled with one case.
+	// They stay in the series so the Agent can read the trajectory.
+	for key := range byKey {
+		if strings.HasPrefix(key, "runtime/") {
+			t.Fatalf("runtime metric %s was summarized", key)
+		}
+	}
+	runtimeCases := map[string]bool{}
+	for _, s := range r.Series {
+		if s.Source == measurement.SourceRuntime && s.Name == "llamacpp:kv_cache_usage_ratio" {
+			runtimeCases[s.Labels["case"]] = true
+		}
+	}
+	// One reading before the workload (no case label) and one while the case
+	// ran: the label says which case was running, and is absent otherwise.
+	if !runtimeCases["short"] || len(runtimeCases) < 2 {
+		t.Fatalf("runtime series cases = %v (series %+v)", runtimeCases, r.Series)
 	}
 
 	// Series carry the case label so two cases cannot share an identity.
@@ -507,5 +536,75 @@ func TestSampleMarshalIsOneLine(t *testing.T) {
 	}
 	if strings.Count(string(b), "\n") != 1 || !strings.HasSuffix(string(b), "\n") {
 		t.Fatalf("line = %q", b)
+	}
+}
+
+func TestRunAbortsWithoutWritingAResultWhenCancelled(t *testing.T) {
+	// A controller that stops the job (scale down, shutdown) must not publish:
+	// the run ends with no result at all.
+	h := newHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			fmt.Fprint(w, `{"status":"ok"}`)
+		case "/completion":
+			time.Sleep(50 * time.Millisecond)
+			fmt.Fprint(w, `data: {"content":"x","stop":true,"timings":{"prompt_n":1,"predicted_n":1,"predicted_ms":1}}`+"\n\n")
+		default:
+			fmt.Fprint(w, "")
+		}
+	}, func(s *job.Spec) { s.Metrics.Collectors = []job.Collector{job.CollectorHarness} }, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	_, err := Run(ctx, Config{
+		Spec: h.spec, JobID: "j", RepoRoot: h.repoRoot, OutputDir: h.dir, ModelPath: "/models/x",
+		RequestTimeout: time.Second, SampleInterval: time.Millisecond,
+	}, h.adapter(t), Seams{Starter: h.starter, GPU: h.gpu, Now: time.Now})
+	if !errors.Is(err, ErrAborted) {
+		t.Fatalf("error = %v, want ErrAborted", err)
+	}
+	if _, err := os.Stat(filepath.Join(h.dir, "result.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("an aborted run wrote a result: %v", err)
+	}
+}
+
+func TestRunReportsTheResolvedInputs(t *testing.T) {
+	h := newHarness(t, llamaOK(2), func(s *job.Spec) {
+		s.Metrics.Collectors = []job.Collector{job.CollectorHarness}
+		s.Workload.Cases = []job.Case{{Name: "inline", PromptText: "hello", MaxTokens: 4, Repeats: 1}}
+	}, nil, nil)
+	outcome := h.run(t)
+	in := outcome.Result.Inputs
+	if in.ModelID != "qwen38-27b" || in.ModelPath != "/models/x" || in.ModelDigest != strings.Repeat("d", 64) {
+		t.Fatalf("inputs = %+v", in)
+	}
+	if in.Prompts["inline"] != measurement.Digest([]byte("hello")) {
+		t.Fatalf("prompt digest = %q", in.Prompts["inline"])
+	}
+}
+
+func TestReadinessProbeIsBounded(t *testing.T) {
+	// An engine that accepts the connection and then stops answering must not
+	// hang the readiness loop: every probe carries its own deadline.
+	h := newHarness(t, llamaOK(2), func(s *job.Spec) { s.Runtime.Ready.TimeoutSeconds = 1 }, nil, nil)
+	probes := 0
+	h.override = stubAdapter{argv: []string{"fake"},
+		ready: func(ctx context.Context) error {
+			probes++
+			<-ctx.Done()
+			return ctx.Err()
+		}}
+	start := time.Now()
+	_, err := h.tryRun(t)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("error = %v, want ErrTimeout", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("readiness took %s: the probe was not bounded", elapsed)
+	}
+	if probes < 2 {
+		t.Fatalf("probes = %d: the loop stopped after the first probe", probes)
 	}
 }

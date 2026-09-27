@@ -21,6 +21,7 @@ func newBenchmarkCmd(g *globalFlags) *cobra.Command {
 		jobPath        string
 		jobID          string
 		modelPath      string
+		modelDigest    string
 		outputDir      string
 		asJSON         bool
 		requestTimeout time.Duration
@@ -85,6 +86,7 @@ func newBenchmarkCmd(g *globalFlags) *cobra.Command {
 				RepoRoot:       g.root,
 				OutputDir:      outputDir,
 				ModelPath:      modelPath,
+				ModelDigest:    modelDigest,
 				RequestTimeout: requestTimeout,
 				Logf:           progress,
 			}, adapter, benchmark.DefaultSeams())
@@ -141,6 +143,7 @@ func newBenchmarkCmd(g *globalFlags) *cobra.Command {
 	cmd.Flags().StringVar(&jobPath, "job", "-", "job spec file, or - for stdin")
 	cmd.Flags().StringVar(&jobID, "job-id", "", "job id (default: date and spec digest)")
 	cmd.Flags().StringVar(&modelPath, "model-path", "", "resolved model path or repository id (operator-supplied)")
+	cmd.Flags().StringVar(&modelDigest, "model-digest", "", "operator-pinned digest of the weights, recorded in the result")
 	cmd.Flags().StringVar(&outputDir, "out", "", "output directory (default: <root>/<output.dir>/<job-id>)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print a machine-readable summary")
 	cmd.Flags().DurationVar(&requestTimeout, "request-timeout", 0, "timeout for one measured request (default 10m)")

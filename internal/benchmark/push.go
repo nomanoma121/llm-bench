@@ -16,11 +16,12 @@ import (
 // (docs/mvp.md §7). That keeps the GitHub App private key out of the sandbox:
 // what the sandbox holds is a short-lived installation token, which is scoped
 // to this repository but *not* to a branch, so the default branch must be
-// protected against direct pushes on the GitHub side.
+// protected against direct pushes on the GitHub side as well.
 type PushOptions struct {
 	// RepoRoot is the checkout to commit in.
 	RepoRoot string
-	// Paths are repository-relative paths to add.
+	// Paths are repository-relative paths to add. Nothing else may end up in
+	// the commit.
 	Paths []string
 	// Branch is the branch to create and push.
 	Branch string
@@ -53,16 +54,17 @@ func (o PushOptions) logf(format string, args ...any) {
 	}
 }
 
-// ProtectedBranches are the branch names a run may never push to. The check is
-// a safety net in front of the branch protection that the operator configures:
-// a bug here must not be able to rewrite the default branch.
-var ProtectedBranches = []string{"main", "master", "trunk"}
+// ProtectedBranchNames are branch names a run may never push to, in addition
+// to the remote's own default branch. The list is a safety net: the real check
+// asks the remote which branch is default, because a repository whose default
+// is "develop" must be protected too.
+var ProtectedBranchNames = []string{"main", "master", "trunk"}
 
 // Push creates the branch, commits the paths and pushes the branch.
 //
-// It is deliberately fail-closed about the branch name and never forces: the
-// job may only add a branch, and an existing branch is an error rather than
-// something to overwrite.
+// It is fail-closed: the branch must not exist on the remote, must not be the
+// remote's default branch, must not be a well-known protected name, and the
+// commit may only contain the requested paths. Nothing is ever forced.
 func Push(ctx context.Context, o PushOptions) (PushCommits, error) {
 	if o.RepoRoot == "" {
 		return PushCommits{}, fmt.Errorf("benchmark: push: repo root is required")
@@ -70,7 +72,13 @@ func Push(ctx context.Context, o PushOptions) (PushCommits, error) {
 	if o.Branch == "" {
 		return PushCommits{}, fmt.Errorf("benchmark: push: branch is required")
 	}
-	for _, protected := range ProtectedBranches {
+	if len(o.Paths) == 0 {
+		return PushCommits{}, fmt.Errorf("benchmark: push: at least one path is required")
+	}
+	if strings.TrimSpace(o.Message) == "" {
+		return PushCommits{}, fmt.Errorf("benchmark: push: a commit message is required")
+	}
+	for _, protected := range ProtectedBranchNames {
 		if o.Branch == protected {
 			return PushCommits{}, fmt.Errorf("benchmark: push: refusing to push to the protected branch %q", o.Branch)
 		}
@@ -87,13 +95,29 @@ func Push(ctx context.Context, o PushOptions) (PushCommits, error) {
 		author = "llmbench[bot]"
 	}
 
+	// The branch may not exist yet, here or on the remote: an existing branch
+	// belongs to another run and overwriting it would need a force push.
+	if _, err := o.git(ctx, nil, "rev-parse", "--verify", "refs/heads/"+o.Branch); err == nil {
+		return PushCommits{}, fmt.Errorf("benchmark: push: branch %q already exists locally", o.Branch)
+	}
+	if defaultBranch, err := o.defaultBranch(ctx, remote); err != nil {
+		return PushCommits{}, err
+	} else if o.Branch == defaultBranch {
+		return PushCommits{}, fmt.Errorf("benchmark: push: refusing to push to the remote default branch %q", defaultBranch)
+	}
+	if exists, err := o.remoteBranchExists(ctx, remote, o.Branch); err != nil {
+		return PushCommits{}, err
+	} else if exists {
+		return PushCommits{}, fmt.Errorf("benchmark: push: branch %q already exists on %s", o.Branch, remote)
+	}
+
 	base, err := o.git(ctx, nil, "rev-parse", "HEAD")
 	if err != nil {
 		return PushCommits{}, err
 	}
-	// Start from the current HEAD: the sandbox checked out the source it was
-	// asked to measure, and the branch has to carry that commit as its parent.
-	if _, err := o.git(ctx, nil, "checkout", "-b", o.Branch); err != nil {
+	// Unstage anything a previous step left behind, so the commit contains the
+	// requested paths and nothing else.
+	if _, err := o.git(ctx, nil, "reset", "--quiet"); err != nil {
 		return PushCommits{}, err
 	}
 	for _, path := range o.Paths {
@@ -108,9 +132,10 @@ func Push(ctx context.Context, o PushOptions) (PushCommits, error) {
 			return PushCommits{}, err
 		}
 	}
-	// `diff --cached --quiet` exits 1 when something is staged, which is the
-	// normal case; any other code is a real failure.
-	if _, err := o.git(ctx, []int{1}, "diff", "--cached", "--quiet"); err != nil {
+	if err := o.checkStaged(ctx); err != nil {
+		return PushCommits{}, err
+	}
+	if _, err := o.git(ctx, nil, "checkout", "-b", o.Branch); err != nil {
 		return PushCommits{}, err
 	}
 	changed, err := o.changedFiles(ctx)
@@ -132,13 +157,64 @@ func Push(ctx context.Context, o PushOptions) (PushCommits, error) {
 		return PushCommits{}, err
 	}
 	// The token travels in an HTTP header rather than in the remote URL, so it
-	// cannot leak through the checkout's configuration or the error we print.
-	// The header itself is never logged.
+	// cannot leak through the checkout's configuration or through an error we
+	// print. The header itself is never logged.
 	if _, err := o.git(ctx, nil, "-c", o.authHeader(), "push", remote, "HEAD:refs/heads/"+o.Branch); err != nil {
 		return PushCommits{}, err
 	}
 	o.logf("pushed %s (%s) to %s", o.Branch, short(head), remote)
 	return PushCommits{Branch: o.Branch, Commit: strings.TrimSpace(head), Base: strings.TrimSpace(base), Remote: remote, Changed: changed}, nil
+}
+
+// checkStaged refuses a commit that would carry anything outside Paths, which
+// is how a pre-staged file would otherwise ride along.
+func (o PushOptions) checkStaged(ctx context.Context) error {
+	out, err := o.git(ctx, nil, "diff", "--cached", "--name-only")
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		name := strings.TrimSpace(line)
+		if name == "" {
+			continue
+		}
+		if !o.allowed(name) {
+			return fmt.Errorf("benchmark: push: %s is staged but not one of the requested paths %v; refusing to commit it", name, o.Paths)
+		}
+	}
+	return nil
+}
+
+func (o PushOptions) allowed(name string) bool {
+	for _, path := range o.Paths {
+		path = strings.TrimSuffix(path, "/")
+		if name == path || strings.HasPrefix(name, path+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// defaultBranch asks the remote which branch is its default, falling back to
+// the local HEAD when the remote has not been fetched.
+func (o PushOptions) defaultBranch(ctx context.Context, remote string) (string, error) {
+	if out, err := o.git(ctx, nil, "symbolic-ref", "--short", "refs/remotes/"+remote+"/HEAD"); err == nil {
+		return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out), remote+"/")), nil
+	}
+	if out, err := o.git(ctx, nil, "rev-parse", "--abbrev-ref", "HEAD"); err == nil && !strings.HasPrefix(strings.TrimSpace(out), "HEAD") {
+		return strings.TrimSpace(out), nil
+	}
+	return "", nil
+}
+
+// remoteBranchExists asks the remote, so a leftover branch from an earlier run
+// is caught before the push rather than by a rejected push.
+func (o PushOptions) remoteBranchExists(ctx context.Context, remote, branch string) (bool, error) {
+	out, err := o.git(ctx, nil, "ls-remote", "--heads", remote, branch)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) != "", nil
 }
 
 func (o PushOptions) authHeader() string {
@@ -195,10 +271,9 @@ func (o PushOptions) redact(s string) string {
 		return s
 	}
 	s = strings.ReplaceAll(s, o.Token, "***")
-	if basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + o.Token)); basic != "" {
-		s = strings.ReplaceAll(s, basic, "***")
-	}
-	return strings.ReplaceAll(s, "basic "+base64.StdEncoding.EncodeToString([]byte("x-access-token:"+o.Token)), "***")
+	basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + o.Token))
+	s = strings.ReplaceAll(s, basic, "***")
+	return strings.ReplaceAll(s, "basic "+basic, "***")
 }
 
 func short(sha string) string {

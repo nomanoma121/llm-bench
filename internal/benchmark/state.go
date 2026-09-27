@@ -44,10 +44,11 @@ type runState struct {
 	samples        []Sample
 	gpu            []GPUSample
 	gpuRaw         []string
-	runtimeMetrics []measurement.Metric
 	collectorSeen  map[job.Collector]int
 	collectorGaps  map[job.Collector]int
 	invalidReasons []string
+	currentCase    string
+	inputs         measurement.Inputs
 
 	// digests the result recorded, copied back after sealing so the generated
 	// README prints the same values the result carries.
@@ -84,6 +85,40 @@ func (s *runState) addReasonLocked(reason string) {
 		}
 	}
 	s.invalidReasons = append(s.invalidReasons, reason)
+}
+
+// setCase records which case the samplers should label their readings with.
+func (s *runState) setCase(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.currentCase = name
+}
+
+// caseLabelsLocked adds the case label only while a case is running. A
+// reading taken before or between cases belongs to the run, not to a case, and
+// labelling it "startup" would invent a case that the job never declared.
+func (s *runState) caseLabelsLocked(extra map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range extra {
+		out[k] = v
+	}
+	if s.currentCase != "" {
+		out["case"] = s.currentCase
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// setInputs freezes what was measured: the resolved model and the exact prompt
+// bytes. The job spec only carries the model id and a prompt path, so without
+// this two runs that read different weights or different prompt files would
+// look like the same input.
+func (s *runState) setInputs(in measurement.Inputs) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.inputs = in
 }
 
 // recordCompletion turns one completed request into samples and an
@@ -134,60 +169,106 @@ func (s *runState) recordCaseError(name string, repeat int, at time.Duration, er
 	s.addReasonLocked(fmt.Sprintf("case %q repeat %d failed: %v", name, repeat, err))
 }
 
-// collectRuntime samples the runtime's own metrics after one case. The values
-// are kept with the runtime source so a reader can tell them from the harness
-// measurements, which is the whole point of the source field.
-func (s *runState) collectRuntime(ctx context.Context, caseName string) {
+// collectRuntime samples the runtime's own metrics. They are kept as samples
+// only, never as a summary metric: llama.cpp exposes process-lifetime counters
+// and FreeToken exposes sliding-window rates, so a single number read after a
+// case would be mislabelled as that case's value (docs/mvp.md §4.2). The
+// trajectory stays available for the Agent through series.jsonl.
+func (s *runState) collectRuntime(ctx context.Context) {
 	if !s.wants(job.CollectorRuntime) {
 		return
 	}
 	metrics, err := s.adapter.Metrics(ctx)
+	at := s.seams.Now().Sub(s.start)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err != nil {
 		s.collectorGaps[job.CollectorRuntime]++
-		s.addReasonLocked(fmt.Sprintf("runtime collector failed after case %q: %v", caseName, err))
+		s.addReasonLocked(fmt.Sprintf("runtime collector failed: %v", err))
 		return
 	}
 	if len(metrics) == 0 {
 		s.collectorGaps[job.CollectorRuntime]++
-		s.addReasonLocked(fmt.Sprintf("runtime collector returned no metric after case %q; the job requires it", caseName))
+		s.addReasonLocked("runtime collector returned no metric; the job requires it")
 		return
 	}
 	for _, m := range metrics {
-		m.Labels = withCase(m.Labels, caseName)
-		if m.Source == "" {
-			m.Source = measurement.SourceRuntime
+		source := m.Source
+		if source == "" {
+			source = measurement.SourceRuntime
 		}
-		s.runtimeMetrics = append(s.runtimeMetrics, m)
-		s.addSample(m.Name, m.Source, m.Unit, m.Value, withCase(nil, caseName), 0, 0, 0)
+		s.addSample(m.Name, source, m.Unit, m.Value, s.caseLabelsLocked(m.Labels), 0, 0, at)
 	}
 	s.collectorSeen[job.CollectorRuntime]++
 }
 
-// collectGPU samples the GPU state once per case. The aggregation is
-// documented in metrics(); the raw lines are kept so a human can re-read the
-// run.
-func (s *runState) collectGPU(ctx context.Context, caseName string) {
-	if !s.wants(job.CollectorGPU) {
+// collectGPU samples the GPU once. Sampling runs periodically while the cases
+// run, which is what makes a peak and a mean meaningful: one reading taken
+// after a case would report an idle utilization and miss the peak.
+func (s *runState) collectGPU(ctx context.Context) {
+	if s.seams.GPU == nil {
 		return
 	}
 	sample, raw, err := s.seams.GPU.Sample(ctx)
+	at := s.seams.Now().Sub(s.start)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err != nil {
-		s.collectorGaps[job.CollectorGPU]++
-		s.addReasonLocked(fmt.Sprintf("nvidia collector failed at %s: %v", caseName, err))
+		if s.wants(job.CollectorGPU) {
+			s.collectorGaps[job.CollectorGPU]++
+			s.addReasonLocked(fmt.Sprintf("nvidia collector failed: %v", err))
+		}
+		// GPU identity is also used by the environment section, so a failure
+		// is only invalid when the job asked for the collector.
 		return
 	}
-	s.gpuRaw = append(s.gpuRaw, fmt.Sprintf("# after case %s", caseName))
-	s.gpuRaw = append(s.gpuRaw, raw...)
 	s.gpu = append(s.gpu, sample)
+	s.gpuRaw = append(s.gpuRaw, raw...)
+	if !s.wants(job.CollectorGPU) {
+		return
+	}
 	s.collectorSeen[job.CollectorGPU]++
 	for _, g := range sample.GPUs {
-		labels := map[string]string{"case": caseName, "gpu": g.Model}
-		s.addSample("vram_used_mib", measurement.SourceExternalGPU, "MiB", float64(g.UsedMiB), labels, 0, 0, 0)
-		s.addSample("gpu_util_percent", measurement.SourceExternalGPU, "percent", float64(g.UtilPercent), labels, 0, 0, 0)
+		labels := s.caseLabelsLocked(map[string]string{"gpu": g.Model})
+		s.addSample("vram_used_mib", measurement.SourceExternalGPU, "MiB", float64(g.UsedMiB), labels, 0, 0, at)
+		s.addSample("gpu_util_percent", measurement.SourceExternalGPU, "percent", float64(g.UtilPercent), labels, 0, 0, at)
+	}
+}
+
+// startSampling runs the GPU and runtime collectors periodically until stop is
+// called. The identity probe (GPU model and driver) happens once before the
+// loop so the environment section does not depend on the collector.
+func (s *runState) startSampling(ctx context.Context) (stop func()) {
+	s.collectGPU(ctx)
+	if !s.wants(job.CollectorGPU) && !s.wants(job.CollectorRuntime) {
+		return func() {}
+	}
+	interval := s.cfg.SampleInterval
+	if interval <= 0 {
+		interval = DefaultSampleInterval
+	}
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.collectGPU(ctx)
+				s.collectRuntime(ctx)
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		wg.Wait()
 	}
 }
 
@@ -235,19 +316,10 @@ func prefillTokensPerSecond(got runtime.Completion) float64 {
 	return float64(got.PromptTokens) / got.TTFT.Seconds()
 }
 
-func withCase(labels map[string]string, caseName string) map[string]string {
-	out := map[string]string{}
-	for k, v := range labels {
-		out[k] = v
-	}
-	out["case"] = caseName
-	return out
-}
-
 // metrics assembles the summary metrics. Harness metrics are summarized per
-// case over the repeats; GPU metrics are aggregated over the per-case samples
-// (VRAM by peak, utilization by mean); runtime metrics are kept per case
-// because a gauge read after a case describes that case.
+// case over the repeats; GPU metrics are aggregated over the periodic samples
+// (VRAM by peak, utilization by mean). Runtime metrics are not summarized at
+// all: see collectRuntime.
 func (s *runState) metrics() []measurement.Metric {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -257,7 +329,7 @@ func (s *runState) metrics() []measurement.Metric {
 // metricsLocked assembles the summary metrics. Callers hold the lock.
 func (s *runState) metricsLocked() []measurement.Metric {
 	var metrics []measurement.Metric
-	for _, name := range s.caseOrder() {
+	for _, name := range s.caseOrderLocked() {
 		var ttft, latency, decode, prefill []float64
 		var tokensIn, tokensOut, requests, totalMS float64
 		for _, o := range s.observations {
@@ -290,23 +362,21 @@ func (s *runState) metricsLocked() []measurement.Metric {
 		)
 	}
 
-	if len(s.gpu) > 0 {
-		var used, total, util []float64
-		for _, g := range s.gpu {
-			for _, dev := range g.GPUs {
-				used = append(used, float64(dev.UsedMiB))
-				total = append(total, float64(dev.TotalMiB))
-				util = append(util, float64(dev.UtilPercent))
-			}
+	var used, total, util []float64
+	for _, g := range s.gpu {
+		for _, dev := range g.GPUs {
+			used = append(used, float64(dev.UsedMiB))
+			total = append(total, float64(dev.TotalMiB))
+			util = append(util, float64(dev.UtilPercent))
 		}
-		// The peak is what decides whether a candidate fits, so VRAM is
-		// aggregated by maximum; utilization is averaged because it is a
-		// duty-cycle-like quantity.
-		metrics = add(metrics, "vram_used_mib", "MiB", measurement.SourceExternalGPU, nil, used, maxOf)
-		metrics = add(metrics, "vram_total_mib", "MiB", measurement.SourceExternalGPU, nil, total, maxOf)
-		metrics = add(metrics, "gpu_util_percent", "percent", measurement.SourceExternalGPU, nil, util, meanOf)
 	}
-	return append(metrics, s.runtimeMetrics...)
+	// The peak decides whether a candidate fits, so VRAM is aggregated by
+	// maximum over the periodic samples; utilization is a duty-cycle-like
+	// quantity and is averaged.
+	metrics = add(metrics, "vram_used_mib", "MiB", measurement.SourceExternalGPU, nil, used, maxOf)
+	metrics = add(metrics, "vram_total_mib", "MiB", measurement.SourceExternalGPU, nil, total, maxOf)
+	metrics = add(metrics, "gpu_util_percent", "percent", measurement.SourceExternalGPU, nil, util, meanOf)
+	return metrics
 }
 
 // add appends a summary metric when the collector produced any value. A metric
@@ -334,9 +404,9 @@ func scalarMetric(name, unit string, source measurement.Source, labels map[strin
 	}
 }
 
-// caseOrder is the order cases appear in, so the document lists them the way
-// the spec does.
-func (s *runState) caseOrder() []string {
+// caseOrderLocked is the order cases appear in, so the document lists them the
+// way the spec does.
+func (s *runState) caseOrderLocked() []string {
 	var order []string
 	seen := map[string]bool{}
 	for _, o := range s.observations {
@@ -348,44 +418,49 @@ func (s *runState) caseOrder() []string {
 	return order
 }
 
-// series builds the graph-shaped series: per-repeat harness values, the decode
-// step shape, and the GPU samples.
+// series is the graph-shaped view of every per-observation sample: harness
+// timings, the decode step shape, the GPU trajectory, and whatever the runtime
+// reported.
 func (s *runState) series() []measurement.Series {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	type key struct{ name, c string }
+	// The key must be the same identity measurement uses (name, source, unit
+	// and labels): keying on name and case alone would merge the harness
+	// decode rate with a runtime metric of the same name and keep whichever
+	// source arrived first.
+	type key struct{ name, source, unit, labels string }
 	points := map[key][][2]float64{}
-	units := map[key]string{}
-	sources := map[key]measurement.Source{}
+	labelMaps := map[string]map[string]string{}
 	var order []key
-	addPoint := func(name string, source measurement.Source, unit, caseName string, x, y float64) {
-		k := key{name, caseName}
-		if _, seen := points[k]; !seen {
-			order = append(order, k)
-			units[k] = unit
-			sources[k] = source
-		}
-		points[k] = append(points[k], [2]float64{x, y})
-	}
 	for _, sample := range s.samples {
-		switch sample.Name {
-		case "ttft_ms", "decode_tok_per_s", "decode_step_ms", "vram_used_mib":
-		default:
+		if !isSeriesSample(sample) {
 			continue
 		}
-		x := float64(sample.Repeat)
-		if sample.Name == "decode_step_ms" {
-			x = float64(sample.Step)
+		k := key{sample.Name, string(sample.Source), sample.Unit, labelKey(sample.Labels)}
+		if _, seen := points[k]; !seen {
+			order = append(order, k)
+			labelMaps[k.labels] = sample.Labels
 		}
-		addPoint(sample.Name, sample.Source, sample.Unit, sample.Labels["case"], x, sample.Value)
+		x := float64(sample.Repeat)
+		switch sample.Name {
+		case "decode_step_ms":
+			x = float64(sample.Step)
+		case "vram_used_mib", "gpu_util_percent":
+			x = float64(sample.AtMS)
+		default:
+			if sample.Source == measurement.SourceRuntime {
+				x = float64(sample.AtMS)
+			}
+		}
+		points[k] = append(points[k], [2]float64{x, sample.Value})
 	}
 	var out []measurement.Series
 	for _, k := range order {
 		out = append(out, measurement.Series{
 			Name:          k.name,
-			Unit:          units[k],
-			Source:        sources[k],
-			Labels:        map[string]string{"case": k.c},
+			Unit:          k.unit,
+			Source:        measurement.Source(k.source),
+			Labels:        labelMaps[k.labels],
 			Points:        points[k],
 			OriginalCount: len(points[k]),
 		})
@@ -394,9 +469,37 @@ func (s *runState) series() []measurement.Series {
 		if out[i].Name != out[j].Name {
 			return out[i].Name < out[j].Name
 		}
-		return out[i].Labels["case"] < out[j].Labels["case"]
+		return labelKey(out[i].Labels) < labelKey(out[j].Labels)
 	})
 	return out
+}
+
+// isSeriesSample decides which raw samples become a series. Harness timings,
+// the decode shape and the GPU trajectory are always interesting; everything
+// from the runtime is kept too, because the Agent may want to see how a cache
+// or a KV gauge moved over the run.
+func isSeriesSample(s Sample) bool {
+	if s.Source == measurement.SourceRuntime {
+		return true
+	}
+	switch s.Name {
+	case "ttft_ms", "decode_tok_per_s", "decode_step_ms", "vram_used_mib", "gpu_util_percent":
+		return true
+	}
+	return false
+}
+
+// finalizeValidity closes the accounting before the result is built: a
+// collector the job asked for that never produced a single sample has to
+// appear as an invalid reason, not only as a gap, because the two must agree.
+func (s *runState) finalizeValidity() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range s.required {
+		if s.collectorSeen[c] == 0 {
+			s.addReasonLocked(fmt.Sprintf("%s collector produced no sample; the job requires it", c))
+		}
+	}
 }
 
 // collectorStatus reports what each requested collector produced. A collector
@@ -408,8 +511,8 @@ func (s *runState) collectorStatus() []measurement.CollectorStatus {
 	defer s.mu.Unlock()
 	intervals := map[job.Collector]int{
 		job.CollectorHarness: 1,
-		job.CollectorRuntime: 1000,
-		job.CollectorGPU:     1000,
+		job.CollectorRuntime: int(s.sampleIntervalMS()),
+		job.CollectorGPU:     int(s.sampleIntervalMS()),
 	}
 	var out []measurement.CollectorStatus
 	for _, c := range s.required {
@@ -422,10 +525,25 @@ func (s *runState) collectorStatus() []measurement.CollectorStatus {
 	return out
 }
 
-// environment records the stable machine identity, never the momentary state.
+// sampleIntervalMS is the nominal collector period reported in the result.
+func (s *runState) sampleIntervalMS() int64 {
+	interval := s.cfg.SampleInterval
+	if interval <= 0 {
+		interval = DefaultSampleInterval
+	}
+	return interval.Milliseconds()
+}
+
+// environment records the stable machine identity, never the momentary state,
+// and is derived from the GPU identity probe rather than from the optional
+// collector.
 func (s *runState) environment() measurement.Environment {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.environmentLocked()
+}
+
+func (s *runState) environmentLocked() measurement.Environment {
 	counts := map[string]int{}
 	var order []string
 	driver := ""
@@ -465,4 +583,25 @@ func (s *runState) seriesJSONL() []byte {
 		b = append(b, line...)
 	}
 	return b
+}
+
+// labelKey renders labels as a comparable string, matching the ordering rule
+// the measurement package uses.
+func labelKey(labels map[string]string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b []byte
+	for _, k := range keys {
+		b = append(b, k...)
+		b = append(b, 0x1f)
+		b = append(b, labels[k]...)
+		b = append(b, 0x1e)
+	}
+	return string(b)
 }

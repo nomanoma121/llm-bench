@@ -2,9 +2,11 @@ nameOverride: ""
 fullnameOverride: ""
 
 image:
-  repository: ""
-  tag: ""
-  pullPolicy: IfNotPresent
+  repository: ghcr.io/nomanoma121/llmbench
+  tag: latest
+  pullPolicy: Always
+
+imagePullSecrets: []
 
 githubAppSecret: ""
 

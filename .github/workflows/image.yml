@@ -1,0 +1,31 @@
+name: image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: [self-hosted, llm-bench-deploy]
+    timeout-minutes: 20
+    env:
+      KO_DOCKER_REPO: ghcr.io/${{ github.repository_owner }}/llmbench
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ko-build/setup-ko@v0.9
+      - run: ko build ./cmd/llmbench --bare --platform=linux/amd64,linux/arm64 --tags=latest,${{ github.sha }}

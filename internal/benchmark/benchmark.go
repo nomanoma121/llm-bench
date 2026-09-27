@@ -351,6 +351,21 @@ func samplingOf(w job.Workload) (temperature, topP *float64, seed *int64) {
 	return w.Sampling.Temperature, w.Sampling.TopP, w.Sampling.Seed
 }
 
+// workloadDigest identifies what was measured beyond the model: the cases with
+// their token budgets, sampling and repeats, and the collector set. Two runs
+// whose workload digests differ answered different questions, even if their
+// prompts happen to be identical.
+func workloadDigest(spec job.Spec) (string, error) {
+	b, err := json.Marshal(struct {
+		Workload   job.Workload    `json:"workload"`
+		Collectors []job.Collector `json:"collectors"`
+	}{spec.Workload, spec.Metrics.Collectors})
+	if err != nil {
+		return "", fmt.Errorf("benchmark: workload digest: %w", err)
+	}
+	return measurement.Digest(b), nil
+}
+
 // prompt returns the frozen prompt bytes of a case. The bytes were read once,
 // so what the harness digests and what it sends are the same string.
 func (s *runState) prompt(c job.Case) string {
@@ -382,11 +397,16 @@ func (s *runState) readPrompt(c job.Case) (string, error) {
 // sends exactly the frozen bytes, so the recorded digest cannot describe
 // something other than what ran even if the prompt file changes mid-run.
 func (s *runState) resolveInputs() error {
+	workloadDigest, err := workloadDigest(s.cfg.Spec)
+	if err != nil {
+		return err
+	}
 	in := measurement.Inputs{
-		ModelID:     s.cfg.Spec.Model.ID,
-		ModelPath:   s.cfg.ModelPath,
-		ModelDigest: s.cfg.ModelDigest,
-		Prompts:     map[string]string{},
+		ModelID:        s.cfg.Spec.Model.ID,
+		ModelPath:      s.cfg.ModelPath,
+		ModelDigest:    s.cfg.ModelDigest,
+		Prompts:        map[string]string{},
+		WorkloadDigest: workloadDigest,
 	}
 	prompts := map[string]string{}
 	for _, c := range s.cfg.Spec.Workload.Cases {

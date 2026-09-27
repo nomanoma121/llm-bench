@@ -14,20 +14,30 @@ import (
 )
 
 // MetricDelta is one metric's movement between two results.
+//
+// Before, After, AbsChange and RelChange are pointers because a measured zero,
+// an absent side and an undefined relative change are three different facts: a
+// plain float would report "0" for all of them.
 type MetricDelta struct {
-	Case   string  `json:"case,omitempty"`
-	Name   string  `json:"name"`
-	Source string  `json:"source"`
-	Unit   string  `json:"unit,omitempty"`
-	Before float64 `json:"before,omitempty"`
-	After  float64 `json:"after,omitempty"`
-	Abs    float64 `json:"abs_change,omitempty"`
-	Rel    float64 `json:"rel_change,omitempty"`
+	// Case is the case label, kept for display; Labels is the full identity.
+	Case   string            `json:"case,omitempty"`
+	Labels map[string]string `json:"labels,omitempty"`
+	Name   string            `json:"name"`
+	Source string            `json:"source"`
+	Unit   string            `json:"unit,omitempty"`
+
+	Before    *float64 `json:"before,omitempty"`
+	After     *float64 `json:"after,omitempty"`
+	AbsChange *float64 `json:"abs_change,omitempty"`
+	// RelChange is absent when the baseline is zero: relative change is
+	// undefined there, not zero.
+	RelChange *float64 `json:"rel_change,omitempty"`
+
 	// BeforeSamples and AfterSamples are how many observations backed each
 	// side, so a reader can see whether a difference is meaningful.
 	BeforeSamples int `json:"before_samples,omitempty"`
 	AfterSamples  int `json:"after_samples,omitempty"`
-	// Present marks metrics that exist on one side only.
+	// Status marks metrics that exist on one side only.
 	Status string `json:"status"`
 }
 
@@ -146,9 +156,15 @@ func comparabilityReasons(before, after measurement.Result, kind Kind) []string 
 	if diff := promptDifference(before.Inputs, after.Inputs); diff != "" {
 		add("%s", diff)
 	}
-	// The workload itself has to match, otherwise the numbers answer
-	// different questions.
-	if diff := workloadDifference(before, after); diff != "" {
+	// The workload has to match as well: the same prompt with a different
+	// token budget, repeat count or sampling is a different measurement, and a
+	// different collector set puts a different load on the runtime.
+	if before.Inputs.WorkloadDigest == "" || after.Inputs.WorkloadDigest == "" {
+		add("a side does not record its workload digest, so the workload cannot be compared")
+	} else if before.Inputs.WorkloadDigest != after.Inputs.WorkloadDigest {
+		add("the workload (cases, sampling, collectors) differs")
+	}
+	if diff := collectorDifference(before.Collectors, after.Collectors); diff != "" {
 		add("%s", diff)
 	}
 	switch kind {
@@ -156,17 +172,29 @@ func comparabilityReasons(before, after measurement.Result, kind Kind) []string 
 		if before.Runtime.SpecDigest != after.Runtime.SpecDigest {
 			add("the runtime spec differs but this is a model comparison")
 		}
-		if before.Inputs.ModelPath == after.Inputs.ModelPath {
-			add("both sides measured %s: a model comparison needs two models", before.Inputs.ModelPath)
+		// A model comparison is only meaningful on the same runtime *build*:
+		// two image tags are not two identical runtimes.
+		if before.Runtime.BuildDigest == "" || after.Runtime.BuildDigest == "" {
+			add("a side does not record its runtime build digest, so a model comparison cannot prove the runtime was the same")
+		} else if before.Runtime.BuildDigest != after.Runtime.BuildDigest {
+			add("the runtime build differs (%s vs %s) but this is a model comparison", before.Runtime.BuildDigest, after.Runtime.BuildDigest)
+		}
+		// The weights are identified by digest: the same digest read from two
+		// paths is one model, and one path whose contents changed is two.
+		if before.Inputs.ModelDigest == "" || after.Inputs.ModelDigest == "" {
+			add("a side does not record a model digest, so the two models cannot be compared")
+		} else if before.Inputs.ModelDigest == after.Inputs.ModelDigest {
+			add("both sides measured the same model digest: a model comparison needs two models")
 		}
 	case KindRuntime:
-		if before.Inputs.ModelPath != after.Inputs.ModelPath {
-			add("the model path differs (%s vs %s) but this is a runtime comparison", before.Inputs.ModelPath, after.Inputs.ModelPath)
-		}
-		if before.Inputs.ModelDigest != after.Inputs.ModelDigest {
+		if before.Inputs.ModelDigest == "" || after.Inputs.ModelDigest == "" {
+			add("a side does not record a model digest, so a runtime comparison cannot prove the model was the same")
+		} else if before.Inputs.ModelDigest != after.Inputs.ModelDigest {
 			add("the model digest differs but this is a runtime comparison")
 		}
-		if before.Runtime.BuildDigest != "" && before.Runtime.BuildDigest == after.Runtime.BuildDigest {
+		if before.Runtime.BuildDigest == "" || after.Runtime.BuildDigest == "" {
+			add("a side does not record its runtime build digest, so the two builds cannot be compared")
+		} else if before.Runtime.BuildDigest == after.Runtime.BuildDigest {
 			add("both sides ran the same runtime build (%s): a runtime comparison needs two builds", before.Runtime.BuildDigest)
 		}
 	}
@@ -193,29 +221,20 @@ func promptDifference(a, b measurement.Inputs) string {
 	return ""
 }
 
-// workloadDifference compares the parts of the workload that decide what the
-// numbers mean. The raw specs are not compared: a runtime comparison is
-// expected to change runtime arguments.
-func workloadDifference(before, after measurement.Result) string {
-	a, b := before.Metrics, after.Metrics
-	if len(a) == 0 || len(b) == 0 {
-		return ""
-	}
-	cases := func(m []measurement.Metric) []string {
-		var out []string
-		seen := map[string]bool{}
-		for _, metric := range m {
-			c := metric.Labels["case"]
-			if c != "" && !seen[c] {
-				seen[c] = true
-				out = append(out, c)
-			}
+// collectorDifference compares the collectors the two runs asked for, with the
+// interval they sampled at. Gaps are left out: a collector that failed to
+// sample is a validity question, not a comparability one.
+func collectorDifference(before, after []measurement.CollectorStatus) string {
+	key := func(cs []measurement.CollectorStatus) string {
+		out := make([]string, 0, len(cs))
+		for _, c := range cs {
+			out = append(out, fmt.Sprintf("%s@%dms", c.Name, c.IntervalMS))
 		}
 		sort.Strings(out)
-		return out
+		return strings.Join(out, ",")
 	}
-	if x, y := strings.Join(cases(a), ","), strings.Join(cases(b), ","); x != y {
-		return fmt.Sprintf("the workload cases differ: %s vs %s", x, y)
+	if x, y := key(before), key(after); x != y {
+		return fmt.Sprintf("the collector configuration differs: %s vs %s", x, y)
 	}
 	return ""
 }
@@ -277,16 +296,18 @@ func deltas(before, after []measurement.Metric) []MetricDelta {
 			d.Source = string(e.before.Source)
 			d.Unit = e.before.Unit
 			d.Case = e.before.Labels["case"]
-			d.Before = e.before.Value
+			d.Labels = e.before.Labels
+			d.Before = ptr(e.before.Value)
 			d.BeforeSamples = e.before.Samples
 		case e.after != nil:
 			d.Name = e.after.Name
 			d.Source = string(e.after.Source)
 			d.Unit = e.after.Unit
 			d.Case = e.after.Labels["case"]
+			d.Labels = e.after.Labels
 		}
 		if e.after != nil {
-			d.After = e.after.Value
+			d.After = ptr(e.after.Value)
 			d.AfterSamples = e.after.Samples
 		}
 		switch {
@@ -295,9 +316,10 @@ func deltas(before, after []measurement.Metric) []MetricDelta {
 		case e.after == nil:
 			d.Status = StatusOnlyBefore
 		default:
-			d.Abs = d.After - d.Before
-			if d.Before != 0 {
-				d.Rel = d.Abs / d.Before
+			abs := *d.After - *d.Before
+			d.AbsChange = ptr(abs)
+			if *d.Before != 0 {
+				d.RelChange = ptr(abs / *d.Before)
 			}
 		}
 		out = append(out, d)
@@ -319,6 +341,9 @@ func deltas(before, after []measurement.Metric) []MetricDelta {
 func metricKey(m measurement.Metric) string {
 	return m.Name + "\x00" + string(m.Source) + "\x00" + m.Unit + "\x00" + labelKey(m.Labels)
 }
+
+// ptr returns a pointer to a copy, so a measured zero survives encoding.
+func ptr(v float64) *float64 { return &v }
 
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {

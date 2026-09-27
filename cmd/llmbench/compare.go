@@ -52,13 +52,19 @@ func newCompareCmd() *cobra.Command {
 			if len(got.Metrics) > 0 {
 				fmt.Fprintf(out, "\n%-14s %-26s %-10s %12s %12s %10s\n", "case", "metric", "unit", "baseline", "candidate", "change")
 				for _, d := range got.Metrics {
-					change := "-"
-					if d.Status == compare.StatusCompared {
-						change = fmt.Sprintf("%+.4g (%+.1f%%)", d.Abs, d.Rel*100)
-					} else {
-						change = string(d.Status)
+					// A missing side and an undefined relative change are
+					// printed as "-" rather than as a zero the reader would
+					// take for a measurement.
+					change := string(d.Status)
+					if d.Status == compare.StatusCompared && d.AbsChange != nil {
+						if d.RelChange != nil {
+							change = fmt.Sprintf("%+.4g (%+.1f%%)", *d.AbsChange, *d.RelChange*100)
+						} else {
+							change = fmt.Sprintf("%+.4g (n/a)", *d.AbsChange)
+						}
 					}
-					fmt.Fprintf(out, "%-14s %-26s %-10s %12.6g %12.6g %10s\n", d.Case, d.Name, d.Unit, d.Before, d.After, change)
+					fmt.Fprintf(out, "%-14s %-26s %-10s %12s %12s %10s\n",
+						d.Case, d.Name, d.Unit, formatValue(d.Before), formatValue(d.After), change)
 				}
 			}
 			return nil
@@ -67,6 +73,14 @@ func newCompareCmd() *cobra.Command {
 	cmd.Flags().StringVar(&kind, "kind", string(compare.KindRuntime), "model or runtime: which difference the comparison expects")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print the comparison as JSON")
 	return cmd
+}
+
+// formatValue renders a metric value, or "-" when that side has no value.
+func formatValue(v *float64) string {
+	if v == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%.6g", *v)
 }
 
 func shortDigest(d string) string {

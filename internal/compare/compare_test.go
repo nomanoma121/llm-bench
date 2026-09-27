@@ -1,6 +1,8 @@
 package compare
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +10,12 @@ import (
 
 	"github.com/nomanoma121/llm-bench/internal/measurement"
 )
+
+// workloadDigest renders a small counter as the hex digest the schema wants,
+// so a test can make two runs share or differ in their workload.
+func workloadDigest(n uint64) string {
+	return fmt.Sprintf("%064x", n)
+}
 
 // result builds a sealed result directory with the given overrides.
 type resultSpec struct {
@@ -22,12 +30,22 @@ type resultSpec struct {
 	invalid      []string
 	metrics      []measurement.Metric
 	environment  measurement.Environment
+	workload     uint64 // a small counter rendered as a hex digest
+	collectors   []measurement.CollectorStatus
 }
 
 func seal(t *testing.T, s resultSpec) string {
 	t.Helper()
 	dir := t.TempDir()
 	series := []byte("{\"name\":\"ttft_ms\",\"value\":1}\n")
+	workload := s.workload
+	if workload == 0 {
+		workload = 1
+	}
+	collectors := s.collectors
+	if collectors == nil {
+		collectors = []measurement.CollectorStatus{{Name: "harness", IntervalMS: 1}}
+	}
 	r := measurement.Result{
 		SchemaVersion:    measurement.SchemaVersion,
 		JobID:            s.jobID,
@@ -38,12 +56,14 @@ func seal(t *testing.T, s resultSpec) string {
 		MeasurementValid: len(s.invalid) == 0,
 		InvalidReasons:   s.invalid,
 		Inputs: measurement.Inputs{
-			ModelID:     "qwen38-27b",
-			ModelPath:   s.modelPath,
-			ModelDigest: s.modelDigest,
-			Prompts:     s.prompts,
+			ModelID:        "qwen38-27b",
+			ModelPath:      s.modelPath,
+			ModelDigest:    s.modelDigest,
+			Prompts:        s.prompts,
+			WorkloadDigest: workloadDigest(workload),
 		},
 		Runtime:     measurement.RuntimeRef{SpecDigest: s.runtimeSpec, BuildDigest: s.runtimeBuild},
+		Collectors:  collectors,
 		Environment: s.environment,
 		Metrics:     s.metrics,
 	}
@@ -103,12 +123,15 @@ func TestCompareRuntimeReportsFacts(t *testing.T) {
 		byName[d.Name] = d
 	}
 	ttft := byName["ttft_ms"]
-	if ttft.Status != StatusCompared || ttft.Abs != -20 || ttft.Rel != -0.2 {
+	if ttft.Status != StatusCompared || ttft.AbsChange == nil || *ttft.AbsChange != -20 || ttft.RelChange == nil || *ttft.RelChange != -0.2 {
 		t.Fatalf("ttft delta = %+v", ttft)
 	}
 	decode := byName["decode_tok_per_s"]
-	if decode.Abs != 10 || decode.Rel != 0.25 {
+	if decode.AbsChange == nil || *decode.AbsChange != 10 || decode.RelChange == nil || *decode.RelChange != 0.25 {
 		t.Fatalf("decode delta = %+v", decode)
+	}
+	if decode.Labels["case"] != "short" {
+		t.Fatalf("delta labels = %v", decode.Labels)
 	}
 	if decode.Case != "short" || decode.Source != string(measurement.SourceHarness) {
 		t.Fatalf("delta identity = %+v", decode)
@@ -135,13 +158,21 @@ func TestCompareRejectsIncomparablePairs(t *testing.T) {
 		{"different cases", KindRuntime, func(s *resultSpec) {
 			s.prompts = map[string]string{"short": strings.Repeat("c", 64), "long": strings.Repeat("e", 64)}
 		}, "cases differ"},
-		{"different model in a runtime comparison", KindRuntime, func(s *resultSpec) { s.modelPath = "/models/b" }, "model path differs"},
+		{"different model in a runtime comparison", KindRuntime, func(s *resultSpec) {
+			s.modelDigest = strings.Repeat("7", 64)
+		}, "model digest differs"},
+		{"different workload", KindRuntime, func(s *resultSpec) { s.workload = 2 }, "workload (cases, sampling, collectors) differs"},
+		{"different collector interval", KindRuntime, func(s *resultSpec) {
+			s.collectors = []measurement.CollectorStatus{{Name: "harness", IntervalMS: 1}, {Name: "runtime", IntervalMS: 1000}}
+		}, "collector configuration differs"},
 		{"different model digest in a runtime comparison", KindRuntime, func(s *resultSpec) {
 			s.modelDigest = strings.Repeat("9", 64)
 		}, "model digest differs"},
 		{"same runtime build", KindRuntime, func(s *resultSpec) {
 			s.runtimeBuild = "sha256:" + strings.Repeat("2", 64)
 		}, "same runtime build"},
+		{"missing build digest", KindRuntime, func(s *resultSpec) { s.runtimeBuild = "" }, "does not record its runtime build digest"},
+		{"missing model digest", KindRuntime, func(s *resultSpec) { s.modelDigest = "" }, "does not record a model digest"},
 		{"different environment", KindRuntime, func(s *resultSpec) {
 			s.environment = measurement.Environment{Driver: "580.1", GPUs: []measurement.GPU{{Model: "RTX 3090", Count: 1}}}
 		}, "environment differs"},
@@ -149,8 +180,12 @@ func TestCompareRejectsIncomparablePairs(t *testing.T) {
 		{"same model in a model comparison", KindModel, func(s *resultSpec) {
 			s.modelPath = "/models/a"
 			s.runtimeSpec = "r1"
+			s.runtimeBuild = "sha256:" + strings.Repeat("2", 64)
 			s.modelDigest = strings.Repeat("1", 64)
 		}, "needs two models"},
+		{"different runtime build in a model comparison", KindModel, func(s *resultSpec) {
+			s.runtimeBuild = "sha256:" + strings.Repeat("4", 64)
+		}, "runtime build differs"},
 		{"invalid side", KindRuntime, func(s *resultSpec) { s.invalid = []string{"collector gap"} }, "invalid"},
 	}
 	for _, tc := range tests {
@@ -165,6 +200,7 @@ func TestCompareRejectsIncomparablePairs(t *testing.T) {
 				b.modelPath = "/models/b"
 				b.modelDigest = strings.Repeat("2", 64)
 				b.runtimeSpec = "r1"
+				b.runtimeBuild = "sha256:" + strings.Repeat("2", 64)
 			}
 			if tc.mutate != nil {
 				tc.mutate(&b)
@@ -222,10 +258,51 @@ func TestDeltasReportOneSidedMetrics(t *testing.T) {
 	if len(out) != 2 {
 		t.Fatalf("deltas = %+v", out)
 	}
-	if out[0].Name != "a" || out[0].Status != StatusCompared || out[0].Abs != 2 {
+	if out[0].Name != "a" || out[0].Status != StatusCompared || out[0].AbsChange == nil || *out[0].AbsChange != 2 {
 		t.Fatalf("paired delta = %+v", out[0])
 	}
-	if out[1].Name != "b" || out[1].Status != StatusOnlyAfter {
+	if out[1].Name != "b" || out[1].Status != StatusOnlyAfter || out[1].After == nil || *out[1].After != 5 {
 		t.Fatalf("one-sided delta = %+v", out[1])
+	}
+	if out[1].Before != nil {
+		t.Fatal("an absent side must not report a value")
+	}
+}
+
+func TestZeroValuesSurviveTheEncoding(t *testing.T) {
+	// A measured zero is a fact; an absent side and an undefined relative
+	// change are different facts and must not be printed as zero.
+	before := []measurement.Metric{{Name: "a", Unit: "ms", Source: measurement.SourceHarness, Value: 0}}
+	after := []measurement.Metric{{Name: "a", Unit: "ms", Source: measurement.SourceHarness, Value: 10}}
+	out := deltas(before, after)
+	if len(out) != 1 {
+		t.Fatalf("deltas = %+v", out)
+	}
+	d := out[0]
+	if d.Before == nil || *d.Before != 0 {
+		t.Fatalf("a measured zero was dropped: %+v", d)
+	}
+	if d.AbsChange == nil || *d.AbsChange != 10 {
+		t.Fatalf("abs change = %+v", d.AbsChange)
+	}
+	if d.RelChange != nil {
+		t.Fatalf("relative change must be undefined when the baseline is zero, got %v", *d.RelChange)
+	}
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded MetricDelta
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Before == nil || *decoded.Before != 0 {
+		t.Fatalf("zero did not survive the round trip: %s", b)
+	}
+	if decoded.RelChange != nil {
+		t.Fatalf("undefined rel_change was encoded: %s", b)
+	}
+	if strings.Contains(string(b), "rel_change") {
+		t.Fatalf("rel_change is present in %s", b)
 	}
 }

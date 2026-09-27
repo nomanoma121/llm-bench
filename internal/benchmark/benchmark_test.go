@@ -583,6 +583,22 @@ func TestRunReportsTheResolvedInputs(t *testing.T) {
 	if in.Prompts["inline"] != measurement.Digest([]byte("hello")) {
 		t.Fatalf("prompt digest = %q", in.Prompts["inline"])
 	}
+	if in.WorkloadDigest == "" {
+		t.Fatal("the workload digest was not recorded")
+	}
+	// A different workload (here a different token budget) must produce a
+	// different digest: the comparison relies on it.
+	other, err := workloadDigest(func() job.Spec {
+		o := h.spec
+		o.Workload.Cases = []job.Case{{Name: "inline", PromptText: "hello", MaxTokens: 8, Repeats: 1}}
+		return o
+	}())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other == in.WorkloadDigest {
+		t.Fatal("the workload digest ignores the token budget")
+	}
 }
 
 func TestReadinessProbeIsBounded(t *testing.T) {

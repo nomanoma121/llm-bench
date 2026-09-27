@@ -25,6 +25,7 @@ func newBenchmarkCmd(g *globalFlags) *cobra.Command {
 		outputDir      string
 		asJSON         bool
 		requestTimeout time.Duration
+		sampleInterval time.Duration
 		push           bool
 		gitToken       string
 		branch         string
@@ -88,6 +89,7 @@ func newBenchmarkCmd(g *globalFlags) *cobra.Command {
 				ModelPath:      modelPath,
 				ModelDigest:    modelDigest,
 				RequestTimeout: requestTimeout,
+				SampleInterval: sampleInterval,
 				Logf:           progress,
 			}, adapter, benchmark.DefaultSeams())
 			if err != nil {
@@ -147,11 +149,30 @@ func newBenchmarkCmd(g *globalFlags) *cobra.Command {
 	cmd.Flags().StringVar(&outputDir, "out", "", "output directory (default: <root>/<output.dir>/<job-id>)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print a machine-readable summary")
 	cmd.Flags().DurationVar(&requestTimeout, "request-timeout", 0, "timeout for one measured request (default 10m)")
+	// The collector interval is an operator knob: it has to be shorter than a
+	// case for a peak to be visible, and the sandbox can set it through the
+	// environment without the controller having to change the command.
+	cmd.Flags().DurationVar(&sampleInterval, "sample-interval", envDuration("LLMBENCH_SAMPLE_INTERVAL"), "collector sampling interval while measuring (default 500ms)")
 	cmd.Flags().BoolVar(&push, "push", false, "commit the result and push a branch")
 	cmd.Flags().StringVar(&gitToken, "git-token", os.Getenv("LLMBENCH_GIT_TOKEN"), "GitHub App installation token for --push (default $LLMBENCH_GIT_TOKEN)")
 	cmd.Flags().StringVar(&branch, "branch", "", "branch to push (default llmbench/<job-id>)")
 	cmd.Flags().StringVar(&remote, "remote", "origin", "git remote to push to")
 	return cmd
+}
+
+// envDuration reads a duration from the environment, ignoring an unparsable
+// value so a typo cannot make the CLI silently sample at the wrong rate: the
+// flag default simply stays at the built-in value.
+func envDuration(name string) time.Duration {
+	value := os.Getenv(name)
+	if value == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0
+	}
+	return d
 }
 
 // defaultJobID is used when the controller does not name the job: the date and

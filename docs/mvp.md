@@ -15,7 +15,7 @@ benchmark なら Sandbox 内の llmbench を実行し、optimization なら外�
 計測と experiments/ の生成は Sandbox 内の llmbench が担当し、成果物は Git/PR に残す。
 ```
 
-2 本の経路を end-to-end で動かすことが MVP の完了条件。
+2 本の経路を end-to-end で動かすことが MVP の完了条件。**benchmark 経路は `cmd/llmbench/e2e_test.go` で固定してある**(クラスタが要る協働相手だけを差し替え、本物の CLI・harness・push・compare を通す)。**optimization 経路は未実装**: Agent の sandbox 操作(§8.1)はあるが、Controller は `kind: optimize` を明示的に拒否したまま。
 
 | 経路 | 流れ |
 |---|---|

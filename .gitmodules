@@ -1,0 +1,12 @@
+[submodule "runtimes/llama-cpp/upstream"]
+	path = runtimes/llama-cpp/upstream
+	url = https://github.com/ggml-org/llama.cpp.git
+	branch = master
+[submodule "runtimes/vllm/upstream"]
+	path = runtimes/vllm/upstream
+	url = https://github.com/vllm-project/vllm.git
+	branch = main
+[submodule "runtimes/freetoken/upstream"]
+	path = runtimes/freetoken/upstream
+	url = https://github.com/FlashML-org/FreeToken.git
+	branch = main

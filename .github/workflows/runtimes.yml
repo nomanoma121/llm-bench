@@ -1,0 +1,25 @@
+name: runtimes
+
+on:
+  schedule:
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    runs-on: [self-hosted, llm-bench-deploy]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: git submodule update --init --remote --depth 1
+      - uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.RUNTIMES_PR_TOKEN }}
+          branch: chore/runtime-upstreams
+          commit-message: "chore: update runtime upstreams"
+          title: "chore: update runtime upstreams"
+          body: Follows the upstream default branches of the runtimes under `runtimes/`. This PR is updated daily until it is merged.
+          delete-branch: true

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -112,6 +113,8 @@ func indexOf(issues []Issue, number int) int {
 // fakeLease is the in-memory counterpart of the GPU lease, with the same
 // mutual-exclusion rules.
 type fakeLease struct {
+	// The renewal loop runs in another goroutine, so every access is guarded.
+	mu         sync.Mutex
 	record     lease.Record
 	live       bool
 	annotates  []lease.Phase
@@ -122,6 +125,8 @@ type fakeLease struct {
 }
 
 func (l *fakeLease) Acquire(_ context.Context, holder string, record lease.Record, reentrant bool) (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.acquireErr != nil {
 		return false, l.acquireErr
 	}
@@ -139,6 +144,8 @@ func (l *fakeLease) Acquire(_ context.Context, holder string, record lease.Recor
 }
 
 func (l *fakeLease) Renew(_ context.Context, holder string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if !l.live || l.record.Holder != holder {
 		return fmt.Errorf("lease is held by %q, not %q", l.record.Holder, holder)
 	}
@@ -146,7 +153,16 @@ func (l *fakeLease) Renew(_ context.Context, holder string) error {
 	return nil
 }
 
+// renewCount reads the renewal counter safely.
+func (l *fakeLease) renewCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.renews
+}
+
 func (l *fakeLease) Annotate(_ context.Context, holder string, mutate func(*lease.Record)) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if !l.live || l.record.Holder != holder {
 		return fmt.Errorf("lease is held by %q, not %q", l.record.Holder, holder)
 	}
@@ -161,6 +177,8 @@ func (l *fakeLease) Annotate(_ context.Context, holder string, mutate func(*leas
 }
 
 func (l *fakeLease) Release(_ context.Context, holder string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if !l.live || l.record.Holder != holder {
 		return fmt.Errorf("refusing to release a lease held by %q", l.record.Holder)
 	}
@@ -174,6 +192,8 @@ func (l *fakeLease) Release(_ context.Context, holder string) error {
 }
 
 func (l *fakeLease) Get(context.Context) (lease.Record, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if !l.live {
 		// A released record keeps its annotations, as the real lease does.
 		return l.record, nil
@@ -943,9 +963,9 @@ func TestRenewalOutlivesAPendingCleanup(t *testing.T) {
 		t.Fatal("the lease was released while restoring")
 	}
 	// Let the keeper tick a few times, then make the restore converge.
-	startRenews := leaseStore.renews
+	startRenews := leaseStore.renewCount()
 	time.Sleep(40 * time.Millisecond)
-	if leaseStore.renews <= startRenews {
+	if leaseStore.renewCount() <= startRenews {
 		t.Fatalf("renewals during a pending cleanup = %d", leaseStore.renews)
 	}
 	pauser.restoreErr = nil

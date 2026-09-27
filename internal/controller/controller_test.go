@@ -976,3 +976,38 @@ func TestRenewalOutlivesAPendingCleanup(t *testing.T) {
 		t.Fatal("the job did not finish after the restore converged")
 	}
 }
+
+func TestRecoveryRestartsTheLeaseKeeper(t *testing.T) {
+	// After a restart the previous keeper is gone. Recovery has to start a new
+	// one, or a cleanup waiting for a human merge outlives the lease and
+	// another instance can take the GPU mid-restore.
+	c, _, leaseStore, pauser, _ := newController(t, func(c *Controller) {
+		c.Config.LeaseDuration = 30 * time.Minute
+		c.Config.LeaseRenewInterval = 5 * time.Millisecond
+	})
+	holder := c.holderFor("2026-09-27-issue42")
+	leaseStore.live = true
+	leaseStore.record = lease.Record{
+		Holder: holder, JobID: "2026-09-27-issue42", Issue: 42,
+		Phase: lease.PhaseRestoring, Outcome: lease.OutcomeSucceeded, PullRequest: 7,
+	}
+	pauser.restoreErr = ErrNotConverged
+	if err := c.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if leaseStore.released {
+		t.Fatal("the lease was released while restoring")
+	}
+	before := leaseStore.renewCount()
+	time.Sleep(40 * time.Millisecond)
+	if leaseStore.renewCount() <= before {
+		t.Fatalf("recovery did not keep renewing: %d -> %d", before, leaseStore.renewCount())
+	}
+	pauser.restoreErr = nil
+	if err := c.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !leaseStore.released {
+		t.Fatal("the recovered job did not finish")
+	}
+}

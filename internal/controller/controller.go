@@ -265,6 +265,7 @@ func (c *Controller) Recover(ctx context.Context) error {
 		// The lease was released: the job is finished and must not be
 		// resurrected. What may still be missing is the label mirror, if the
 		// controller died between writing the labels and releasing the lease.
+		c.stopLeaseKeeper()
 		if record.Outcome != "" && record.Issue > 0 {
 			if err := c.syncLabels(ctx, record.Issue, record.Outcome); err != nil {
 				return err
@@ -280,7 +281,12 @@ func (c *Controller) Recover(ctx context.Context) error {
 		if err := c.Lease.Renew(ctx, holder); err != nil {
 			return fmt.Errorf("renew our own lease before recovering: %w", err)
 		}
-		return c.reconcile(ctx, record)
+		// A restart leaves the keeper dead but the lease alive. It is started
+		// again here, because a cleanup may wait for a human merge for far
+		// longer than the lease duration, and the renewal has to continue until
+		// the lease is released.
+		c.keepLease(context.WithoutCancel(ctx), holder, func() {})
+		return c.reconcileLogged(ctx, record)
 	}
 	// Someone else's live lease is fenced: taking it over while its holder is
 	// still running could delete a sandbox that is being measured in. Only an
@@ -298,7 +304,20 @@ func (c *Controller) Recover(ctx context.Context) error {
 	}
 	record.Holder = holder
 	c.logf("taking over job %s left in phase %q by %q", record.JobID, record.Phase, previous)
-	return c.reconcile(ctx, record)
+	c.keepLease(context.WithoutCancel(ctx), holder, func() {})
+	return c.reconcileLogged(ctx, record)
+}
+
+// reconcileLogged runs reconcile and treats a not-converged cleanup as the
+// normal waiting state it is: the loop should not report an error for a
+// restore that is waiting for a human to merge the PR.
+func (c *Controller) reconcileLogged(ctx context.Context, record lease.Record) error {
+	err := c.reconcile(ctx, record)
+	if err != nil && errors.Is(err, ErrNotConverged) {
+		c.logf("job %s is waiting for restoration to converge: %v", record.JobID, err)
+		return nil
+	}
+	return err
 }
 
 // reconcile decides what an interrupted job needs, from its durable phase.

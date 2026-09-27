@@ -47,6 +47,10 @@ type Result struct {
 	// JobSpecDigest identifies the effective job spec (the accepted spec
 	// including the values the operator resolved).
 	JobSpecDigest string `json:"jobspec_digest"`
+	// JobSpecFileDigest is the digest of the frozen jobspec.yaml on disk. The
+	// semantic digest above survives reformatting; this one ties the result to
+	// the exact bytes that sit next to it.
+	JobSpecFileDigest string `json:"jobspec_file_digest"`
 	// SeriesDigest is the digest of the raw series file on disk.
 	SeriesDigest string `json:"series_digest"`
 	// TrustLevel records how the measurements were produced.
@@ -85,7 +89,11 @@ func (r Result) Validate() error {
 	default:
 		return fmt.Errorf("%w: kind %q", ValidationError, r.Kind)
 	}
-	for name, d := range map[string]string{"jobspec_digest": r.JobSpecDigest, "series_digest": r.SeriesDigest} {
+	for name, d := range map[string]string{
+		"jobspec_digest":      r.JobSpecDigest,
+		"jobspec_file_digest": r.JobSpecFileDigest,
+		"series_digest":       r.SeriesDigest,
+	} {
 		if !isHexDigest(d) {
 			return fmt.Errorf("%w: %s %q is not a sha256 digest", ValidationError, name, d)
 		}
@@ -209,8 +217,96 @@ func VerifyResult(path, want string) (Result, error) {
 	return r, nil
 }
 
+// VerifyResultDir verifies a whole job output directory: the result document
+// against its own recorded digest, and the sidecar files the result names
+// (jobspec.yaml and series.jsonl) against the digests the result records.
+//
+// Verifying result.json alone would be useless: a tampered series.jsonl would
+// leave the result "valid" even though the identity it claims no longer
+// describes what is on disk. Readers that care about identity must use this
+// function, not LoadResult.
+func VerifyResultDir(dir string) (Result, error) {
+	r, _, err := LoadResult(ResultPath(dir))
+	if err != nil {
+		return Result{}, err
+	}
+	for _, ref := range []struct {
+		file string
+		want string
+	}{
+		{JobSpecFileName, r.JobSpecFileDigest},
+		{SeriesFileName, r.SeriesDigest},
+	} {
+		got, err := FileDigest(filepath.Join(dir, ref.file))
+		if err != nil {
+			return Result{}, err
+		}
+		if got != ref.want {
+			return Result{}, fmt.Errorf("measurement: %s digest %s does not match the result's %s", ref.file, got, ref.want)
+		}
+	}
+	return r, nil
+}
+
+// FileDigest is the digest of a file's bytes. The result records sidecar
+// digests with it, and VerifyResultDir recomputes them with it.
+func FileDigest(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("measurement: digest %s: %w", path, err)
+	}
+	return Digest(b), nil
+}
+
 // ResultPath is the result document inside a job output directory.
 func ResultPath(dir string) string { return filepath.Join(dir, ResultFileName) }
+
+// WriteResultDir writes a job output directory in the order that keeps the
+// recorded digests true: the sidecar files first (fsynced), then the result
+// document. A crash between the two leaves a directory without a result, which
+// VerifyResultDir reports as missing rather than as valid.
+//
+// The caller passes the bytes it already wrote or is about to publish; the
+// digests are computed here so the writer and VerifyResultDir cannot disagree
+// about what is hashed.
+func WriteResultDir(dir string, jobspecYAML, seriesJSONL []byte, r Result) (Sealed, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return Sealed{}, fmt.Errorf("measurement: result dir: %w", err)
+	}
+	for name, b := range map[string][]byte{JobSpecFileName: jobspecYAML, SeriesFileName: seriesJSONL} {
+		if err := writeFileSync(filepath.Join(dir, name), b); err != nil {
+			return Sealed{}, err
+		}
+	}
+	r.JobSpecFileDigest = Digest(jobspecYAML)
+	r.SeriesDigest = Digest(seriesJSONL)
+	final, err := r.Finalize()
+	if err != nil {
+		return Sealed{}, err
+	}
+	return SealResult(dir, final)
+}
+
+// writeFileSync writes a sidecar file and makes the bytes durable before the
+// result references them.
+func writeFileSync(path string, b []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("measurement: write %s: %w", path, err)
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return fmt.Errorf("measurement: write %s: %w", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("measurement: write %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("measurement: write %s: %w", path, err)
+	}
+	return syncDir(filepath.Dir(path))
+}
 
 // isHexDigest accepts a bare lowercase sha256.
 func isHexDigest(s string) bool {

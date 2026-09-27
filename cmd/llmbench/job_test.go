@@ -8,6 +8,14 @@ import (
 	"github.com/nomanoma121/llm-bench/internal/runtime"
 )
 
+// modelAliases are the model-selection flags upstream exposes for each engine.
+// They are the flags the review of PR #22 found missing from the reserved
+// lists, so the test checks them by name rather than only spot-checking --host.
+var modelAliases = map[string][]string{
+	"llamacpp":  {"-m", "--model", "-mu", "--model-url", "-dr", "--docker-repo", "-hf", "-hfr", "--hf-repo", "-hff", "--hf-file", "--lora", "--mmproj"},
+	"freetoken": {"--model", "--model-path", "--model-source", "--dummy-weight", "--gpu"},
+}
+
 // TestRuntimeReservedArgsFeedJobValidation pins the wiring between the runtime
 // adapters and job validation: the adapter owns the flags that decide what is
 // measured, and the CLI and controller pass them to the validator as
@@ -44,5 +52,13 @@ func TestRuntimeReservedArgsFeedJobValidation(t *testing.T) {
 		if err := spec.ValidateConstraints(job.Constraints{ReservedArgs: reserved}); err != nil {
 			t.Fatalf("%s: tuning args were rejected: %v", engine, err)
 		}
+		// Every way of pointing the runtime at other weights must be closed.
+		for _, alias := range modelAliases[engine] {
+			spec.Runtime.Args = []string{alias, "/somewhere/else"}
+			if err := spec.ValidateConstraints(job.Constraints{ReservedArgs: reserved}); err == nil {
+				t.Errorf("%s: %s was accepted", engine, alias)
+			}
+		}
+		spec.Runtime.Args = nil
 	}
 }

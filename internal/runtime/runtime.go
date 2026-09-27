@@ -79,11 +79,15 @@ type Completion struct {
 	CompletionTokens int
 	// CachedTokens is the prefix-cache hit count when the runtime reports it.
 	CachedTokens int
-	// TTFT is the time from sending the request to the first token.
+	// TTFT is the time from sending the request to the first produced token,
+	// including a reasoning token when the model emits one.
 	TTFT time.Duration
 	// Total is the time from sending the request to the last token.
 	Total time.Duration
-	// Steps are the per-token arrival times relative to the request start.
+	// Steps are the arrival times of the streamed chunks relative to the
+	// request start. A chunk is not guaranteed to be one token, so steps
+	// describe the shape of the decode series and never a token count.
+	// CompletionTokens is 0 when the runtime did not report usage.
 	Steps []Step
 }
 

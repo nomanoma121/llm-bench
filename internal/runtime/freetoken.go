@@ -38,9 +38,17 @@ func (freeToken) Name() string { return "freetoken" }
 // ReservedArgs are the FreeToken serve flags that decide what is measured.
 // Everything else (--moe-strategy, --moe-cache-size, --attention-backend,
 // --memory-ratio, ...) is tuning and belongs to the job spec.
+// ReservedArgs are the FreeToken serve flags that decide what is measured:
+// which weights are loaded, on which GPU, and where the API listens. Each of
+// them changes the target rather than its configuration, so a job may not set
+// them (docs/mvp.md §3.4). Everything else (--moe-strategy, --moe-cache-size,
+// --attention-backend, --memory-ratio, ...) is tuning and belongs to the job
+// spec: exploring it is the point of the optimization loop.
 func (freeToken) ReservedArgs() []string {
 	return []string{
-		"--model", "--model-path",
+		"--model", "--model-path", "--model-source",
+		"--dummy-weight",
+		"--gpu",
 		"--host", "--port",
 		"--served-model-name",
 	}
@@ -84,11 +92,16 @@ func (a freeToken) Ready(ctx context.Context) error {
 	}
 }
 
-// openAIDelta is one streaming chunk of the OpenAI chat protocol.
+// openAIDelta is one streaming chunk of the OpenAI chat protocol. FreeToken
+// streams reasoning and visible output as separate deltas
+// (`reasoning_content` and `content`), so both have to be observed: a model
+// that thinks before answering would otherwise report its first-token latency
+// as the end of the reasoning phase.
 type openAIDelta struct {
 	Choices []struct {
 		Delta struct {
-			Content string `json:"content"`
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
@@ -135,14 +148,19 @@ func (a freeToken) Complete(ctx context.Context, req Request) (Completion, error
 			return fmt.Errorf("runtime: freetoken stream: %w", err)
 		}
 		for _, choice := range chunk.Choices {
-			if choice.Delta.Content == "" {
+			d := choice.Delta
+			if d.Content == "" && d.ReasoningContent == "" {
 				continue
 			}
 			if first == 0 {
+				// The first produced token counts as output, whether it is a
+				// reasoning token or visible text.
 				first = time.Since(start)
 			}
+			// One step per stream chunk. A chunk is not guaranteed to be one
+			// token, so steps drive the series shape only.
 			out.Steps = append(out.Steps, Step{Index: len(out.Steps), At: time.Since(start)})
-			sb.WriteString(choice.Delta.Content)
+			sb.WriteString(d.Content)
 		}
 		if chunk.Usage != nil {
 			out.PromptTokens = chunk.Usage.PromptTokens
@@ -159,9 +177,11 @@ func (a freeToken) Complete(ctx context.Context, req Request) (Completion, error
 	out.Content = sb.String()
 	out.TTFT = first
 	out.Total = time.Since(start)
-	if out.CompletionTokens == 0 {
-		out.CompletionTokens = len(out.Steps)
-	}
+	// CompletionTokens comes from the usage block only: it counts reasoning
+	// and visible tokens, which is what the decode rate has to be derived
+	// from. Counting stream chunks would overstate the rate for a reasoning
+	// model, and a missing usage block stays 0 so the caller can mark the
+	// measurement invalid.
 	return out, nil
 }
 

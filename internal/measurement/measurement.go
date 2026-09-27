@@ -269,8 +269,13 @@ func (m Metric) validate() error {
 	if err := checkIdentity("name", m.Name); err != nil {
 		return err
 	}
-	if err := checkIdentity("unit", m.Unit); err != nil {
-		return err
+	// An empty unit is allowed: a runtime gauge such as requests_processing
+	// or kv_cache_used_cells is dimensionless, and inventing a unit for it
+	// would be worse than recording none (docs/mvp.md §4.2).
+	if m.Unit != "" {
+		if err := checkIdentity("unit", m.Unit); err != nil {
+			return err
+		}
 	}
 	if !m.Source.valid() {
 		return fmt.Errorf("source %q is not a known source", m.Source)

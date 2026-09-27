@@ -391,6 +391,12 @@ func (s *cliSandbox) Delete(context.Context, string) (bool, error) {
 	return true, nil
 }
 
+// ReadAgentResult is not used by a benchmark job; the optimizer path has its
+// own tests.
+func (s *cliSandbox) ReadAgentResult(context.Context, string) (controller.AgentResult, bool, error) {
+	return controller.AgentResult{}, false, nil
+}
+
 func (s *cliSandbox) lastArgv() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

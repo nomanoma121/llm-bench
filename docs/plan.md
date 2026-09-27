@@ -74,7 +74,7 @@ Explicitly not doing: attempts inside a run, sharing a SandboxClaim across a win
 - [x] Helm chart: controller Deployment / RBAC / GitHub App Secret / gpuLease / gitops / sandbox / models / runtimeImages / dsh option。
 - [x] Agent / DSH 連携: 既存 DSH deployment を参照し、Sandbox の bind / rebind と `llmbench sandbox job exec|push|pull|ls`(port-forward transport)・`llmbench job done` を提供する。conversation も session も llm-bench は持たない。
 - [x] **benchmark 経路 + compare** を in-process end-to-end テスト(`cmd/llmbench/e2e_test.go`)で固定した: Issue → Controller → pause → sandbox → **本物の `llmbench benchmark --push`** → 成果物の push → PR → ラベル/lease 解放、および2つの結果の `compare`(異なる build digest で comparable、latency 差が delta に出る)。差し替えているのはクラスタが要る協働相手(GitHub gateway / GPU Lease / sandbox transport)だけで、runtime プロセスは stub、runtime API は httptest、nvidia-smi は stub スクリプト。
-- [ ] **optimization 経路(Agent / DSH)**: Controller は `kind: optimize` を明示的に拒否したまま。Agent の sandbox 操作(§8.1)と `job done` は実装済みで、Controller 側の受理・完了待ち・PR 作成が未実装。
+- [x] **optimization 経路(Agent / DSH)**: `kind: optimize` を受理し、常駐 harness に **ACP で 1 セッション作成 → task 投入 → 干渉せず待機 → sandbox 内の完了記録 → PR** を行う(`internal/acp` / `internal/agent` / `internal/kube` の `pods/exec`)。権限要求は全部許可、モデルは DSH 側設定。実クラスタでの harness との接続確認は下の e2e に含まれる。
 - [ ] **実クラスタでの e2e**: GitHub App / Issue poll / PR 作成の実 API、Kubernetes Lease と RBAC、SandboxClaim の遷移と port-forward、GPU runtime と nvidia-smi、GitOps の pause/restore(PR マージ・Argo 同期)、DSH 連携。このリポジトリからは検証できないのでオペレータの作業として残る。
 - [ ] 実データで `result.json` / `compare` の形式を調整し、凍結した visual 経路(httpapi / serve / preview / adopt / sitebuild / review / discord / pages workflow)を削除する。**削除は実クラスタで MVP が end to end に動いた後**(AGENTS.md)。
 

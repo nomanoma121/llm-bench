@@ -59,6 +59,19 @@ images:
 output_roots: [experiments]
 max_rounds: 20
 
+# The harness that runs optimization jobs. It is a long-lived Deployment of
+# its own (DeepSeek Harness serves ACP over stdio with `dsh --profile acp`); the
+# controller opens one session per job on it through pods/exec and never starts
+# or steers it afterwards.
+agent:
+  namespace: dsh
+  pod_selector: app.kubernetes.io/name=dsh
+  container: ""
+  exec: [dsh, "--profile", "acp"]
+  # Harness-side working directory of a session. The GPU sandbox is a different
+  # Pod and is reached through the llmbench CLI.
+  cwd: /workspace
+
 # The controller authenticates as a GitHub App installation. The private key
 # stays in the controller and is never handed to a sandbox: only short-lived
 # installation tokens are, and the default branch is protected against direct

@@ -176,6 +176,8 @@ llmbench sandbox job pull <job-id> /workspace/out.txt ./out.txt
 llmbench job done --job <job-id> --status complete --branch llmbench/<job-id> --commit <sha>
 ```
 
+optimization は常駐の harness(DeepSeek Harness)に任せる。`operator.yaml` の `agent` を設定すると、Controller が job ごとに ACP でセッションを作り、task を1回渡して以後は干渉しない(権限要求には自動応答)。完了は sandbox 内の記録で判定し、PR を作る。
+
 一時停止と復元は GitOps の PR を通す。pause の PR がマージされるまで Controller は
 待ち、restore の PR がマージされて Argo が同期し workload が戻るまで **GPU Lease を
 手放さない**(Lease を離すのは復元が完了してから)。

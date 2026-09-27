@@ -33,8 +33,8 @@ benchmark なら Sandbox 内の llmbench を実行し、optimization なら外�
 | 既存 GPU workload の扱い | GitOps manifest の pause / restore(マージ待ち)。既存実装を流用 |
 | ジョブ状態の持ち方 | **メモリ + GPU Lease の annotation(永続 phase)+ Issue ラベル(人間向けのミラー)**。ConfigMap store と leader election は**使わない** |
 | HTTP API | MVP の経路に置かない。既存 `serve` は freeze(削除は後続 PR) |
-| Agent / DSH | **既存デプロイを使う**。llm-bench は Sandbox を貸し出し、bind / rebind とライフサイクルだけを持つ。Helm の option で参照 |
-| Agent → Sandbox | `llmbench sandbox job exec|push|pull|ls <job id>`(Agent Sandbox SDK の port-forward transport)。ssh も対話 shell も実装しない(exec は shell 無しの argv) |
+| Agent / DSH | **operator が常駐させる独立 Deployment**(llm-bench は作らない)。Controller は **ACP(`pods/exec` 経由)で job ごとに 1 セッション作成**して task を渡し、以後は干渉しない。完了は sandbox 内の記録 |
+| Agent → Sandbox | `llmbench sandbox job exec|push|pull|ls <job id>`(Agent Sandbox SDK の port-forward transport)。ssh も対話 shell も実装しない(exec は shell 無しの argv)。job id は Controller が task で渡す |
 | GitHub 認証 | **GitHub App**(private key は Controller のみ)。Sandbox には短命 installation token のみ渡す |
 | 計測の実行者 | **Sandbox 内の `llmbench`**。runtime 起動・workload・metrics・`experiments/` 書き出し・commit/push まで |
 | 結果の形式 | 本仕様 §4.3 の案を採用。**実データを見てから調整する**(互換性は保証しない) |
@@ -297,19 +297,52 @@ poll(open な `llmbench:benchmark|optimize` Issue で、状態ラベルが無い
 
 ## 8. Agent / DSH(optimize)
 
-- llm-bench は **Agent Pod を作らない**。既存の DSH deployment を Helm の option で参照する(session 用 PVC は DSH 側の共通 1 本)。
-- Controller の責務は「Sandbox を用意し、Agent に bind する」ことと「Sandbox が置き換わったら rebind する」ことだけ。
+Agent は **DSH(DeepSeek Harness)** が担う。DSH は **operator が常駐させる独立した Deployment** であり、llm-bench はそれを作らないし、サブプロセスでも、ワンショット実行でもない。
 
-### 8.1 bind / rebind の契約(HTTP API を作らない代わり)
+### 8.1 セッションの作成(Controller は作るだけ、以後は干渉しない)
 
-- **Sandbox の解決**: 各 SandboxClaim は `llmbench.io/job-id=<job id>` と `app.kubernetes.io/managed-by=llmbench` を持つ。discovery は**両方**を selector に使い、取得後も両ラベルを検証する(job id は予測可能なので、job-id ラベルだけをコピーした管理外の claim を誤って使わない)。`llmbench sandbox job exec|push|pull|ls <job id>` は、Kubernetes API から**その label の current claim を毎回 discovery** して port-forward transport を張る(コマンド名は §5 の CLI 表を参照)。
-  - Agent Pod の ServiceAccount に必要な権限は、同じネームスペースの `sandboxclaims` の **`get` / `list` / `watch`**、pod の `get` / `list` と port-forward だけ(**claim への書き込み権限は与えない**。Kubernetes RBAC は update を annotation に限定できないため、書き込みを許すと Agent が sandbox spec を書き換えられてしまう)。Helm は `mvp.agentServiceAccount.{namespace,name}` にその Role を bind する(lease と manifest には触れない)。
-  - **rebind は discovery の結果が変わること**そのもの。Sandbox が置き換わったら、次に `llmbench sandbox ...` を呼んだ時点で新しい claim が見つかる。Controller から Agent Pod へ接続情報を push する必要はない。
-  - 同じ `job-id` の claim が 2 つ見つかった場合は**エラー**(replacement の途中で古い claim が残っている状態)。
-- **Agent の完了検知**: Agent は最後に `llmbench job done --job <job id> --status complete|failed [--branch B --commit C]` を実行し、**自分の sandbox 内のファイル**(`/workspace/.llmbench-agent-result.json`)に記録する。Controller は sandbox からそれを読んで PR 作成に進む。**読み取り側も同じ契約を検証する**(既知の status、`complete` なら branch と commit)— ファイルは Agent の sandbox 内にある以上、CLI の検証だけを信頼境界にはしない。**ファイルが無い = 未完了**で、それ以外の読み取り失敗(port-forward 断・sandboxd 死)は**エラー**(インフラ障害を Agent 待ちと誤認しない)。読み取りは **64 KiB 上限**(Agent が書けるファイルは untrusted input。上限超過は「未完了」ではなくエラー)。annotation ではなくファイルにする理由は 2 つ: Agent に claim の書き込み権限を与えずに済むこと、記録が成果物と同じ場所に残ること。
-  - push 前に落ちた場合は annotation が無いまま claim が消える/時間切れになる → Controller は attempt を破棄して失敗として扱う(optimize の途中結果を PR にしない)。
-  - Agent Pod の権限は annotation の patch までで、Lease や GitOps には触れない。
-- Agent は `llmbench sandbox exec|cp|shell` で Sandbox 内の workspace を編集・実行する(port-forward transport)。ssh は実装しない。
+```
+optimize job:
+  pause → SandboxClaim 作成(label: llmbench.io/job-id=<job>)
+  → Controller が harness に ACP で **1 セッション作成**し、task を1回だけ渡す
+  → 以後 Controller は干渉しない(harness が session を所有する)
+       ・session/update をログに流す
+       ・session/request_permission に**ポリシーで自動応答**(既定は全部許可)
+  → 完了 = **sandbox 内の完了ファイル**(Agent が `llmbench job done` で書く)。
+       ACP の prompt settlement は補助情報
+  → session/close → PR 作成 → SandboxClaim 削除 → restore → lease release
+```
+
+- **transport は ACP のみ**。DSH に REST API は無く、`dsh --profile acp` が **stdio 上の ACP v1** を喋る。Controller は harness Pod に **`pods/exec`** で接続してその stream を使う(新しい Pod は作らない)。
+- 使うメソッド: `initialize` / `session/new`(cwd は harness Pod 側の作業ディレクトリ)/ `session/prompt` / `session/close`、必要なら `session/list` + `session/resume`。`session/update` を購読し、`session/request_permission` に答える(`internal/acp`)。
+- task には **job id / model / runtime image / workload / budget / sandbox の触り方(`llmbench sandbox job exec|push|pull <job-id>`)/ 完了記録の書き方(`llmbench job done`)** を含める。Agent は job id を教えられるので discovery に頼らない。
+- **セッションが作成された後の所有権は DSH 側**。Controller がやるのは、ACP の接続を保持して更新と権限要求に応えること、そして終了を待つことだけ。ACP は接続を切ると harness が agent を drain するため、接続はセッションの寿命と一致させる。
+- **再起動時**: 完了ファイルがあれば PR 作成まで進める。無ければこの job は失敗として記録する(**セッションを再開して task を送り直すことはしない** — 同じ Run を再実行しない規律と同じ)。
+
+### 8.2 Agent の sandbox アクセス
+
+- 各 SandboxClaim は `llmbench.io/job-id=<job id>` と `app.kubernetes.io/managed-by=llmbench` を持つ。`llmbench sandbox job exec|push|pull|ls <job id>` は、Kubernetes API から**その label の current claim を毎回 discovery** して port-forward transport を張る。**rebind は discovery の結果が変わること**そのもの。Controller から Agent へ接続情報を push しない。
+- **同じ job-id の claim が 2 つ見つかった場合はエラー**(replacement の途中)。
+- Agent の ServiceAccount には、そのネームスペースの `sandboxclaims` の `get` / `list` / `watch`、pod の `get` / `list`、port-forward だけを与える(**claim への書き込み権限は与えない**。RBAC は update を annotation に限定できないため)。Helm の `mvp.agentServiceAccount.{namespace,name}` で bind する。
+- Controller 側は harness Pod の `pods/exec` を必要とする(Helm は `mvp.agent.*` が設定されたときだけその Role を作る)。
+
+### 8.3 完了の記録
+
+- Agent は最後に `llmbench job done --job <job id> --status complete|failed [--branch B --commit C]` を実行し、**sandbox 内のファイル**(`/workspace/.llmbench-agent-result.json`)に記録する。
+- Controller は sandbox からそれを読み、**同じ契約を検証する**(既知の status、`complete` なら branch と commit)。読み取りは **64 KiB 上限**、**ファイルが無い = 未完了**、それ以外の失敗(port-forward 断・sandboxd 死)はエラー。
+- claim の annotation ではなくファイルにする理由: Agent に claim の書き込み権限を与えずに済み、記録が成果物と同じ場所に残る。
+
+### 8.4 設定(operator 所有)
+
+| values | 内容 |
+|---|---|
+| `agent.namespace` / `agent.pod_selector` | 常駐する harness Deployment の Pod を選ぶ |
+| `agent.container` | Pod に複数コンテナがあるときだけ |
+| `agent.exec` | ACP を提供する argv(既定 `["dsh","--profile","acp"]`)|
+| `agent.cwd` | `session/new` の cwd(harness Pod の fs 上の絶対パス。既定 `/workspace`)|
+
+- **Agent のモデルは DSH 側の設定**(profile)で決まる。llm-bench は指定しない(変えたいときは harness 側を変える)。
+- 権限ポリシーは**全部許可**。安全性はサンドボックス隔離と RBAC で担保する(lease・manifest には触れない)。
 - conversation / agent loop / tool history / session resume は **DSH が持つ**。llm-bench は conversation store を作らない。
 - 途中の失敗 attempt は DSH の session history に残す。llm-bench は optimization log を保存しない。
 - Agent の採否判断は Agent 自身。`llmbench compare` は事実のみを返す。甘い採用は最終的に人間が PR レビューで否決する。
@@ -328,7 +361,8 @@ poll(open な `llmbench:benchmark|optimize` Issue で、状態ラベルが無い
 | `gitops` | 対象 repo、manifest パス、pause 値、restore 値、待ち時間 |
 | `sandbox` | SandboxTemplate / WarmPool 名、image allowlist、GPU リソース要求 |
 | `models` | モデル id → 置き場 のマッピング(operator 権限) |
-| `dsh` | enabled / existing deployment 名 / session PVC 名 / **Agent の ServiceAccount(namespace + name)**。Agent Pod の manifest 自体は DSH 側 |
+| `agent` | namespace / pod_selector / container / exec(ACP の argv)/ cwd |
+| `dsh` | **Agent の ServiceAccount(namespace + name)**(sandbox アクセス用の Role を bind)。harness 本体の manifest は operator 側 |
 | `runtimeImages` | allowlist |
 
 ---

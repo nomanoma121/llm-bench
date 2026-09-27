@@ -36,6 +36,9 @@ type MVP struct {
 	OutputRoots []string `yaml:"output_roots,omitempty"`
 	// MaxRounds bounds an optimization job's budget.
 	MaxRounds int `yaml:"max_rounds,omitempty"`
+	// Agent connects optimization jobs to the harness. It is required only for
+	// `kind: optimize`; a benchmark never uses it.
+	Agent *MVPAgent `yaml:"agent,omitempty"`
 	// GitHubApp authenticates the controller.
 	GitHubApp MVPGitHubApp `yaml:"github_app"`
 	// PollInterval is how often the controller looks for a new request.
@@ -78,6 +81,24 @@ type MVPModel struct {
 	// Digest pins the weights. Without it a result cannot prove which weights
 	// it measured, so the benchmark marks the run invalid.
 	Digest string `yaml:"digest,omitempty"`
+}
+
+// MVPAgent points at the harness Deployment. The harness is a long-lived
+// process of its own: the controller only opens one ACP session per job on it
+// (docs/mvp.md §8).
+type MVPAgent struct {
+	// Namespace holds the harness Pod.
+	Namespace string `yaml:"namespace"`
+	// PodSelector finds the running harness Pod, for example
+	// "app.kubernetes.io/name=dsh".
+	PodSelector string `yaml:"pod_selector"`
+	// Container is optional when the Pod has one container.
+	Container string `yaml:"container,omitempty"`
+	// Exec is the argv that serves ACP inside the Pod.
+	Exec []string `yaml:"exec,omitempty"`
+	// CWD is the harness-side working directory of a session. The GPU sandbox
+	// is a different Pod, reached through the llmbench CLI.
+	CWD string `yaml:"cwd,omitempty"`
 }
 
 // MVPGitHubApp authenticates as a GitHub App installation.
@@ -205,6 +226,14 @@ func (m MVP) Validate() error {
 			add("models[%d] duplicates id %q", i, model.ID)
 		}
 		seen[model.ID] = true
+	}
+	if m.Agent != nil {
+		if m.Agent.Namespace == "" || m.Agent.PodSelector == "" {
+			add("agent.namespace and agent.pod_selector are required")
+		}
+		if len(m.Agent.Exec) == 0 {
+			add("agent.exec is required: the argv that serves ACP in the harness Pod")
+		}
 	}
 	if len(m.Engines) == 0 {
 		add("engines must not be empty: a job may only choose from the operator list")

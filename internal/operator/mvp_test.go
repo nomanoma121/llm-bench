@@ -11,7 +11,11 @@ func validMVP() MVP {
 	m := MVP{
 		Repository:    "owner/repo",
 		DefaultBranch: "main",
-		Lease:         Lease{Namespace: "llmb", Name: "gpu"},
+		Labels: Labels{
+			Benchmark: "llmbench:benchmark", Optimize: "llmbench:optimize",
+			Claimed: "llmbench:claimed", Done: "llmbench:done", Failed: "llmbench:failed",
+		},
+		Lease: Lease{Namespace: "llmb", Name: "gpu"},
 		Sandbox: MVPSandbox{
 			Namespace: "llmb", WarmPool: "gpu-pool",
 			LLMBench: []string{"llmbench"},
@@ -115,5 +119,44 @@ func TestGitOpsPlanBindsBranchesToTheJob(t *testing.T) {
 	}
 	if plan.ActiveValue != "1" || plan.PausedValue != "0" {
 		t.Fatalf("values = %+v", plan)
+	}
+}
+
+func TestDuplicateStateLabelsAreRejected(t *testing.T) {
+	// If done and claimed were the same label, finishing a job would remove
+	// the label it had just added, leaving the Issue pending and the same
+	// request runnable again.
+	cases := []struct {
+		name   string
+		mutate func(*MVP)
+	}{
+		{"done equals claimed", func(m *MVP) { m.Labels.Done = m.Labels.Claimed }},
+		{"failed equals claimed", func(m *MVP) { m.Labels.Failed = m.Labels.Claimed }},
+		{"done equals failed", func(m *MVP) { m.Labels.Done = m.Labels.Failed }},
+		{"benchmark equals claimed", func(m *MVP) { m.Labels.Benchmark = m.Labels.Claimed }},
+		{"optimize equals done", func(m *MVP) { m.Labels.Optimize = m.Labels.Done }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := validMVP()
+			tc.mutate(&m)
+			m.applyDefaults()
+			err := m.Validate()
+			if err == nil {
+				t.Fatal("duplicate labels were accepted")
+			}
+			if !strings.Contains(err.Error(), "distinct") {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func TestLeaseDurationMustBeLongEnoughToRenew(t *testing.T) {
+	m := validMVP()
+	m.Lease.DurationSeconds = 30
+	m.applyDefaults()
+	if err := m.Validate(); err == nil || !strings.Contains(err.Error(), "duration_seconds") {
+		t.Fatalf("error = %v", err)
 	}
 }

@@ -152,6 +152,27 @@ func (m MVP) Validate() error {
 	if m.DefaultBranch == "" {
 		add("default_branch is required")
 	}
+	// The labels have to be distinct: if the terminal label equalled the claim
+	// label, finishing a job would remove the label it just added, leaving the
+	// Issue pending and the same request runnable a second time.
+	labelSeen := map[string]string{}
+	for _, l := range []struct{ field, value string }{
+		{"labels.benchmark", m.Labels.Benchmark},
+		{"labels.optimize", m.Labels.Optimize},
+		{"labels.claimed", m.Labels.Claimed},
+		{"labels.done", m.Labels.Done},
+		{"labels.failed", m.Labels.Failed},
+	} {
+		if l.value == "" {
+			add("%s is required", l.field)
+			continue
+		}
+		if other, ok := labelSeen[l.value]; ok {
+			add("%s and %s are both %q; the labels must be distinct", other, l.field, l.value)
+			continue
+		}
+		labelSeen[l.value] = l.field
+	}
 	if m.Lease.Namespace == "" || m.Lease.Name == "" {
 		add("lease.namespace and lease.name are required")
 	}

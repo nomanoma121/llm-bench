@@ -116,6 +116,7 @@ type fakeLease struct {
 	live       bool
 	annotates  []lease.Phase
 	released   bool
+	renews     int
 	outcomeAt  lease.Phase
 	acquireErr error
 }
@@ -137,7 +138,13 @@ func (l *fakeLease) Acquire(_ context.Context, holder string, record lease.Recor
 	return true, nil
 }
 
-func (l *fakeLease) Renew(_ context.Context, holder string) error { return nil }
+func (l *fakeLease) Renew(_ context.Context, holder string) error {
+	if !l.live || l.record.Holder != holder {
+		return fmt.Errorf("lease is held by %q, not %q", l.record.Holder, holder)
+	}
+	l.renews++
+	return nil
+}
 
 func (l *fakeLease) Annotate(_ context.Context, holder string, mutate func(*lease.Record)) error {
 	if !l.live || l.record.Holder != holder {
@@ -918,5 +925,34 @@ func TestControllerRefusesASummaryWithoutABranch(t *testing.T) {
 	}
 	if !hasLabel(gateway.labels[42], "llmbench:failed") {
 		t.Fatalf("labels = %v", gateway.labels[42])
+	}
+}
+
+func TestRenewalOutlivesAPendingCleanup(t *testing.T) {
+	// A cleanup that waits for a human merge lasts longer than a recovery
+	// interval, so the lease keeper has to keep renewing across passes.
+	c, _, leaseStore, pauser, _ := newController(t, func(c *Controller) {
+		c.Config.LeaseDuration = 30 * time.Minute
+		c.Config.LeaseRenewInterval = 5 * time.Millisecond
+	})
+	pauser.restoreErr = ErrNotConverged
+	if _, err := c.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if leaseStore.released {
+		t.Fatal("the lease was released while restoring")
+	}
+	// Let the keeper tick a few times, then make the restore converge.
+	startRenews := leaseStore.renews
+	time.Sleep(40 * time.Millisecond)
+	if leaseStore.renews <= startRenews {
+		t.Fatalf("renewals during a pending cleanup = %d", leaseStore.renews)
+	}
+	pauser.restoreErr = nil
+	if err := c.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !leaseStore.released {
+		t.Fatal("the job did not finish after the restore converged")
 	}
 }

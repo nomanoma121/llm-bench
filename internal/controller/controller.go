@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -149,6 +150,13 @@ type Controller struct {
 	Sandbox Sandbox
 	Now     func() time.Time
 	Logf    func(format string, args ...any)
+
+	// keeper is the lease renewal loop of the job we currently hold. It lives
+	// across recovery passes: a cleanup waiting for a human merge can last
+	// hours, and a lease that expires while we still hold the work would let
+	// another instance take the GPU away mid-restore.
+	mu     sync.Mutex
+	keeper context.CancelFunc
 }
 
 func (c *Controller) now() time.Time {
@@ -266,7 +274,12 @@ func (c *Controller) Recover(ctx context.Context) error {
 	}
 	holder := c.holderFor(record.JobID)
 	if record.Holder == holder {
-		// Ours: an interrupted job of this very process.
+		// Ours: an interrupted job of this very process. Ownership is extended
+		// first, because a cleanup can wait a long time for a human merge and
+		// the lease must not expire while we still own the work.
+		if err := c.Lease.Renew(ctx, holder); err != nil {
+			return fmt.Errorf("renew our own lease before recovering: %w", err)
+		}
 		return c.reconcile(ctx, record)
 	}
 	// Someone else's live lease is fenced: taking it over while its holder is
@@ -378,8 +391,12 @@ func (c *Controller) run(ctx context.Context, issue Issue) (bool, error) {
 
 	jobCtx, cancelJob := context.WithCancel(ctx)
 	defer cancelJob()
-	stopRenew := c.startRenewal(jobCtx, holder, cancelJob)
-	defer stopRenew()
+	// The renewal loop outlives this call: a cleanup that waits for a merge
+	// keeps holding the GPU, so it must keep owning the lease. It is therefore
+	// not tied to the job context (which ends with this call) but to the
+	// lease: it stops when the lease is released, or cancels the job when the
+	// lease is lost.
+	c.keepLease(context.WithoutCancel(ctx), holder, cancelJob)
 
 	if err := c.execute(jobCtx, request, &record); err != nil {
 		return true, c.abort(ctx, record, "the job did not complete", err)
@@ -609,8 +626,13 @@ func (c *Controller) finish(ctx context.Context, record lease.Record) error {
 	// The renewal keeps running while cleanup waits for a human merge: if the
 	// lease expired here, another controller could take the GPU away from a job
 	// that is still restoring.
-	stopRenew := c.startRenewal(cleanup, holder, func() {})
-	defer stopRenew()
+	// A recovery pass may be the first thing that happens after a restart, so
+	// ownership is re-checked (and extended) before any external effect.
+	if current.Holder == holder {
+		if err := c.Lease.Renew(cleanup, holder); err != nil {
+			return fmt.Errorf("renew the gpu lease before cleanup: %w", err)
+		}
+	}
 
 	// The outcome is durable before cleanup starts, so the labels mirror the
 	// job's result rather than whichever cleanup step ran last.
@@ -645,7 +667,50 @@ func (c *Controller) finish(ctx context.Context, record lease.Record) error {
 	if err := c.Lease.Release(cleanup, holder); err != nil {
 		return fmt.Errorf("release the gpu lease: %w", err)
 	}
+	c.stopLeaseKeeper()
 	return nil
+}
+
+// keepLease starts the renewal loop for a job we hold, replacing any previous
+// one. The loop stops when the lease is released or when it is lost (which
+// also cancels the job, so a fenced process stops measuring).
+func (c *Controller) keepLease(ctx context.Context, holder string, onLost func()) {
+	renewCtx, cancel := context.WithCancel(ctx)
+	c.mu.Lock()
+	if c.keeper != nil {
+		c.keeper()
+	}
+	c.keeper = cancel
+	c.mu.Unlock()
+	go c.renewLoop(renewCtx, holder, onLost)
+}
+
+// stopLeaseKeeper stops renewal after the lease has been released.
+func (c *Controller) stopLeaseKeeper() {
+	c.mu.Lock()
+	if c.keeper != nil {
+		c.keeper()
+		c.keeper = nil
+	}
+	c.mu.Unlock()
+}
+
+// renewLoop keeps the lease alive until the context is cancelled.
+func (c *Controller) renewLoop(ctx context.Context, holder string, onLost func()) {
+	ticker := time.NewTicker(c.renewInterval())
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := c.Lease.Renew(ctx, holder); err != nil {
+				c.logf("renewing the gpu lease failed: %v", err)
+				onLost()
+				return
+			}
+		}
+	}
 }
 
 // ensureClaimDeleted deletes the sandbox and records the phase only once the
@@ -719,6 +784,17 @@ func (c *Controller) abort(ctx context.Context, record lease.Record, what string
 	}
 	record.Outcome = lease.OutcomeFailed
 	return c.finish(ctx, record)
+}
+
+// holderFor is the lease holder of a job. The identity is instance-unique
+// (the Pod name in production), which is what makes another instance's live
+// lease distinguishable from our own interrupted one.
+func (c *Controller) holderFor(jobID string) string {
+	identity := c.Config.HolderIdentity
+	if identity == "" {
+		identity = "llmbench-controller"
+	}
+	return identity + "/" + jobID
 }
 
 // pauser returns the pause/restore implementation; a nil Pauser means no
@@ -801,44 +877,6 @@ func (c *Controller) annotate(ctx context.Context, record *lease.Record) error {
 	return c.Lease.Annotate(ctx, c.holderFor(record.JobID), func(r *lease.Record) {
 		*r = current
 	})
-}
-
-// startRenewal keeps the lease alive while a job runs.
-//
-// Losing the lease cancels the job: once another instance has taken it over,
-// continuing to measure would use a GPU this process no longer owns, and
-// pushing a branch would publish a result for a job that is being recovered
-// elsewhere. The lease is a fence, so losing it stops the work.
-func (c *Controller) startRenewal(ctx context.Context, holder string, onLost func()) func() {
-	interval := c.renewInterval()
-	done := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if err := c.Lease.Renew(ctx, holder); err != nil {
-					c.logf("renewing the gpu lease failed: %v", err)
-					onLost()
-					return
-				}
-			}
-		}
-	}()
-	return func() { close(done) }
-}
-
-func (c *Controller) holderFor(jobID string) string {
-	identity := c.Config.HolderIdentity
-	if identity == "" {
-		identity = "llmbench-controller"
-	}
-	return identity + "/" + jobID
 }
 
 // benchmarkArgv builds the command that runs the measurement inside the

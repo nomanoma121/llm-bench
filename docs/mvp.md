@@ -259,6 +259,8 @@ poll(open な `llmbench:benchmark|optimize` Issue で、状態ラベルが無い
 - **restore が converge するまで Lease を手放さない**。`Sandbox.Delete` がまだ終わっていない / `Restore` が `ErrNotConverged`(PR 未マージ・Argo 未同期)の間は phase も Lease も保持したまま recovery が再試行する。Lease を先に離すと、まだ pause されたままの GPU を次の job が借りてしまう。
 - **outcome は測定直後の annotate で durable にする**(phase=`executed` と同じ書き込み)。測定後の crash で「成功した job を recovery が failed と解釈する」事故を防ぐ。
 - **終了ラベルを先に付け、`claimed` を後に外す**。terminal ラベルの書き込みに失敗したら **Lease は保持**したまま recovery が再試行する(状態ラベルが 1 つも無いまま release すると、同じ Issue が pending に見えて二重実行される)。
+- **Lease の renewal は lease を保持している間ずっと動く**(run() のスコープに縛らない)。restore PR のマージ待ちのように recovery pass をまたぐ待機では、pass ごとに renewal を止めると lease が失効する。recovery の各 pass は最初に `Renew` して ownership を確認してから外部効果を行う。
+- **state ラベルは相互に異なること**(operator 検証)。`done == claimed` のような設定だと、終了時に付けたラベルを自分で外してしまい、同じ Issue が pending に戻って二重実行される。
 - **renew 間隔は lease duration から導出する**(既定 = duration/3)。renew 間隔が lease 期間以上だと、測定中に失効して別 instance に引き継がれる。設定で明示する場合は duration 未満でなければならない(起動時に fail)。`lease.duration_seconds` は 60 以上。
 - **ラベルの mirror は Lease release より先に書く**(crash しても released record の recovery が label だけ resync できる)。
 - **Lease を失ったらジョブを止める**(fencing): renew が失敗した時点で実行中の context を cancel する。lease を失ったプロセスは外部効果(測定・push)を続けてはならない。

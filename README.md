@@ -1,13 +1,24 @@
 # llm-bench
 
-Agentが推論runtimeをモデルごとに試し、固定した課題の出力を人間が比較するためのリポジトリです。現在の課題は、LLMにHTMLで3Dモデルを作らせるvisual benchmarkです。
+推論runtimeをモデルごとに測定し、Agentに最適化させるためのリポジトリです。
 
-- `models/models.yaml`: モデルの取得情報。モデル本体は`models/<model-id>/`に置き、Git管理しません。
-- `runtimes/<engine>/<variant>/`: runtime本体とモデル向けの変更。
-- `benchmarks/visual/prompt.md`: 複数の実験で共有する課題。
-- `experiments/<model-id>/<experiment-id>/`: 1候補の`config.yaml`、実験ノート、採用した生成物。
-- `cmd/llmbench/`: Go製controller・CLIのエントリポイント。共通の実装は`internal/`(experiment / operator / run / runner / hook / gitops / sandbox / kube / issues / discord / filestore / provenance / review / preview / adopt / sitebuild / httpapi)。
-- `charts/llmbench/`: Agent Sandboxとharness用の実験的Helm Chart。**現状はvalues-onlyのscaffoldで、`templates/` が無いためインストールしても何も作成しません**。
-- コントローラ(`cmd/llmbench` + `internal/`)側の実装: Sandboxでの単発benchmark、GitOpsの停止・復帰PRとArgo CD／実Podの状態確認、モデル重みの実行前後の同一性検査、生成HTMLの認証付きプレビュー、採用成果物の`adopt`とIssueでのA/Bレビュー、Kubernetes上の実行記録とリース選出。スクリーンショットは撮らず生HTMLを人間が直接比較します。恒久公開はcontrollerではなくCI(`main`マージ→`site build`→GitHub Pages)が行い、controllerは公開先への書き込み権限を持ちません。実クラスタでの統合検証とAgentの最適化ループの接続は未完了です。
+- `cmd/llmbench`: CLI とコントローラ
+  - `benchmark` / `compare`: Sandbox 内で使う測定と比較
+  - `controller`: GitHub Issue を poll して GPU で job を実行し、PR を作る
+  - `sandbox`: Agent が GPU Sandbox を操作するためのコマンド
+  - `site`: `experiments/` から GitHub Pages を生成する
+- `internal/`
+  - `job`: Issue に書く JobSpec
+  - `benchmark`: runtime の起動、計測、結果の書き出し、比較
+  - `runtime`: llama.cpp / FreeToken アダプタ
+  - `controller`: Issue → pause → Sandbox → 実行 → PR → 後片付け
+  - `github`: GitHub App 認証と Issue / PR / ファイル操作
+  - `gitops`: manifests リポジトリへの PR による推論 workload の pause / restore
+  - `sandbox`: Agent Sandbox の claim と exec
+  - `harness`: DSH など ACP 対応 harness とのセッション
+  - `site`: Pages の生成
+- `experiments/<model>/<job-id>/`: 測定結果（PR で入る）
+- `models/`, `runtimes/`, `benchmarks/`: モデル情報、runtime、課題
+- `charts/llmbench`: コントローラの Helm chart
 
-合意済みの運用と実装順は[docs/design.md](docs/design.md)と[docs/plan.md](docs/plan.md)に記録しています。実行方法は[docs/usage.md](docs/usage.md)を参照してください。
+使い方は [docs/usage.md](docs/usage.md)。

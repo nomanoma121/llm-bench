@@ -1,150 +1,55 @@
 nameOverride: ""
 fullnameOverride: ""
 
-harness:
-  image:
-    repository: ""
-    tag: ""
-    pullPolicy: IfNotPresent
-  repositoryPVC: ""
-  dataPVC: ""
-  apiTokenSecret: ""
-  githubTokenSecret: ""
-  discordWebhookSecret: ""
-  port: 8080
-  retryInterval: 30s
-
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      memory: 1Gi
-  nodeSelector: {}
-  tolerations: []
-
-operatorConfig:
-  targets: {}
-
-sandbox:
-  enabled: true
-  warmPoolReplicas: 0
-  devImage: ""
-  sandboxdImage: ""
-  gpuResourceClaimTemplate: ""
-  workspaceStorageClass: ""
-  workspaceSize: 20Gi
-  modelPVC: ""
-  cachePVC: ""
-  nodeSelector: {}
-  tolerations: []
-  resources:
-    requests:
-      cpu: "2"
-      memory: 8Gi
-    limits:
-      memory: 32Gi
-
-# --- MVP (docs/mvp.md §9) ---
-# The frozen harness/sandbox values above belong to the v1.6 visual flow; the
-# MVP controller reads the block below.
-mvp:
-  enabled: true
-  image:
-    repository: ""
-    tag: ""
-    pullPolicy: IfNotPresent
-
-  # The repository the controller polls and opens result pull requests in.
+image:
   repository: ""
-  defaultBranch: main
+  tag: ""
+  pullPolicy: IfNotPresent
 
-  # Issue labels. They must all be distinct: if a terminal label equalled the
-  # claim label, finishing a job would remove the label it just added.
-  labels:
-    benchmark: llmbench:benchmark
-    optimize: llmbench:optimize
-    claimed: llmbench:claimed
-    done: llmbench:done
-    failed: llmbench:failed
+githubAppSecret: ""
 
-  # One global GPU. The lease is both the ownership record and the job mutex,
-  # and its annotations are the durable phase of the in-flight job.
-  lease:
+agentServiceAccount:
+  namespace: ""
+  name: ""
+
+config:
+  repository: ""
+  branch: main
+  github_app:
+    app_id: 0
+    installation_id: 0
+    private_key_file: /etc/llmbench/keys/private-key.pem
+  models: {}
+  sandbox:
     namespace: llmbench
-    name: gpu
-    durationSeconds: 1800
-
-  # The shared inference workload the controller pauses while it holds the GPU.
+    warm_pool: ""
+    workdir: /workspace/llm-bench
+    llmbench: [llmbench]
   gitops:
-    owner: ""
     repository: ""
-    baseBranch: main
-    filePath: ""
-    yamlPath: []
-    activeValue: "1"
-    pausedValue: "0"
+    branch: main
+    file: ""
+    path: []
+    active_value: "1"
+    paused_value: "0"
     application:
       namespace: argocd
       name: ""
-    workload:
+    deployment:
       namespace: ""
-      deployment: ""
-      activeReplicas: 1
-
-  # The Agent Sandbox pool the measurement runs in, and the argv prefix that
-  # runs the CLI inside the sandbox image.
-  sandbox:
-    namespace: llmbench
-    warmPool: ""
-    llmbench: [llmbench]
-
-  # The model allowlist. A digest pins the weights; without one the benchmark
-  # marks the run invalid because it cannot prove what it measured.
-  models: []
-
-  # The runtime allowlists a job may choose from.
-  engines: [llamacpp, freetoken]
-  images: []
-  outputRoots: [experiments]
-  maxRounds: 20
-
-  # The controller authenticates as a GitHub App installation. The private key
-  # stays in the controller Pod and is never handed to a sandbox.
-  githubApp:
-    appId: 0
-    installationId: 0
-    existingSecret: ""
-    privateKeyKey: private-key.pem
-    baseUrl: ""
-
-  # The existing ServiceAccount of the Agent Pod (the DSH deployment). Binding
-  # it grants the Agent sandbox discovery and file transfer - and nothing else.
-  agentServiceAccount:
+      name: ""
+      replicas: 1
+  harness:
     namespace: ""
-    name: ""
-
-  # The harness (DeepSeek Harness) that runs optimization jobs. It is a
-  # long-lived Deployment of its own; the controller only opens one ACP session
-  # per job on it, over pods/exec, and never starts it.
-  agent:
-    namespace: ""
-    podSelector: ""
-    container: ""
-    exec: ["dsh", "--profile", "acp"]
+    pod_selector: ""
+    command: [dsh, --profile, acp]
     cwd: /workspace
+  poll_interval_seconds: 15
+  pause_timeout_minutes: 30
 
-  pollIntervalSeconds: 15
-  recoveryIntervalSeconds: 60
-
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      memory: 512Mi
-  nodeSelector: {}
-  tolerations: []
-  # Extra environment variables for the controller container (never secrets).
-  extraEnv: []
-
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi

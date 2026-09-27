@@ -1,0 +1,104 @@
+{{- $name := include "llmbench.fullname" . }}
+{{- $cfg := .Values.config }}
+{{- define "llmbench.role" }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .name }}
+  namespace: {{ .namespace }}
+rules:
+{{ toYaml .rules }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .name }}
+  namespace: {{ .namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .subject.name }}
+    namespace: {{ .subject.namespace }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+data:
+  config.yaml: |
+{{ toYaml $cfg | indent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+{{- $controller := dict "name" $name "namespace" .Release.Namespace }}
+{{- include "llmbench.role" (dict "name" (printf "%s-sandbox" $name) "namespace" $cfg.sandbox.namespace "subject" $controller "rules" (list
+  (dict "apiGroups" (list "extensions.agents.x-k8s.io") "resources" (list "sandboxclaims") "verbs" (list "get" "list" "watch" "create" "delete"))
+  (dict "apiGroups" (list "agents.x-k8s.io") "resources" (list "sandboxes") "verbs" (list "get" "list" "watch"))
+  (dict "apiGroups" (list "") "resources" (list "pods") "verbs" (list "get" "list" "watch"))
+  (dict "apiGroups" (list "") "resources" (list "pods/portforward") "verbs" (list "create" "get")))) }}
+{{- include "llmbench.role" (dict "name" (printf "%s-argo" $name) "namespace" $cfg.gitops.application.namespace "subject" $controller "rules" (list
+  (dict "apiGroups" (list "argoproj.io") "resources" (list "applications") "verbs" (list "get")))) }}
+{{- include "llmbench.role" (dict "name" (printf "%s-inference" $name) "namespace" $cfg.gitops.deployment.namespace "subject" $controller "rules" (list
+  (dict "apiGroups" (list "apps") "resources" (list "deployments") "verbs" (list "get"))
+  (dict "apiGroups" (list "") "resources" (list "pods") "verbs" (list "list")))) }}
+{{- if $cfg.harness.pod_selector }}
+{{- include "llmbench.role" (dict "name" (printf "%s-harness" $name) "namespace" $cfg.harness.namespace "subject" $controller "rules" (list
+  (dict "apiGroups" (list "") "resources" (list "pods") "verbs" (list "list"))
+  (dict "apiGroups" (list "") "resources" (list "pods/exec") "verbs" (list "create" "get")))) }}
+{{- end }}
+{{- with .Values.agentServiceAccount }}
+{{- if .name }}
+{{- include "llmbench.role" (dict "name" (printf "%s-agent" $name) "namespace" $cfg.sandbox.namespace "subject" . "rules" (list
+  (dict "apiGroups" (list "extensions.agents.x-k8s.io") "resources" (list "sandboxclaims") "verbs" (list "get" "list" "watch"))
+  (dict "apiGroups" (list "agents.x-k8s.io") "resources" (list "sandboxes") "verbs" (list "get" "list" "watch"))
+  (dict "apiGroups" (list "") "resources" (list "pods") "verbs" (list "get" "list" "watch"))
+  (dict "apiGroups" (list "") "resources" (list "pods/portforward") "verbs" (list "create" "get")))) }}
+{{- end }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+      annotations:
+        checksum/config: {{ toYaml $cfg | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      containers:
+        - name: controller
+          image: "{{ required "image.repository is required" .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [controller, --config, /etc/llmbench/config.yaml]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/llmbench
+              readOnly: true
+            - name: github-app
+              mountPath: /etc/llmbench/keys
+              readOnly: true
+          resources:
+{{ toYaml .Values.resources | indent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        - name: github-app
+          secret:
+            secretName: {{ required "githubAppSecret is required" .Values.githubAppSecret }}

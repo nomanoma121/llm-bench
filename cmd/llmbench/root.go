@@ -1,53 +1,23 @@
 package main
 
-import (
-	"os"
-
-	"github.com/spf13/cobra"
-)
-
-func osExit(code int) { os.Exit(code) }
-
-// globalFlags are the persistent settings shared by all commands.
-type globalFlags struct {
-	root       string // repository root (experiments/, models/, benchmarks/)
-	state      string // controller state directory (run records, leases)
-	output     string // artifact root; artifacts live under <output>/runs/<run-id>
-	kubeconfig string // optional kubeconfig for cluster integrations
-	// operatorConfig is the MVP operator configuration. The Agent's sandbox
-	// commands read the sandbox namespace from it, so the CLI and the
-	// controller agree without extra environment variables.
-	operatorConfig string
-}
+import "github.com/spf13/cobra"
 
 func newRootCmd() *cobra.Command {
-	var g globalFlags
+	var kubeconfig string
 	cmd := &cobra.Command{
 		Use:           "llmbench",
-		Short:         "Controller and CLI for the llm-bench visual benchmark",
+		Short:         "Measure and optimize LLM inference runtimes",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	cmd.PersistentFlags().StringVar(&g.root, "root", ".", "repository root")
-	cmd.PersistentFlags().StringVar(&g.state, "state", ".state", "controller state directory")
-	cmd.PersistentFlags().StringVar(&g.output, "output", "runs", "artifact output root")
-	cmd.PersistentFlags().StringVar(&g.kubeconfig, "kubeconfig", "", "kubeconfig path for cluster integrations (defaults to in-cluster, then ~/.kube/config)")
-	cmd.PersistentFlags().StringVar(&g.operatorConfig, "operator-config", "", "MVP operator configuration (docs/mvp.md §9)")
+	cmd.PersistentFlags().StringVar(&kubeconfig, "kubeconfig", "", "kubeconfig (default: in-cluster, then ~/.kube/config)")
 	cmd.AddCommand(
-		newValidateCmd(&g),
-		newJobCmd(&g),
-		newBenchmarkCmd(&g),
+		newControllerCmd(&kubeconfig),
+		newSandboxCmd(&kubeconfig),
+		newBenchmarkCmd(),
 		newCompareCmd(),
-		newControllerCmd(&g),
-		newSubmitCmd(&g),
-		newStatusCmd(&g),
-		newServeCmd(&g),
-		newSandboxCmd(&g),
-		newReviewCmd(&g),
-		newMetricsCmd(&g),
-		newAdoptCmd(&g),
-		newAdoptedCmd(&g),
-		newSiteCmd(&g),
+		newJobCmd(),
+		newSiteCmd(),
 	)
 	return cmd
 }

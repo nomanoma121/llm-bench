@@ -1,6 +1,0 @@
-targets:
-  gpu:
-    hooks: []
-    sandbox:
-      namespace: bench
-      warm_pool: demo-llmbench

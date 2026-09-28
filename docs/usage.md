@@ -18,7 +18,7 @@ Exit codes: 0 measured (check `measurement_valid`), 2 invalid job spec, 10 no re
 
 ## Models
 
-`models/models.yaml` lists the weights, keyed by the directory they go into:
+`models.yaml` lists the weights, keyed by the directory they go into:
 
 ```yaml
 Qwen3.8-27B:

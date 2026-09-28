@@ -47,8 +47,8 @@ func (m modelSource) downloadArgs(dir string) []string {
 
 func newModelsCmd() *cobra.Command {
 	var file, dir string
-	cmd := &cobra.Command{Use: "models", Short: "Manage the model weights listed in models/models.yaml"}
-	cmd.PersistentFlags().StringVar(&file, "file", "models/models.yaml", "model definitions")
+	cmd := &cobra.Command{Use: "models", Short: "Manage the model weights listed in models.yaml"}
+	cmd.PersistentFlags().StringVar(&file, "file", "models.yaml", "model definitions")
 	cmd.PersistentFlags().StringVar(&dir, "dir", "/models", "directory the models are downloaded into")
 	cmd.AddCommand(&cobra.Command{
 		Use:   "download [name...]",

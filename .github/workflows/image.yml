@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   publish:
-    runs-on: [self-hosted, llm-bench-deploy]
+    runs-on: k8s-runner-llm-bench
     timeout-minutes: 20
     env:
       KO_DOCKER_REPO: ghcr.io/${{ github.repository_owner }}/llmbench
@@ -33,11 +33,11 @@ jobs:
       - run: '"$(go env GOPATH)/bin/ko" build ./cmd/llmbench --bare --platform=linux/amd64,linux/arm64 --tags=latest,${{ github.sha }}'
 
   chart:
-    runs-on: [self-hosted, llm-bench-deploy]
+    runs-on: k8s-runner-llm-bench
     timeout-minutes: 10
-    env:
-      REGISTRY_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: echo "${{ github.token }}" | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
       - run: helm package charts/llmbench -d "$RUNNER_TEMP/chart"
-      - run: DOCKER_CONFIG="$RUNNER_TEMP/docker" helm push "$RUNNER_TEMP"/chart/*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts --registry-config "$RUNNER_TEMP/registry.json" --username "${{ github.actor }}" --password "$REGISTRY_TOKEN"
+      - run: helm push "$RUNNER_TEMP"/chart/*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts

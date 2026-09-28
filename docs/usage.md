@@ -52,4 +52,4 @@ llmbench sandbox get <job-id> /workspace/llm-bench/experiments/<model>/<dir>/res
 
 ## CI
 
-All workflows run on `k8s-runner-llm-bench`, the Actions Runner Controller scale set in the cluster (defined in the manifests repository).
+All workflows run on GitHub-hosted runners.

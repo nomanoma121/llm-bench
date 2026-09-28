@@ -1,0 +1,2 @@
+[tools]
+"pipx:huggingface_hub" = "latest"

@@ -18,7 +18,8 @@
   - `harness`: DSH など ACP 対応 harness とのセッション
   - `site`: Pages の生成
 - `experiments/<model>/<job-id>/`: 測定結果（PR で入る）
-- `models/`, `runtimes/`, `benchmarks/`: モデル情報、runtime、課題
+- `models.yaml`: モデルの配布元（`llmbench models download` で落とす）
+- `runtimes/`, `benchmarks/`: runtime、課題
 - `charts/llmbench`: コントローラの Helm chart
 
 使い方は [docs/usage.md](docs/usage.md)。

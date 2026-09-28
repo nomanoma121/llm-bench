@@ -1,0 +1,17 @@
+Qwen3.8-27B:
+  repo: unsloth/Qwen3.8-27B-GGUF
+  include:
+    - Qwen3.8-27B-Q4_0.gguf
+    - mmproj-BF16.gguf
+
+Qwen3.8-Flash-Next:
+  repo: unsloth/Qwen3.8-Flash-Next-GGUF
+  include:
+    - UD-Q2_K_XL/*
+    - mmproj-BF16.gguf
+
+Bonsai-2-27B:
+  repo: prism-ml/Ternary-Bonsai-2-27B-gguf
+  include:
+    - Ternary-Bonsai-2-27B-PQ2_0.gguf
+    - Ternary-Bonsai-2-27B-mmproj-BF16.gguf

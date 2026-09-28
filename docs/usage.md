@@ -16,6 +16,19 @@ The job spec's `model` is a path under `--models-dir` (default `/models`); the b
 With `--push` it commits that directory and pushes it to `llmbench/<job-id>`.
 Exit codes: 0 measured (check `measurement_valid`), 2 invalid job spec, 10 no result.
 
+## Models
+
+`models.yaml` lists the weights, keyed by the directory they go into:
+
+```yaml
+Qwen3.8-27B:
+  repo: <hugging face repo>
+  revision: main
+  include: ["*Q4_0.gguf", "mmproj-*"]
+```
+
+`llmbench models download [name...] --dir /var/lib/llama-cpp/models` fetches them with the `hf` CLI (`mise install` provides it; set `HF_TOKEN` for gated repos). A job spec then names a file or directory under that directory, for example `model: Qwen3.8-27B/Qwen3.8-27B-Q4_0.gguf`.
+
 ## Controller
 
 ```sh

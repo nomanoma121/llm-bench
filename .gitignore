@@ -1,6 +1,3 @@
-# Downloaded model data; the catalog remains tracked.
-/models/*/
-
 # Local run state and build artifacts.
 /runs/
 /builds/

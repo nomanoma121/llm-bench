@@ -17,6 +17,7 @@ func newRootCmd() *cobra.Command {
 		newBenchmarkCmd(),
 		newCompareCmd(),
 		newJobCmd(),
+		newModelsCmd(),
 		newSiteCmd(),
 	)
 	return cmd

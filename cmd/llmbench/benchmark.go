@@ -12,7 +12,7 @@ import (
 )
 
 func newBenchmarkCmd() *cobra.Command {
-	var jobPath, jobID, root, out, bin string
+	var jobPath, jobID, root, out, bin, source string
 	var model benchmark.Model
 	var push bool
 	cmd := &cobra.Command{
@@ -31,7 +31,7 @@ func newBenchmarkCmd() *cobra.Command {
 				out = filepath.Join(root, "experiments", spec.Model, jobID)
 			}
 			result, err := benchmark.Run(cmd.Context(), benchmark.Config{
-				Spec: spec, JobID: jobID, Root: root, OutDir: out, Model: model, Binary: bin,
+				Spec: spec, JobID: jobID, Root: root, OutDir: out, Model: model, Binary: bin, Source: source,
 				Logf: func(format string, args ...any) { fmt.Fprintf(cmd.ErrOrStderr(), format+"\n", args...) },
 			})
 			if err != nil {
@@ -62,6 +62,7 @@ func newBenchmarkCmd() *cobra.Command {
 	cmd.Flags().StringVar(&root, "root", ".", "llm-bench checkout")
 	cmd.Flags().StringVar(&out, "out", "", "result directory (default: <root>/experiments/<model>/<job-id>)")
 	cmd.Flags().StringVar(&bin, "bin", "", "runtime server binary (default: the engine's binary on PATH)")
+	cmd.Flags().StringVar(&source, "source", "", "runtime source checkout, recorded with git describe")
 	cmd.Flags().StringVar(&model.Path, "model-path", "", "model weights")
 	cmd.Flags().StringVar(&model.Digest, "model-digest", "", "digest of the model weights")
 	cmd.Flags().BoolVar(&push, "push", false, "commit the result and push it to llmbench/<job-id>")

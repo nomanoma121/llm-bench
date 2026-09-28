@@ -50,6 +50,33 @@ func (p *process) stop() {
 	}
 }
 
+func sourceVersion(ctx context.Context, dir string) string {
+	if dir == "" {
+		return ""
+	}
+	git := func(args ...string) string {
+		out, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).Output()
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(out))
+	}
+	hash := git("rev-parse", "--short=12", "HEAD")
+	if hash == "" {
+		return "unknown"
+	}
+	if git("status", "--porcelain", "--untracked-files=no") != "" {
+		return hash + " dirty"
+	}
+	if git("branch", "--remotes", "--contains", "HEAD") == "" {
+		return hash
+	}
+	if version := git("describe", "--tags", "--match", "v[0-9]*"); version != "" {
+		return version
+	}
+	return hash
+}
+
 type gpuReading struct {
 	Driver string
 	GPUs   []gpuState

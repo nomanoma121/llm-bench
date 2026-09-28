@@ -27,6 +27,12 @@ func newCompareCmd() *cobra.Command {
 				enc.SetIndent("", "  ")
 				return enc.Encode(c)
 			}
+			for _, s := range []struct {
+				name string
+				side benchmark.Side
+			}{{"baseline", c.Baseline}, {"candidate", c.Candidate}} {
+				fmt.Fprintf(out, "%-9s  %s  %s  %s\n", s.name, s.side.JobID, s.side.StartedAt.Local().Format("2006-01-02 15:04"), s.side.Runtime.Label())
+			}
 			fmt.Fprintf(out, "measurement_valid=%t comparable=%t\n", c.MeasurementValid, c.Comparable)
 			for _, r := range c.Reasons {
 				fmt.Fprintf(out, "  %s\n", r)

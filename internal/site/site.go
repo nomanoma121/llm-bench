@@ -32,7 +32,7 @@ var pageTemplate = template.Must(template.New("page").Parse(`<!DOCTYPE html>
 <p><a href="../../index.html">llm-bench</a></p>
 <h1>{{.Model}} / {{.ID}}</h1>
 {{with .Result}}
-<p>{{.Runtime.Engine}} {{range .Runtime.Args}}{{.}} {{end}}· {{range .GPUs}}{{.}} {{end}}· measurement valid: {{.MeasurementValid}}</p>
+<p>{{.Runtime.Label}} {{range .Runtime.Args}}{{.}} {{end}}· {{range .GPUs}}{{.}} {{end}}· measurement valid: {{.MeasurementValid}}</p>
 <table><tr><th>case</th><th>metric</th><th>value</th><th>min</th><th>max</th><th>n</th></tr>
 {{range .Metrics}}<tr><td>{{.Case}}</td><td>{{.Name}} ({{.Unit}})</td><td>{{printf "%.2f" .Value}}</td><td>{{printf "%.2f" .Min}}</td><td>{{printf "%.2f" .Max}}</td><td>{{.Samples}}</td></tr>
 {{end}}</table>

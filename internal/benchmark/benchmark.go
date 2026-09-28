@@ -26,6 +26,7 @@ type Config struct {
 	OutDir         string
 	Model          Model
 	Binary         string
+	Source         string
 	SampleInterval time.Duration
 	Logf           func(format string, args ...any)
 }
@@ -33,6 +34,7 @@ type Config struct {
 type run struct {
 	cfg     Config
 	adapter runtime.Adapter
+	runtime Runtime
 	start   time.Time
 
 	mu          sync.Mutex
@@ -75,13 +77,18 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		return Result{}, err
 	}
 
-	r := &run{cfg: cfg, adapter: adapter, start: time.Now()}
+	argv := adapter.Argv()
+	r := &run{cfg: cfg, adapter: adapter, start: time.Now(), runtime: Runtime{
+		Engine:  spec.Runtime.Engine,
+		Binary:  argv[0],
+		Version: sourceVersion(ctx, cfg.Source),
+		Args:    spec.Runtime.Args,
+	}}
 	if gpu, err := readGPU(ctx); err == nil {
 		r.gpu = gpu
 	}
 
-	argv := adapter.Argv()
-	cfg.Logf("starting %v", argv)
+	cfg.Logf("starting %s: %v", r.runtime.Label(), argv)
 	proc, err := startProcess(argv, filepath.Join(cfg.OutDir, "raw", "runtime.log"))
 	if err != nil {
 		return Result{}, fmt.Errorf("%w: start runtime: %w", ErrNoResult, err)
@@ -369,7 +376,7 @@ func (r *run) result(jobspec, series []byte, prompts map[string]string) Result {
 		StartedAt:        r.start.UTC(),
 		DurationSeconds:  time.Since(r.start).Seconds(),
 		Model:            Model{ID: spec.Model, Path: r.cfg.Model.Path, Digest: r.cfg.Model.Digest},
-		Runtime:          Runtime{Engine: spec.Runtime.Engine, Binary: r.adapter.Argv()[0], Args: spec.Runtime.Args},
+		Runtime:          r.runtime,
 		GPUs:             gpus,
 		Driver:           r.gpu.Driver,
 		MeasurementValid: len(r.invalid) == 0,

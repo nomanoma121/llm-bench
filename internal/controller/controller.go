@@ -280,7 +280,7 @@ A GPU sandbox is running for this job. If it dies it is recreated with the same 
 
 Inside the sandbox the llm-bench checkout is %[2]s (git push works from there) and the job spec is %[3]s.
 Measure only with llmbench benchmark; never write results by hand:
-  %[4]s --out <dir> [--bin <your built server binary>]
+  %[4]s --out <dir> [--bin <your built server binary> --source <its source checkout>]
 Compare two results with: llmbench compare <baseline-dir> <candidate-dir>
 compare reports facts only. Deciding what to keep is your job.
 

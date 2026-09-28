@@ -3,9 +3,12 @@ package benchmark
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -24,7 +27,7 @@ type Config struct {
 	JobID          string
 	Root           string
 	OutDir         string
-	Model          Model
+	ModelsDir      string
 	Binary         string
 	Source         string
 	SampleInterval time.Duration
@@ -34,6 +37,7 @@ type Config struct {
 type run struct {
 	cfg     Config
 	adapter runtime.Adapter
+	model   Model
 	runtime Runtime
 	start   time.Time
 
@@ -52,10 +56,17 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		cfg.Logf = func(string, ...any) {}
 	}
 	spec := cfg.Spec
+	modelPath := filepath.Join(cfg.ModelsDir, spec.Model)
+	cfg.Logf("hashing %s", modelPath)
+	modelDigest, err := digestPath(modelPath)
+	if err != nil {
+		return Result{}, fmt.Errorf("%w: model: %w", job.ErrInvalid, err)
+	}
+	model := Model{ID: spec.ModelName(), Path: modelPath, Digest: modelDigest}
 	adapter, err := runtime.New(spec.Runtime.Engine, runtime.Options{
 		Binary:    cfg.Binary,
-		ModelID:   spec.Model,
-		ModelPath: cfg.Model.Path,
+		ModelID:   model.ID,
+		ModelPath: model.Path,
 		Port:      spec.Runtime.ListenPort(),
 		Args:      spec.Runtime.Args,
 	})
@@ -78,7 +89,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	}
 
 	argv := adapter.Argv()
-	r := &run{cfg: cfg, adapter: adapter, start: time.Now(), runtime: Runtime{
+	r := &run{cfg: cfg, adapter: adapter, model: model, start: time.Now(), runtime: Runtime{
 		Engine:  spec.Runtime.Engine,
 		Binary:  argv[0],
 		Version: sourceVersion(ctx, cfg.Source),
@@ -119,6 +130,34 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		return Result{}, err
 	}
 	return result, os.WriteFile(filepath.Join(cfg.OutDir, "README.md"), []byte(result.readme()), 0o644)
+}
+
+func digestPath(root string) (string, error) {
+	h := sha256.New()
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		file := sha256.New()
+		if _, err := io.Copy(file, f); err != nil {
+			return err
+		}
+		fmt.Fprintf(h, "%s %x\n", filepath.ToSlash(rel), file.Sum(nil))
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("sha256:%x", h.Sum(nil)), nil
 }
 
 func readPrompts(root string, cases []job.Case) (map[string]string, map[string]string, error) {
@@ -375,7 +414,7 @@ func (r *run) result(jobspec, series []byte, prompts map[string]string) Result {
 		Kind:             string(spec.Kind),
 		StartedAt:        r.start.UTC(),
 		DurationSeconds:  time.Since(r.start).Seconds(),
-		Model:            Model{ID: spec.Model, Path: r.cfg.Model.Path, Digest: r.cfg.Model.Digest},
+		Model:            r.model,
 		Runtime:          r.runtime,
 		GPUs:             gpus,
 		Driver:           r.gpu.Driver,

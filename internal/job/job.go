@@ -87,6 +87,11 @@ func (r Runtime) ReadyTimeoutSecondsOrDefault() int {
 	return r.ReadyTimeoutSeconds
 }
 
+func (s Spec) ModelName() string {
+	base := filepath.Base(s.Model)
+	return strings.TrimSuffix(base, filepath.Ext(base))
+}
+
 func (s Spec) Wants(metric string) bool {
 	for _, m := range s.Metrics {
 		if m == metric {
@@ -130,8 +135,8 @@ func (s Spec) Validate() error {
 	if s.Kind != Benchmark && s.Kind != Optimize {
 		add("kind must be benchmark or optimize, got %q", s.Kind)
 	}
-	if !isName(s.Model) {
-		add("model %q must be a plain name", s.Model)
+	if s.Model == "" || !filepath.IsLocal(s.Model) {
+		add("model %q must be a path under the models directory", s.Model)
 	}
 	if s.Runtime.Engine == "" {
 		add("runtime.engine is required")
@@ -192,7 +197,7 @@ func yamlBlock(body string) (string, bool) {
 
 func Template(kind Kind) string {
 	s := `kind: ` + string(kind) + `
-model: qwen38-27b
+model: Qwen3.8-27B/Qwen3.8-27B-Q4_0.gguf
 runtime:
   engine: llamacpp
   args: ["--ctx-size", "8192"]

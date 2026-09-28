@@ -6,11 +6,6 @@ github_app:
   installation_id: 12345678
   private_key_file: /etc/llmbench/keys/private-key.pem
 
-models:
-  qwen38-27b:
-    path: /models/qwen38-27b
-    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
-
 sandbox:
   namespace: llmbench
   warm_pool: gpu-sandbox

@@ -40,9 +40,12 @@ func TestRunAndCompare(t *testing.T) {
 	if err := os.WriteFile(bin, []byte(fakeServer), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	models := filepath.Join(dir, "models")
+	os.MkdirAll(filepath.Join(models, "m"), 0o755)
+	os.WriteFile(filepath.Join(models, "m", "weights.gguf"), []byte("weights"), 0o644)
 	spec := job.Spec{
 		Kind:     job.Benchmark,
-		Model:    "m",
+		Model:    "m/weights.gguf",
 		Runtime:  job.Runtime{Engine: "llamacpp", Port: 18431, ReadyTimeoutSeconds: 20},
 		Workload: []job.Case{{Name: "short", PromptText: "hello", MaxTokens: 3, Repeats: 2}},
 		Metrics:  []string{job.MetricRuntime},
@@ -51,10 +54,13 @@ func TestRunAndCompare(t *testing.T) {
 		out := filepath.Join(dir, name)
 		result, err := Run(context.Background(), Config{
 			Spec: spec, JobID: name, Root: dir, OutDir: out, Binary: bin,
-			Model: Model{Path: "/models/m", Digest: "sha256:abc"}, SampleInterval: 20e6,
+			ModelsDir: models, SampleInterval: 20e6,
 		})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if result.Model.ID != "weights" || !strings.HasPrefix(result.Model.Digest, "sha256:") {
+			t.Fatalf("model %+v", result.Model)
 		}
 		if !result.MeasurementValid {
 			t.Fatalf("invalid: %v", result.InvalidReasons)

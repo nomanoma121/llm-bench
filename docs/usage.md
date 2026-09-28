@@ -5,12 +5,13 @@
 ```sh
 llmbench job init benchmark > job.yaml
 llmbench job validate job.yaml
-llmbench benchmark --job job.yaml --model-path /models/qwen38-27b --model-digest sha256:... --job-id baseline
-llmbench benchmark --job job.yaml --model-path /models/qwen38-27b --model-digest sha256:... --job-id candidate --bin ./build/bin/llama-server
-llmbench compare experiments/qwen38-27b/baseline experiments/qwen38-27b/candidate
+llmbench benchmark --job job.yaml --job-id baseline
+llmbench benchmark --job job.yaml --job-id candidate --bin ./build/bin/llama-server --source ./runtimes/llama-cpp/upstream
+llmbench compare experiments/Qwen3.8-27B-Q4_0/baseline experiments/Qwen3.8-27B-Q4_0/candidate
 llmbench site --root experiments --out _site
 ```
 
+The job spec's `model` is a path under `--models-dir` (default `/models`); the benchmark hashes it and records the digest, so models need no registration anywhere.
 `benchmark` writes `experiments/<model>/<job-id>/{jobspec.yaml,result.json,series.jsonl,README.md,raw/}`.
 With `--push` it commits that directory and pushes it to `llmbench/<job-id>`.
 Exit codes: 0 measured (check `measurement_valid`), 2 invalid job spec, 10 no result.

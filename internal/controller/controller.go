@@ -50,11 +50,6 @@ type Harness interface {
 	Run(ctx context.Context, task string, onSession func(id string)) (string, error)
 }
 
-type Model struct {
-	Path   string `yaml:"path"`
-	Digest string `yaml:"digest"`
-}
-
 type Controller struct {
 	GitHub  GitHub
 	Sandbox Sandbox
@@ -62,7 +57,6 @@ type Controller struct {
 	Harness Harness
 
 	Repository   string
-	Models       map[string]Model
 	Workdir      string
 	LLMBench     []string
 	GitToken     func(ctx context.Context) (string, error)
@@ -75,7 +69,6 @@ type Job struct {
 	ID    string
 	Issue github.Issue
 	Spec  job.Spec
-	Model Model
 }
 
 func (j Job) Branch() string   { return "llmbench/" + j.ID }
@@ -159,11 +152,7 @@ func (c *Controller) newJob(issue github.Issue) (Job, error) {
 	if err != nil {
 		return Job{}, err
 	}
-	model, ok := c.Models[spec.Model]
-	if !ok {
-		return Job{}, fmt.Errorf("model %q is not configured", spec.Model)
-	}
-	return Job{ID: JobID(issue), Issue: issue, Spec: spec, Model: model}, nil
+	return Job{ID: JobID(issue), Issue: issue, Spec: spec}, nil
 }
 
 func (c *Controller) execute(ctx context.Context, j Job) error {
@@ -227,8 +216,6 @@ func (c *Controller) benchmarkArgv(j Job) []string {
 		"--job", j.SpecPath(),
 		"--job-id", j.ID,
 		"--root", c.Workdir,
-		"--model-path", j.Model.Path,
-		"--model-digest", j.Model.Digest,
 	)
 }
 
@@ -265,7 +252,7 @@ func (c *Controller) keepSandbox(ctx context.Context, j Job) {
 
 func (c *Controller) task(j Job) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Optimize the %s runtime for model %s. Job %s, requested in issue #%d.\n\n", j.Spec.Runtime.Engine, j.Spec.Model, j.ID, j.Issue.Number)
+	fmt.Fprintf(&b, "Optimize the %s runtime for model %s. Job %s, requested in issue #%d.\n\n", j.Spec.Runtime.Engine, j.Spec.ModelName(), j.ID, j.Issue.Number)
 	if s := j.Spec.Source; s != nil {
 		fmt.Fprintf(&b, "Runtime source: https://github.com/%s (ref %s).\n", s.Repo, s.Ref)
 	}
@@ -286,7 +273,7 @@ compare reports facts only. Deciding what to keep is your job.
 
 When you are done, commit the final runtime change and the final measurement in experiments/%[5]s/%[1]s/ to the branch %[6]s and push it.
 That branch is how the controller knows you finished; it opens the pull request. If you give up, stop without pushing it.
-`, j.ID, c.Workdir, j.SpecPath(), strings.Join(c.benchmarkArgv(j), " "), j.Spec.Model, j.Branch())
+`, j.ID, c.Workdir, j.SpecPath(), strings.Join(c.benchmarkArgv(j), " "), j.Spec.ModelName(), j.Branch())
 	return b.String()
 }
 

@@ -19,7 +19,7 @@ permissions:
 jobs:
   verify:
     name: verify
-    runs-on: [self-hosted, Linux, llm-bench-verify]
+    runs-on: k8s-runner-llm-bench
     timeout-minutes: 20
     steps:
       - name: Reject pull requests from forks
@@ -44,7 +44,7 @@ jobs:
     name: deploy
     needs: verify
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    runs-on: [self-hosted, llm-bench-deploy]
+    runs-on: k8s-runner-llm-bench
     timeout-minutes: 20
     permissions:
       contents: read

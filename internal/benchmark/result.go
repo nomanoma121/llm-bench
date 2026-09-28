@@ -34,9 +34,14 @@ type Model struct {
 }
 
 type Runtime struct {
-	Engine string   `json:"engine"`
-	Binary string   `json:"binary"`
-	Args   []string `json:"args,omitempty"`
+	Engine  string   `json:"engine"`
+	Binary  string   `json:"binary"`
+	Version string   `json:"version,omitempty"`
+	Args    []string `json:"args,omitempty"`
+}
+
+func (r Runtime) Label() string {
+	return strings.TrimSpace(r.Engine + " " + r.Version)
 }
 
 type Metric struct {
@@ -125,7 +130,7 @@ func maximum(sorted []float64) float64 { return sorted[len(sorted)-1] }
 func (r Result) readme() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n\n", r.JobID)
-	fmt.Fprintf(&b, "- kind: %s\n- model: %s (`%s`)\n- runtime: %s %s\n", r.Kind, r.Model.ID, r.Model.Digest, r.Runtime.Engine, strings.Join(r.Runtime.Args, " "))
+	fmt.Fprintf(&b, "- kind: %s\n- model: %s (`%s`)\n- runtime: %s\n- args: %s\n", r.Kind, r.Model.ID, r.Model.Digest, r.Runtime.Label(), strings.Join(r.Runtime.Args, " "))
 	if len(r.GPUs) > 0 {
 		fmt.Fprintf(&b, "- gpu: %s (driver %s)\n", strings.Join(r.GPUs, ", "), r.Driver)
 	}

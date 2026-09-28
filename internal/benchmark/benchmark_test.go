@@ -3,6 +3,7 @@ package benchmark
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -77,7 +78,7 @@ func TestRunAndCompare(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !c.Comparable || !c.MeasurementValid || len(c.Deltas) == 0 {
+	if !c.Comparable || !c.MeasurementValid || len(c.Deltas) == 0 || c.Baseline.JobID != "a" || c.Candidate.JobID != "b" {
 		t.Fatalf("comparison %+v", c)
 	}
 }
@@ -86,5 +87,39 @@ func TestParseNvidiaSMI(t *testing.T) {
 	r, err := parseNvidiaSMI([]byte("NVIDIA RTX 5090, 1200, 37, 575.51\n"))
 	if err != nil || r.Driver != "575.51" || r.GPUs[0].UsedMiB != 1200 {
 		t.Fatalf("%+v %v", r, err)
+	}
+}
+
+func TestSourceVersion(t *testing.T) {
+	dir := t.TempDir()
+	upstream, work := filepath.Join(dir, "upstream"), filepath.Join(dir, "work")
+	git := func(repo string, args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", repo, "-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	os.MkdirAll(upstream, 0o755)
+	git(upstream, "init", "-q")
+	os.WriteFile(filepath.Join(upstream, "a"), []byte("1"), 0o644)
+	git(upstream, "add", "a")
+	git(upstream, "commit", "-qm", "one")
+	git(upstream, "tag", "-a", "v1.0.0", "-m", "v1.0.0")
+	git(upstream, "tag", "nightly")
+	os.WriteFile(filepath.Join(upstream, "a"), []byte("2"), 0o644)
+	git(upstream, "commit", "-qam", "two")
+	git(dir, "clone", "-q", upstream, work)
+
+	ctx := context.Background()
+	if v := sourceVersion(ctx, work); !strings.HasPrefix(v, "v1.0.0-1-g") {
+		t.Fatalf("upstream: %q", v)
+	}
+	os.WriteFile(filepath.Join(work, "a"), []byte("3"), 0o644)
+	if v := sourceVersion(ctx, work); !strings.HasSuffix(v, " dirty") || strings.HasPrefix(v, "v") {
+		t.Fatalf("dirty: %q", v)
+	}
+	git(work, "commit", "-qam", "patch")
+	if v := sourceVersion(ctx, work); len(v) != 12 {
+		t.Fatalf("local commit: %q", v)
 	}
 }

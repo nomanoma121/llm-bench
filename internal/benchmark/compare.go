@@ -1,12 +1,25 @@
 package benchmark
 
+import "time"
+
 type Comparison struct {
-	Baseline         string   `json:"baseline"`
-	Candidate        string   `json:"candidate"`
+	Baseline         Side     `json:"baseline"`
+	Candidate        Side     `json:"candidate"`
 	MeasurementValid bool     `json:"measurement_valid"`
 	Comparable       bool     `json:"comparable"`
 	Reasons          []string `json:"reasons,omitempty"`
 	Deltas           []Delta  `json:"deltas"`
+}
+
+type Side struct {
+	Dir       string    `json:"dir"`
+	JobID     string    `json:"job_id"`
+	StartedAt time.Time `json:"started_at"`
+	Runtime   Runtime   `json:"runtime"`
+}
+
+func sideOf(dir string, r Result) Side {
+	return Side{Dir: dir, JobID: r.JobID, StartedAt: r.StartedAt, Runtime: r.Runtime}
 }
 
 type Delta struct {
@@ -29,8 +42,8 @@ func Compare(baselineDir, candidateDir string) (Comparison, error) {
 		return Comparison{}, err
 	}
 	c := Comparison{
-		Baseline:         baselineDir,
-		Candidate:        candidateDir,
+		Baseline:         sideOf(baselineDir, base),
+		Candidate:        sideOf(candidateDir, cand),
 		MeasurementValid: base.MeasurementValid && cand.MeasurementValid,
 	}
 	if !base.MeasurementValid {

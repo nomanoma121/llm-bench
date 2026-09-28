@@ -28,7 +28,6 @@ type config struct {
 		InstallationID int64  `yaml:"installation_id"`
 		PrivateKeyFile string `yaml:"private_key_file"`
 	} `yaml:"github_app"`
-	Models  map[string]controller.Model `yaml:"models"`
 	Sandbox struct {
 		Namespace string   `yaml:"namespace"`
 		WarmPool  string   `yaml:"warm_pool"`
@@ -124,7 +123,6 @@ func buildController(cfg config, kubeconfig string) (*controller.Controller, err
 		Sandbox:      &sandbox.Client{Namespace: cfg.Sandbox.Namespace, WarmPool: cfg.Sandbox.WarmPool, REST: rest},
 		GitOps:       &gitops.GitOps{Target: cfg.GitOps, Manifests: manifests, Cluster: gitops.KubeCluster{Dynamic: dyn, Client: kube}},
 		Repository:   cfg.Repository,
-		Models:       cfg.Models,
 		Workdir:      cfg.Sandbox.Workdir,
 		LLMBench:     cfg.Sandbox.LLMBench,
 		GitToken:     app.Token,

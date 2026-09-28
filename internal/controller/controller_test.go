@@ -121,7 +121,6 @@ func setup(labels ...string) (*Controller, *fakeGitHub, *fakeSandbox, *fakeGitOp
 	ops := &fakeGitOps{recorder: rec}
 	c := &Controller{
 		GitHub: gh, Sandbox: sb, GitOps: ops,
-		Models:       map[string]Model{"m": {Path: "/models/m", Digest: "d"}},
 		LLMBench:     []string{"llmbench"},
 		GitToken:     func(context.Context) (string, error) { return "t", nil },
 		Interval:     time.Millisecond,
@@ -192,9 +191,9 @@ func TestRecoverPublishesPushedBranch(t *testing.T) {
 	}
 }
 
-func TestRejectsUnknownModel(t *testing.T) {
+func TestRejectsInvalidSpec(t *testing.T) {
 	c, gh, _, _, rec := setup(LabelBenchmark)
-	gh.issues[1].Body = strings.Replace(benchmarkIssue, "model: m", "model: other", 1)
+	gh.issues[1].Body = strings.Replace(benchmarkIssue, "model: m", "model: ../m", 1)
 	if err := c.Poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}

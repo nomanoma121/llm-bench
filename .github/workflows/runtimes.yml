@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   update:
-    runs-on: k8s-runner-llm-bench
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false

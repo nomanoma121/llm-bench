@@ -19,7 +19,14 @@ jobs:
         runtime: [llama-cpp, vllm, freetoken]
     steps:
       - uses: actions/checkout@v4
-      - run: git submodule update --init --remote --depth 1 runtimes/${{ matrix.runtime }}/upstream
+      - if: matrix.runtime != 'llama-cpp'
+        run: git submodule update --init --remote --depth 1 runtimes/${{ matrix.runtime }}/upstream
+      - if: matrix.runtime == 'llama-cpp'
+        run: |
+          tag=$(python3 .github/scripts/llama-cpp-image-tag.py)
+          git submodule update --init --depth 1 runtimes/llama-cpp/upstream
+          git -C runtimes/llama-cpp/upstream fetch --depth 1 origin tag "$tag"
+          git -C runtimes/llama-cpp/upstream checkout "$tag"
       - uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.RUNTIMES_PR_TOKEN }}
@@ -27,5 +34,5 @@ jobs:
           add-paths: runtimes/${{ matrix.runtime }}/upstream
           commit-message: "chore: update ${{ matrix.runtime }} upstream"
           title: "chore: update ${{ matrix.runtime }} upstream"
-          body: Follows the upstream default branch of `runtimes/${{ matrix.runtime }}/upstream`. This PR is updated daily until it is merged.
+          body: "Follows `runtimes/${{ matrix.runtime }}/upstream` (llama.cpp: the newest build with a published CUDA 13 server image; others: the default branch). This PR is updated daily until it is merged."
           delete-branch: true

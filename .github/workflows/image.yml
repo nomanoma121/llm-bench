@@ -9,6 +9,8 @@ on:
       - "go.mod"
       - "go.sum"
       - "charts/**"
+      - "Dockerfile"
+      - "runtimes/llama-cpp/upstream"
       - ".github/workflows/image.yml"
   workflow_dispatch:
 
@@ -29,6 +31,33 @@ jobs:
           go-version-file: go.mod
       - uses: ko-build/setup-ko@v0.9
       - run: ko build ./cmd/llmbench --bare --platform=linux/amd64,linux/arm64 --tags=latest,${{ github.sha }}
+
+  sandbox:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sha=$(git rev-parse HEAD:runtimes/llama-cpp/upstream)
+          tag=$(git ls-remote --tags https://github.com/ggml-org/llama.cpp.git 'b*' | awk -v sha="$sha" '$1 == sha { sub("refs/tags/", "", $2); print $2 }')
+          test -n "$tag"
+          echo "LLAMA_CPP_VERSION=$tag" >> "$GITHUB_ENV"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: |
+            LLAMA_CPP_VERSION=${{ env.LLAMA_CPP_VERSION }}
+            LLMBENCH_VERSION=${{ github.sha }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/llmbench-sandbox:latest
+            ghcr.io/${{ github.repository_owner }}/llmbench-sandbox:${{ github.sha }}
 
   chart:
     runs-on: ubuntu-latest

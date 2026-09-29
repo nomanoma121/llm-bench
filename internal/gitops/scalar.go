@@ -3,6 +3,7 @@ package gitops
 import (
 	"bytes"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -17,18 +18,32 @@ func GetScalar(doc []byte, path []string) (string, error) {
 }
 
 func SetScalar(doc []byte, path []string, value string) ([]byte, error) {
-	root, node, err := scalar(doc, path)
+	_, node, err := scalar(doc, path)
 	if err != nil {
 		return nil, err
 	}
-	node.Value = value
-	var out bytes.Buffer
-	enc := yaml.NewEncoder(&out)
-	enc.SetIndent(2)
-	if err := enc.Encode(root); err != nil {
-		return nil, err
+	lines := bytes.SplitAfter(doc, []byte("\n"))
+	line := string(lines[node.Line-1])
+	start := node.Column - 1
+	var end int
+	switch node.Style {
+	case yaml.DoubleQuotedStyle:
+		end = start + 1 + strings.Index(line[start+1:], `"`) + 1
+		value = strconv.Quote(value)
+	case yaml.SingleQuotedStyle:
+		end = start + 1 + strings.Index(line[start+1:], "'") + 1
+		value = "'" + value + "'"
+	case 0:
+		rest := strings.TrimRight(line[start:], "\r\n")
+		if i := strings.Index(rest, " #"); i >= 0 {
+			rest = rest[:i]
+		}
+		end = start + len(strings.TrimRight(rest, " \t"))
+	default:
+		return nil, fmt.Errorf("gitops: %s must be a single-line scalar", strings.Join(path, "."))
 	}
-	return out.Bytes(), enc.Close()
+	lines[node.Line-1] = []byte(line[:start] + value + line[end:])
+	return bytes.Join(lines, nil), nil
 }
 
 func scalar(doc []byte, path []string) (*yaml.Node, *yaml.Node, error) {

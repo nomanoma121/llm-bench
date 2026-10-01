@@ -104,7 +104,7 @@ func chatCompletion(ctx context.Context, client *http.Client, baseURL, model str
 	}
 	var out Completion
 	var last time.Duration
-	var content strings.Builder
+	var content, reasoning strings.Builder
 	err = streamSSE(ctx, resp, func(data []byte) error {
 		var chunk struct {
 			Choices []struct {
@@ -141,6 +141,7 @@ func chatCompletion(ctx context.Context, client *http.Client, baseURL, model str
 			}
 			last = now
 			content.WriteString(c.Delta.Content)
+			reasoning.WriteString(c.Delta.ReasoningContent)
 		}
 		if u := chunk.Usage; u != nil {
 			out.PromptTokens = u.PromptTokens
@@ -158,5 +159,6 @@ func chatCompletion(ctx context.Context, client *http.Client, baseURL, model str
 	})
 	out.Total = last
 	out.Content = content.String()
+	out.Reasoning = reasoning.String()
 	return out, err
 }

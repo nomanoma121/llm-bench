@@ -1,0 +1,20 @@
+kind: benchmark
+model: strata/config/strata-iq2_xs.json
+runtime:
+    engine: strata
+    args:
+        - --gpu
+        - "0"
+    ready_timeout_seconds: 1800
+workload:
+    - name: visual
+      prompt: benchmarks/visual/prompt.md
+      max_tokens: 24576
+      repeats: 1
+sampling:
+    temperature: 0
+    seed: 1
+metrics:
+    - runtime
+    - gpu
+    - host

@@ -68,7 +68,7 @@ func (g *GitOps) Restore(ctx context.Context, jobID string) (bool, error) {
 	pause := "llmbench/pause-" + jobID
 	if pr, err := g.Manifests.PullRequest(ctx, pause); err != nil {
 		return false, err
-	} else if pr != nil && pr.State == "open" {
+	} else if pr != nil {
 		if err := g.Manifests.ClosePullRequest(ctx, pr.Number); err != nil {
 			return false, err
 		}
@@ -109,9 +109,6 @@ func (g *GitOps) propose(ctx context.Context, branch, sha string, content []byte
 		return err
 	}
 	if pr != nil {
-		if pr.State == "closed" && !pr.Merged {
-			return fmt.Errorf("gitops: %s was closed without merging", branch)
-		}
 		return nil
 	}
 	updated, err := SetScalar(content, g.Target.Path, value)

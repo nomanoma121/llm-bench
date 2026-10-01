@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -313,8 +314,8 @@ func (r *run) sampleGPU(ctx context.Context) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	at := time.Since(r.start).Milliseconds()
-	for _, g := range reading.GPUs {
-		labels := map[string]string{"gpu": g.Name}
+	for i, g := range reading.GPUs {
+		labels := map[string]string{"gpu": strconv.Itoa(i), "model": g.Name}
 		r.samples = append(r.samples,
 			Sample{AtMS: at, Source: "gpu", Name: "vram_used_mib", Case: r.currentCase, Value: g.UsedMiB, Labels: labels},
 			Sample{AtMS: at, Source: "gpu", Name: "gpu_util_percent", Case: r.currentCase, Value: g.UtilPercent, Labels: labels},

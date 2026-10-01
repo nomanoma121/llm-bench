@@ -85,7 +85,7 @@ func getJSON(ctx context.Context, client *http.Client, url string, out any) erro
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-func chatCompletion(ctx context.Context, client *http.Client, baseURL, model string, req Request) (Completion, error) {
+func chatCompletion(ctx context.Context, client *http.Client, baseURL, model string, req Request, extra map[string]any) (Completion, error) {
 	body := map[string]any{
 		"model":          model,
 		"messages":       []map[string]string{{"role": "user", "content": req.Prompt}},
@@ -94,6 +94,9 @@ func chatCompletion(ctx context.Context, client *http.Client, baseURL, model str
 		"stream_options": map[string]any{"include_usage": true},
 	}
 	setSampling(body, req)
+	for k, v := range extra {
+		body[k] = v
+	}
 	start := time.Now()
 	resp, err := postJSON(ctx, client, baseURL+"/v1/chat/completions", body)
 	if err != nil {
@@ -101,6 +104,7 @@ func chatCompletion(ctx context.Context, client *http.Client, baseURL, model str
 	}
 	var out Completion
 	var last time.Duration
+	var content strings.Builder
 	err = streamSSE(ctx, resp, func(data []byte) error {
 		var chunk struct {
 			Choices []struct {
@@ -110,9 +114,17 @@ func chatCompletion(ctx context.Context, client *http.Client, baseURL, model str
 				} `json:"delta"`
 			} `json:"choices"`
 			Usage *struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
+				PromptTokens        int `json:"prompt_tokens"`
+				CompletionTokens    int `json:"completion_tokens"`
+				PromptTokensDetails *struct {
+					CachedTokens int `json:"cached_tokens"`
+				} `json:"prompt_tokens_details"`
 			} `json:"usage"`
+			Timings *struct {
+				CacheN         int `json:"cache_n"`
+				DraftN         int `json:"draft_n"`
+				DraftNAccepted int `json:"draft_n_accepted"`
+			} `json:"timings"`
 		}
 		if err := json.Unmarshal(data, &chunk); err != nil {
 			return err
@@ -121,17 +133,30 @@ func chatCompletion(ctx context.Context, client *http.Client, baseURL, model str
 			if c.Delta.Content == "" && c.Delta.ReasoningContent == "" {
 				continue
 			}
-			last = time.Since(start)
+			now := time.Since(start)
 			if out.TTFT == 0 {
-				out.TTFT = last
+				out.TTFT = now
+			} else {
+				out.ITL = append(out.ITL, now-last)
+			}
+			last = now
+			content.WriteString(c.Delta.Content)
+		}
+		if u := chunk.Usage; u != nil {
+			out.PromptTokens = u.PromptTokens
+			out.CompletionTokens = u.CompletionTokens
+			if u.PromptTokensDetails != nil {
+				out.CachedTokens = u.PromptTokensDetails.CachedTokens
 			}
 		}
-		if chunk.Usage != nil {
-			out.PromptTokens = chunk.Usage.PromptTokens
-			out.CompletionTokens = chunk.Usage.CompletionTokens
+		if t := chunk.Timings; t != nil {
+			out.CachedTokens = t.CacheN
+			out.DraftTokens = t.DraftN
+			out.DraftAccepted = t.DraftNAccepted
 		}
 		return nil
 	})
 	out.Total = last
+	out.Content = content.String()
 	return out, err
 }

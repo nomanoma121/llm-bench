@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,6 +49,8 @@ type run struct {
 	samples     []Sample
 	invalid     []string
 	gpu         gpuReading
+	// prevCPU is the previous /proc/stat reading, used only by the sampler.
+	prevCPU []cpuTimes
 }
 
 func Run(ctx context.Context, cfg Config) (Result, error) {
@@ -119,6 +122,9 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		return Result{}, fmt.Errorf("%w: %w", ErrNoResult, err)
 	}
 
+	if log, err := os.ReadFile(filepath.Join(cfg.OutDir, "raw", "runtime.log")); err == nil {
+		r.runtime.Info = adapter.Info(string(log))
+	}
 	series := r.seriesJSONL()
 	if err := os.WriteFile(filepath.Join(cfg.OutDir, "series.jsonl"), series, 0o644); err != nil {
 		return Result{}, err
@@ -169,6 +175,47 @@ func logTail(path string, lines int) string {
 		all = all[len(all)-lines:]
 	}
 	return strings.Join(all, "\n")
+}
+
+func (r *run) saveOutput(caseName string, repeat int, content string) error {
+	name := fmt.Sprintf("%s-%d", caseName, repeat)
+	if err := os.MkdirAll(filepath.Join(r.cfg.OutDir, "raw", "outputs"), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(r.cfg.OutDir, "raw", "outputs", name+".md"), []byte(content), 0o644); err != nil {
+		return err
+	}
+	html := extractHTML(content)
+	if html == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Join(r.cfg.OutDir, "output"), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(r.cfg.OutDir, "output", name+".html"), []byte(html), 0o644)
+}
+
+func extractHTML(content string) string {
+	if i := strings.Index(content, "```html"); i >= 0 {
+		rest := content[i+len("```html"):]
+		if j := strings.Index(rest, "```"); j >= 0 {
+			return strings.TrimSpace(rest[:j])
+		}
+		return strings.TrimSpace(rest)
+	}
+	lower := strings.ToLower(content)
+	start := strings.Index(lower, "<!doctype html")
+	if start < 0 {
+		start = strings.Index(lower, "<html")
+	}
+	if start < 0 {
+		return ""
+	}
+	end := strings.LastIndex(lower, "</html>")
+	if end < start {
+		return strings.TrimSpace(content[start:])
+	}
+	return content[start : end+len("</html>")]
 }
 
 func readPrompts(root string, cases []job.Case) (map[string]string, map[string]string, error) {
@@ -236,6 +283,9 @@ func (r *run) measure(ctx context.Context, prompts map[string]string) {
 				r.invalidate(fmt.Sprintf("case %s repeat %d produced %d tokens; no decode rate can be measured", c.Name, i, got.CompletionTokens))
 			}
 			r.recordCompletion(c.Name, i, got)
+			if err := r.saveOutput(c.Name, i, got.Content); err != nil {
+				r.invalidate(fmt.Sprintf("case %s repeat %d output could not be saved: %v", c.Name, i, err))
+			}
 		}
 	}
 	r.setCase("")
@@ -254,6 +304,24 @@ func (r *run) recordCompletion(caseName string, repeat int, got runtime.Completi
 	if got.PromptTokens > 0 && got.TTFT > 0 {
 		values["prefill_tok_per_s"] = float64(got.PromptTokens) / got.TTFT.Seconds()
 	}
+	if got.DraftTokens > 0 {
+		values["draft_acceptance"] = float64(got.DraftAccepted) / float64(got.DraftTokens)
+		// Each verification step emits one token plus the drafts it accepted.
+		if steps := got.CompletionTokens - got.DraftAccepted; steps > 0 {
+			values["mtp_accept_len"] = float64(got.CompletionTokens) / float64(steps)
+		}
+	}
+	if len(got.ITL) > 0 {
+		itl := make([]float64, len(got.ITL))
+		for i, d := range got.ITL {
+			itl[i] = ms(d)
+		}
+		sort.Float64s(itl)
+		values["itl_ms_p50"] = percentile(itl, 0.50)
+		values["itl_ms_p95"] = percentile(itl, 0.95)
+		values["itl_ms_p99"] = percentile(itl, 0.99)
+	}
+	values["cached_tokens"] = float64(got.CachedTokens)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	at := time.Since(r.start).Milliseconds()
@@ -262,12 +330,28 @@ func (r *run) recordCompletion(caseName string, repeat int, got runtime.Completi
 	}
 }
 
+// sample polls each requested metric source every SampleInterval until the
+// returned function is called. A requested source that never produced a sample
+// makes the measurement invalid.
 func (r *run) sample(ctx context.Context) func() {
-	wantGPU, wantRuntime := r.cfg.Spec.Wants(job.MetricGPU), r.cfg.Spec.Wants(job.MetricRuntime)
-	if !wantGPU && !wantRuntime {
+	type source struct {
+		name string
+		poll func(context.Context)
+	}
+	var sources []source
+	if r.cfg.Spec.Wants(job.MetricGPU) {
+		sources = append(sources, source{"gpu", r.sampleGPU})
+	}
+	if r.cfg.Spec.Wants(job.MetricRuntime) {
+		sources = append(sources, source{"runtime", r.sampleRuntime})
+	}
+	if r.cfg.Spec.Wants(job.MetricHost) {
+		sources = append(sources, source{"host", r.sampleHost})
+	}
+	if len(sources) == 0 {
 		return func() {}
 	}
-	done := make(chan struct{})
+	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -276,31 +360,32 @@ func (r *run) sample(ctx context.Context) func() {
 		defer ticker.Stop()
 		for {
 			select {
-			case <-done:
-				return
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
 			}
-			if wantGPU {
-				r.sampleGPU(ctx)
-			}
-			if wantRuntime {
-				r.sampleRuntime(ctx)
+			for _, s := range sources {
+				s.poll(ctx)
 			}
 		}
 	}()
+	if r.cfg.Spec.Wants(job.MetricGPU) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// PCIe throughput is optional: older drivers or a missing dmon
+			// must not invalidate the other GPU metrics.
+			_ = streamPCIe(ctx, r.cfg.SampleInterval, r.recordPCIe)
+		}()
+	}
 	return func() {
-		close(done)
+		cancel()
 		wg.Wait()
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		for _, source := range []struct {
-			want bool
-			name string
-		}{{wantGPU, "gpu"}, {wantRuntime, "runtime"}} {
-			if source.want && !r.hasSourceLocked(source.name) {
-				r.invalid = append(r.invalid, source.name+" metrics were requested but never sampled")
+		for _, s := range sources {
+			if !r.hasSourceLocked(s.name) {
+				r.invalid = append(r.invalid, s.name+" metrics were requested but never sampled")
 			}
 		}
 	}
@@ -315,11 +400,51 @@ func (r *run) sampleGPU(ctx context.Context) {
 	defer r.mu.Unlock()
 	at := time.Since(r.start).Milliseconds()
 	for i, g := range reading.GPUs {
-		labels := map[string]string{"gpu": strconv.Itoa(i), "model": g.Name}
-		r.samples = append(r.samples,
-			Sample{AtMS: at, Source: "gpu", Name: "vram_used_mib", Case: r.currentCase, Value: g.UsedMiB, Labels: labels},
-			Sample{AtMS: at, Source: "gpu", Name: "gpu_util_percent", Case: r.currentCase, Value: g.UtilPercent, Labels: labels},
-		)
+		for _, f := range gpuFields {
+			if v, ok := g.Values[f.name]; ok {
+				r.samples = append(r.samples, Sample{AtMS: at, Source: "gpu", Name: f.name, Case: r.currentCase, Value: v, Labels: gpuLabels(i, g.Name)})
+			}
+		}
+	}
+}
+
+func (r *run) recordPCIe(p pcieReading) {
+	var name string
+	if p.GPU < len(r.gpu.GPUs) {
+		name = r.gpu.GPUs[p.GPU].Name
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	at := time.Since(r.start).Milliseconds()
+	r.samples = append(r.samples,
+		Sample{AtMS: at, Source: "gpu", Name: "pcie_rx_mbps", Case: r.currentCase, Value: p.RxMBps, Labels: gpuLabels(p.GPU, name)},
+		Sample{AtMS: at, Source: "gpu", Name: "pcie_tx_mbps", Case: r.currentCase, Value: p.TxMBps, Labels: gpuLabels(p.GPU, name)},
+	)
+}
+
+func gpuLabels(index int, model string) map[string]string {
+	return map[string]string{"gpu": strconv.Itoa(index), "model": model}
+}
+
+// sampleHost records CPU and RAM use of the node the runtime runs on.
+func (r *run) sampleHost(context.Context) {
+	cpu, cpuErr := readCPU()
+	mem, memErr := readMemUsedMiB()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	at := time.Since(r.start).Milliseconds()
+	add := func(name string, v float64) {
+		r.samples = append(r.samples, Sample{AtMS: at, Source: "host", Name: name, Case: r.currentCase, Value: v})
+	}
+	if cpuErr == nil {
+		if all, busiest, ok := cpuUtil(r.prevCPU, cpu); ok {
+			add("cpu_util_percent", all)
+			add("cpu_max_core_percent", busiest)
+		}
+		r.prevCPU = cpu
+	}
+	if memErr == nil {
+		add("ram_used_mib", mem)
 	}
 }
 
@@ -380,6 +505,25 @@ var harnessMetrics = []struct {
 	{"prefill_tok_per_s", "tok/s", median},
 	{"tokens_in", "tokens", median},
 	{"tokens_out", "tokens", median},
+	{"draft_acceptance", "ratio", median},
+	{"mtp_accept_len", "tokens", median},
+	{"cached_tokens", "tokens", median},
+	{"itl_ms_p50", "ms", median},
+	{"itl_ms_p95", "ms", median},
+	{"itl_ms_p99", "ms", median},
+}
+
+// sampledMetrics summarize the polled series over the whole run.
+var sampledMetrics = []struct {
+	source, name, unit string
+	agg                func([]float64) float64
+}{
+	{"gpu", "vram_used_mib", "MiB", maximum},
+	{"gpu", "gpu_util_percent", "%", mean},
+	{"gpu", "power_w", "W", mean},
+	{"gpu", "temperature_c", "°C", maximum},
+	{"host", "cpu_util_percent", "%", mean},
+	{"host", "ram_used_mib", "MiB", maximum},
 }
 
 func (r *run) result(jobspec, series []byte, prompts map[string]string) Result {
@@ -403,11 +547,15 @@ func (r *run) result(jobspec, series []byte, prompts map[string]string) Result {
 			}
 		}
 	}
-	if m, ok := summarize("vram_used_mib", "", "MiB", values("gpu", "vram_used_mib", ""), maximum); ok {
-		metrics = append(metrics, m)
+	for _, c := range spec.Workload {
+		if m, ok := energyPerToken(r.samples, c.Name); ok {
+			metrics = append(metrics, m)
+		}
 	}
-	if m, ok := summarize("gpu_util_percent", "", "%", values("gpu", "gpu_util_percent", ""), mean); ok {
-		metrics = append(metrics, m)
+	for _, sm := range sampledMetrics {
+		if m, ok := summarize(sm.name, "", sm.unit, values(sm.source, sm.name, ""), sm.agg); ok {
+			metrics = append(metrics, m)
+		}
 	}
 
 	workload, _ := json.Marshal(struct {
@@ -442,3 +590,36 @@ func (r *run) result(jobspec, series []byte, prompts map[string]string) Result {
 }
 
 func ms(d time.Duration) float64 { return float64(d) / float64(time.Millisecond) }
+
+// energyPerToken integrates the power of all GPUs over the samples taken while
+// a case ran and divides it by the tokens the case generated. Prefill is
+// included, so it is the energy cost of a generated token end to end.
+func energyPerToken(samples []Sample, caseName string) (Metric, bool) {
+	power := map[int64]float64{}
+	var tokens float64
+	var repeats int
+	for _, s := range samples {
+		switch {
+		case s.Case != caseName:
+		case s.Source == "gpu" && s.Name == "power_w":
+			power[s.AtMS] += s.Value
+		case s.Source == "harness" && s.Name == "tokens_out":
+			tokens += s.Value
+			repeats++
+		}
+	}
+	times := make([]int64, 0, len(power))
+	for t := range power {
+		times = append(times, t)
+	}
+	sort.Slice(times, func(i, j int) bool { return times[i] < times[j] })
+	var joules float64
+	for i := 1; i < len(times); i++ {
+		joules += power[times[i]] * float64(times[i]-times[i-1]) / 1000
+	}
+	if joules == 0 || tokens == 0 {
+		return Metric{}, false
+	}
+	v := joules / tokens
+	return Metric{Name: "energy_j_per_token", Case: caseName, Unit: "J/token", Value: v, Min: v, Max: v, Samples: repeats}, true
+}

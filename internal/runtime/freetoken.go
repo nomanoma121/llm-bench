@@ -41,8 +41,10 @@ func (a freeToken) Ready(ctx context.Context) error {
 }
 
 func (a freeToken) Complete(ctx context.Context, req Request) (Completion, error) {
-	return chatCompletion(ctx, a.client, a.opts.baseURL(), a.opts.ModelID, req)
+	return chatCompletion(ctx, a.client, a.opts.baseURL(), a.opts.ModelID, req, nil)
 }
+
+func (freeToken) Info(string) map[string]string { return nil }
 
 func (a freeToken) Metrics(ctx context.Context) ([]Metric, error) {
 	var stats struct {

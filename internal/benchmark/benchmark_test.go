@@ -65,8 +65,10 @@ func TestRunAndCompare(t *testing.T) {
 		if !result.MeasurementValid {
 			t.Fatalf("invalid: %v", result.InvalidReasons)
 		}
-		if _, ok := result.Metric("decode_tok_per_s", "short"); !ok {
-			t.Fatalf("no decode metric: %+v", result.Metrics)
+		for _, name := range []string{"decode_tok_per_s", "itl_ms_p50", "itl_ms_p99"} {
+			if _, ok := result.Metric(name, "short"); !ok {
+				t.Fatalf("no %s metric: %+v", name, result.Metrics)
+			}
 		}
 		for _, f := range []string{"jobspec.yaml", "series.jsonl", "result.json", "README.md", "raw/runtime.log"} {
 			if _, err := os.Stat(filepath.Join(out, f)); err != nil {
@@ -90,9 +92,75 @@ func TestRunAndCompare(t *testing.T) {
 }
 
 func TestParseNvidiaSMI(t *testing.T) {
-	r, err := parseNvidiaSMI([]byte("NVIDIA RTX 5090, 1200, 37, 575.51\n"))
-	if err != nil || r.Driver != "575.51" || r.GPUs[0].UsedMiB != 1200 {
+	r, err := parseNvidiaSMI([]byte("NVIDIA RTX 5090, 575.51, 1200, 37, 12, [N/A], 61, 2400, 0x0000000000000004\n"))
+	if err != nil || r.Driver != "575.51" {
 		t.Fatalf("%+v %v", r, err)
+	}
+	got := r.GPUs[0].Values
+	if got["vram_used_mib"] != 1200 || got["mem_util_percent"] != 12 || got["throttled"] != 1 {
+		t.Fatalf("values %v", got)
+	}
+	if _, ok := got["power_w"]; ok {
+		t.Fatal("unsupported power reading was recorded")
+	}
+	if _, err := parseNvidiaSMI([]byte("NVIDIA RTX 5090, 1200, 37, 575.51\n")); err == nil {
+		t.Fatal("short line was accepted")
+	}
+}
+
+func TestParseThrottled(t *testing.T) {
+	for in, want := range map[string]float64{"0x0000000000000001": 0, "0x0000000000000020": 1, "0x0000000000000101": 0} {
+		if got, err := parseThrottled(in); err != nil || got != want {
+			t.Errorf("%s: %v %v", in, got, err)
+		}
+	}
+}
+
+func TestReadDmon(t *testing.T) {
+	var got []pcieReading
+	readDmon(strings.NewReader("# gpu  rxpci  txpci\n# Idx   MB/s   MB/s\n    0     12      3\n    1      0     40\n"), func(p pcieReading) { got = append(got, p) })
+	if len(got) != 2 || got[0] != (pcieReading{0, 12, 3}) || got[1] != (pcieReading{1, 0, 40}) {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestHostReadings(t *testing.T) {
+	prev, err := parseProcStat([]byte("cpu  10 0 10 80 0 0 0 0 0 0\ncpu0 5 0 5 40 0 0 0 0 0 0\ncpu1 5 0 5 40 0 0 0 0 0 0\nintr 1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur, _ := parseProcStat([]byte("cpu  60 0 10 130 0 0 0 0 0 0\ncpu0 55 0 5 40 0 0 0 0 0 0\ncpu1 5 0 5 90 0 0 0 0 0 0\n"))
+	all, busiest, ok := cpuUtil(prev, cur)
+	if !ok || all != 50 || busiest != 100 {
+		t.Fatalf("all %v busiest %v ok %v", all, busiest, ok)
+	}
+	used, err := parseMeminfo([]byte("MemTotal:       4194304 kB\nMemFree:  1 kB\nMemAvailable:   1048576 kB\n"))
+	if err != nil || used != 3072 {
+		t.Fatalf("used %v %v", used, err)
+	}
+}
+
+func TestPercentile(t *testing.T) {
+	v := []float64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+	if percentile(v, 0.5) != 5 || percentile(v, 0.95) != 10 || percentile(v, 0) != 1 {
+		t.Fatal(percentile(v, 0.5), percentile(v, 0.95))
+	}
+}
+
+func TestEnergyPerToken(t *testing.T) {
+	gpu := func(at int64, gpu string, w float64) Sample {
+		return Sample{AtMS: at, Source: "gpu", Name: "power_w", Case: "c", Value: w, Labels: map[string]string{"gpu": gpu}}
+	}
+	samples := []Sample{
+		gpu(0, "0", 100), gpu(0, "1", 100),
+		gpu(1000, "0", 150), gpu(1000, "1", 50),
+		gpu(2000, "0", 100), gpu(2000, "1", 100),
+		{Source: "gpu", Name: "power_w", Case: "other", Value: 1000, AtMS: 3000},
+		{Source: "harness", Name: "tokens_out", Case: "c", Value: 40},
+	}
+	m, ok := energyPerToken(samples, "c")
+	if !ok || m.Value != 10 || m.Samples != 1 {
+		t.Fatalf("%+v", m)
 	}
 }
 

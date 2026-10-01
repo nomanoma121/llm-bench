@@ -23,7 +23,7 @@ body:
         sampling:
           temperature: 0
           seed: 1
-        metrics: [runtime, gpu]
+        metrics: [runtime, gpu, host]
         source:
           repo: ggml-org/llama.cpp
           ref: master

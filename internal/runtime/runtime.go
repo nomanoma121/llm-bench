@@ -39,10 +39,16 @@ type Request struct {
 }
 
 type Completion struct {
+	Content          string
 	PromptTokens     int
 	CompletionTokens int
+	CachedTokens     int
+	DraftTokens      int
+	DraftAccepted    int
 	TTFT             time.Duration
-	Total            time.Duration
+	// ITL holds the gaps between consecutive streamed chunks.
+	ITL   []time.Duration
+	Total time.Duration
 }
 
 type Metric struct {
@@ -56,6 +62,7 @@ type Adapter interface {
 	Ready(ctx context.Context) error
 	Complete(ctx context.Context, req Request) (Completion, error)
 	Metrics(ctx context.Context) ([]Metric, error)
+	Info(log string) map[string]string
 }
 
 func New(engine string, o Options) (Adapter, error) {

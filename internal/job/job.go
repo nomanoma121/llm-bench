@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -88,9 +89,12 @@ func (r Runtime) ReadyTimeoutSecondsOrDefault() int {
 	return r.ReadyTimeoutSeconds
 }
 
+// shardSuffix is the "-00001-of-00004" a split GGUF's first file carries.
+var shardSuffix = regexp.MustCompile(`-\d{5}-of-\d{5}$`)
+
 func (s Spec) ModelName() string {
 	base := filepath.Base(s.Model)
-	return strings.TrimSuffix(base, filepath.Ext(base))
+	return shardSuffix.ReplaceAllString(strings.TrimSuffix(base, filepath.Ext(base)), "")
 }
 
 func (s Spec) Wants(metric string) bool {

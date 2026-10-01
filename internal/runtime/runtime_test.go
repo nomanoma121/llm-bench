@@ -21,9 +21,10 @@ func TestLlamaCpp(t *testing.T) {
 		switch r.URL.Path {
 		case "/health":
 			fmt.Fprint(w, `{"status":"ok"}`)
-		case "/completion":
-			fmt.Fprint(w, "data: {\"content\":\"a\"}\n\ndata: {\"content\":\"b\"}\n\n")
-			fmt.Fprint(w, "data: {\"content\":\"\",\"timings\":{\"prompt_n\":5,\"predicted_n\":2}}\n\n")
+		case "/v1/chat/completions":
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"a\"}}]}\n\n")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\n")
+			fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n")
 		case "/metrics":
 			fmt.Fprint(w, "# HELP x\nllamacpp:kv_cache_usage_ratio 0.5\nllamacpp:requests{slot=\"0\"} 1\n")
 		}

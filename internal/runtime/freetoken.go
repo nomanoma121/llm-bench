@@ -2,10 +2,8 @@ package runtime
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 )
 
 type freeToken struct {
@@ -43,54 +41,7 @@ func (a freeToken) Ready(ctx context.Context) error {
 }
 
 func (a freeToken) Complete(ctx context.Context, req Request) (Completion, error) {
-	body := map[string]any{
-		"model":          a.opts.ModelID,
-		"messages":       []map[string]string{{"role": "user", "content": req.Prompt}},
-		"max_tokens":     req.MaxTokens,
-		"stream":         true,
-		"stream_options": map[string]any{"include_usage": true},
-	}
-	setSampling(body, req)
-	start := time.Now()
-	resp, err := postJSON(ctx, a.client, a.opts.baseURL()+"/v1/chat/completions", body)
-	if err != nil {
-		return Completion{}, err
-	}
-	var out Completion
-	var last time.Duration
-	err = streamSSE(ctx, resp, func(data []byte) error {
-		var chunk struct {
-			Choices []struct {
-				Delta struct {
-					Content          string `json:"content"`
-					ReasoningContent string `json:"reasoning_content"`
-				} `json:"delta"`
-			} `json:"choices"`
-			Usage *struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
-			} `json:"usage"`
-		}
-		if err := json.Unmarshal(data, &chunk); err != nil {
-			return err
-		}
-		for _, c := range chunk.Choices {
-			if c.Delta.Content == "" && c.Delta.ReasoningContent == "" {
-				continue
-			}
-			last = time.Since(start)
-			if out.TTFT == 0 {
-				out.TTFT = last
-			}
-		}
-		if chunk.Usage != nil {
-			out.PromptTokens = chunk.Usage.PromptTokens
-			out.CompletionTokens = chunk.Usage.CompletionTokens
-		}
-		return nil
-	})
-	out.Total = last
-	return out, err
+	return chatCompletion(ctx, a.client, a.opts.baseURL(), a.opts.ModelID, req)
 }
 
 func (a freeToken) Metrics(ctx context.Context) ([]Metric, error) {

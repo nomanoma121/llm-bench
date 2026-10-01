@@ -231,8 +231,8 @@ func (r *run) measure(ctx context.Context, prompts map[string]string) {
 				r.invalidate(fmt.Sprintf("case %s repeat %d failed: %v", c.Name, i, err))
 				continue
 			}
-			if got.CompletionTokens == 0 {
-				r.invalidate(fmt.Sprintf("case %s repeat %d reported no completion tokens", c.Name, i))
+			if got.CompletionTokens < 2 || got.TTFT == 0 {
+				r.invalidate(fmt.Sprintf("case %s repeat %d produced %d tokens; no decode rate can be measured", c.Name, i, got.CompletionTokens))
 			}
 			r.recordCompletion(c.Name, i, got)
 		}

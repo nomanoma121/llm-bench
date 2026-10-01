@@ -126,8 +126,14 @@ func TestStrata(t *testing.T) {
 	if err != nil || got["decoded_tokens"] != 20 || got["context_tokens"] != 120 || got["context_size"] != 32768 || got["strata:tok_s"] != 41.5 {
 		t.Fatalf("metrics %v %v", got, err)
 	}
-	info := a.Info("strata generate: layer split auto: K=19 - the caches hold 11767 of 12288 profiled pairs (fullest device 100%)\nstrata serve: layer split: layers 0-18 (CUDA0), 19-47 (CUDA1), one hand-off per window\n")
-	if info["split_layer"] != "19" || info["cached_expert_pairs"] != "11767" || info["layer_split"] != "layers 0-18 (CUDA0), 19-47 (CUDA1), one hand-off per window" {
+	info := a.Info(`strata generate: pre-filled 5762 of 5762 slots from the profile; slot 0 verified
+strata generate: session is up (engine 0.1.31)
+strata generate: token graph hit path: 10306 resident experts, decided on the device
+strata serve: layer split: layers 0-21 (CUDA0), 22-47 (CUDA1), one hand-off per window
+strata serve: 478 MiB of VRAM free with everything loaded
+`)
+	if info["version"] != "0.1.31" || info["gpu_resident_experts"] != "10306" || info["vram_free_mib"] != "478" ||
+		info["layer_split"] != "layers 0-21 (CUDA0), 22-47 (CUDA1), one hand-off per window" {
 		t.Fatalf("info %v", info)
 	}
 }

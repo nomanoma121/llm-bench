@@ -37,13 +37,13 @@ spec:
                 --context 32768 --vision no --low-ram off --gpus 0,1 \
                 --data-dir /models/strata --host 127.0.0.1 --port 18080 --no-start
               mkdir -p /models/strata/config
-              # The engine logs to the server's output, which the benchmark keeps,
-              # and reads every prompt from the start, as llama.cpp does with
-              # cache_prompt off.
+              # The engine logs to the server's stderr, which the benchmark keeps
+              # (without a log file its output is discarded), and reads every
+              # prompt from the start, as llama.cpp does with cache_prompt off.
               .venv/bin/python - <<'PY'
               import json
               cfg = json.load(open("strata-iq2_xs.json"))
-              cfg.pop("log", None)
+              cfg["log"] = "/dev/stderr"
               cfg["args"] += ["--prompt-cache", "0"]
               json.dump(cfg, open("/models/strata/config/strata-iq2_xs.json", "w"), indent=1)
               PY

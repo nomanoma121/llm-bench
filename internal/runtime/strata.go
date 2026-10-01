@@ -96,8 +96,11 @@ var strataInfo = []struct {
 	re   *regexp.Regexp
 	keys []string
 }{
-	{regexp.MustCompile(`layer split auto: K=(\d+) - the caches hold (\d+) of (\d+) profiled pairs`), []string{"split_layer", "cached_expert_pairs", "profiled_expert_pairs"}},
+	{regexp.MustCompile(`session is up \(engine ([\d.]+)\)`), []string{"version"}},
 	{regexp.MustCompile(`strata serve: layer split: (.+)`), []string{"layer_split"}},
+	{regexp.MustCompile(`token graph hit path: (\d+) resident experts`), []string{"gpu_resident_experts"}},
+	{regexp.MustCompile(`pre-filled (\d+) of (\d+) slots from the profile`), []string{"prefilled_expert_slots", "expert_slots"}},
+	{regexp.MustCompile(`(\d+) MiB of VRAM free with everything loaded`), []string{"vram_free_mib"}},
 }
 
 func (strata) Info(log string) map[string]string {

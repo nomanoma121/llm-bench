@@ -1,0 +1,18 @@
+kind: benchmark
+model: Qwen3.8-27B/Qwen3.8-27B-Q4_0.gguf
+runtime:
+    engine: llamacpp
+    args:
+        - --ctx-size
+        - "8192"
+workload:
+    - name: short
+      prompt: benchmarks/visual/prompt.md
+      max_tokens: 256
+      repeats: 3
+sampling:
+    temperature: 0
+    seed: 1
+metrics:
+    - runtime
+    - gpu

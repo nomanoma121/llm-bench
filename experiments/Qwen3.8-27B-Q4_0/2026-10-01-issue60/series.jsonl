@@ -1,0 +1,854 @@
+{"at_ms":5078,"source":"gpu","name":"vram_used_mib","case":"short","value":7841,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":5078,"source":"gpu","name":"gpu_util_percent","case":"short","value":100,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":5078,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":5078,"source":"gpu","name":"gpu_util_percent","case":"short","value":0,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":5078,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":0}
+{"at_ms":5078,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":0}
+{"at_ms":5078,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":0}
+{"at_ms":5078,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":0}
+{"at_ms":5078,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":0}
+{"at_ms":5078,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":1}
+{"at_ms":5078,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":42}
+{"at_ms":5078,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":5078,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":5078,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":5078,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":5078,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":5078,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":5078,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":5078,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":6077,"source":"gpu","name":"vram_used_mib","case":"short","value":7841,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":6077,"source":"gpu","name":"gpu_util_percent","case":"short","value":100,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":6077,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":6077,"source":"gpu","name":"gpu_util_percent","case":"short","value":100,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":6077,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":0}
+{"at_ms":6077,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":0}
+{"at_ms":6077,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":0}
+{"at_ms":6077,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":0}
+{"at_ms":6077,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":0}
+{"at_ms":6077,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":1}
+{"at_ms":6077,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":42}
+{"at_ms":6077,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":6077,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":6077,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":6077,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":6077,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":6077,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":6077,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":6077,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":7078,"source":"gpu","name":"vram_used_mib","case":"short","value":7841,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":7078,"source":"gpu","name":"gpu_util_percent","case":"short","value":100,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":7078,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":7078,"source":"gpu","name":"gpu_util_percent","case":"short","value":100,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":7078,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":0}
+{"at_ms":7078,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":0}
+{"at_ms":7078,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":0}
+{"at_ms":7078,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":0}
+{"at_ms":7078,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":0}
+{"at_ms":7078,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":2}
+{"at_ms":7078,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":2090}
+{"at_ms":7078,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":7078,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":7078,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":7078,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":7078,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":7078,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":7078,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":7078,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":8077,"source":"gpu","name":"vram_used_mib","case":"short","value":7841,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":8077,"source":"gpu","name":"gpu_util_percent","case":"short","value":100,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":8077,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":8077,"source":"gpu","name":"gpu_util_percent","case":"short","value":100,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":8077,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":0}
+{"at_ms":8077,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":0}
+{"at_ms":8077,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":0}
+{"at_ms":8077,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":0}
+{"at_ms":8077,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":0}
+{"at_ms":8077,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":2}
+{"at_ms":8077,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":2090}
+{"at_ms":8077,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":8077,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":8077,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":8077,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":8077,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":8077,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":8077,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":8077,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":9076,"source":"gpu","name":"vram_used_mib","case":"short","value":7841,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":9076,"source":"gpu","name":"gpu_util_percent","case":"short","value":0,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":9076,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":9076,"source":"gpu","name":"gpu_util_percent","case":"short","value":100,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":9076,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":0}
+{"at_ms":9076,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":0}
+{"at_ms":9076,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":0}
+{"at_ms":9076,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":0}
+{"at_ms":9076,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":0}
+{"at_ms":9076,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":4}
+{"at_ms":9076,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":4391}
+{"at_ms":9076,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":9076,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":9076,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":9076,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":9076,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":9076,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":9076,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":9076,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":10080,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":10080,"source":"gpu","name":"gpu_util_percent","case":"short","value":0,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":10080,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":10080,"source":"gpu","name":"gpu_util_percent","case":"short","value":100,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":10080,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4907}
+{"at_ms":10080,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":0}
+{"at_ms":10080,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.8703}
+{"at_ms":10080,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":0}
+{"at_ms":10080,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":0}
+{"at_ms":10080,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":8}
+{"at_ms":10080,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":4909}
+{"at_ms":10080,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":10080,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":10080,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":10080,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":835.903}
+{"at_ms":10080,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":10080,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":10080,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":10080,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":11079,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":11079,"source":"gpu","name":"gpu_util_percent","case":"short","value":48,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":11079,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":11079,"source":"gpu","name":"gpu_util_percent","case":"short","value":52,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":11079,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4907}
+{"at_ms":11079,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":0}
+{"at_ms":11079,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.8703}
+{"at_ms":11079,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":0}
+{"at_ms":11079,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":0}
+{"at_ms":11079,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":28}
+{"at_ms":11079,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":4929}
+{"at_ms":11079,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":11079,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":11079,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":11079,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":11079,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":11079,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":11079,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":11079,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":12079,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":12079,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":12079,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":12079,"source":"gpu","name":"gpu_util_percent","case":"short","value":51,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":12079,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4907}
+{"at_ms":12079,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":0}
+{"at_ms":12079,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.8703}
+{"at_ms":12079,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":0}
+{"at_ms":12079,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":0}
+{"at_ms":12079,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":48}
+{"at_ms":12079,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":4949}
+{"at_ms":12079,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":12079,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":12079,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":12079,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":12079,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":12079,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":12079,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":12079,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":13078,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":13078,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":13078,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":13078,"source":"gpu","name":"gpu_util_percent","case":"short","value":51,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":13079,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4907}
+{"at_ms":13079,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":0}
+{"at_ms":13079,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.8703}
+{"at_ms":13079,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":0}
+{"at_ms":13079,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":0}
+{"at_ms":13079,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":68}
+{"at_ms":13079,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":4969}
+{"at_ms":13079,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":13079,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":13079,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":13079,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":13079,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":13079,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":13079,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":13079,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":14077,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":14077,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":14077,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":14077,"source":"gpu","name":"gpu_util_percent","case":"short","value":51,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":14077,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4907}
+{"at_ms":14077,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":0}
+{"at_ms":14077,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.8703}
+{"at_ms":14077,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":0}
+{"at_ms":14077,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":0}
+{"at_ms":14077,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":88}
+{"at_ms":14077,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":4989}
+{"at_ms":14077,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":14077,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":14077,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":14077,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":14077,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":14077,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":14077,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":14077,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":15080,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":15080,"source":"gpu","name":"gpu_util_percent","case":"short","value":48,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":15080,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":15080,"source":"gpu","name":"gpu_util_percent","case":"short","value":52,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":15080,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4907}
+{"at_ms":15080,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":0}
+{"at_ms":15080,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.8703}
+{"at_ms":15080,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":0}
+{"at_ms":15080,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":0}
+{"at_ms":15080,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":107}
+{"at_ms":15080,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5008}
+{"at_ms":15080,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":15080,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":15080,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":15080,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":15080,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":15080,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":15080,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":15080,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":16079,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":16079,"source":"gpu","name":"gpu_util_percent","case":"short","value":48,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":16079,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":16079,"source":"gpu","name":"gpu_util_percent","case":"short","value":51,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":16079,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4907}
+{"at_ms":16079,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":0}
+{"at_ms":16079,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.8703}
+{"at_ms":16079,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":0}
+{"at_ms":16079,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":0}
+{"at_ms":16079,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":127}
+{"at_ms":16079,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5028}
+{"at_ms":16079,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":16079,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":16079,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":16079,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":16079,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":16079,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":16079,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":16079,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":17078,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":17078,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":17078,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":17078,"source":"gpu","name":"gpu_util_percent","case":"short","value":51,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":17078,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4907}
+{"at_ms":17078,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":0}
+{"at_ms":17078,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.8703}
+{"at_ms":17078,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":0}
+{"at_ms":17078,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":0}
+{"at_ms":17078,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":147}
+{"at_ms":17078,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5048}
+{"at_ms":17078,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":17078,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":17078,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":17078,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":17078,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":17078,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":17078,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":17078,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":18079,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":18079,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":18079,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":18079,"source":"gpu","name":"gpu_util_percent","case":"short","value":51,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":18079,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4907}
+{"at_ms":18079,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":0}
+{"at_ms":18079,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.8703}
+{"at_ms":18079,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":0}
+{"at_ms":18079,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":0}
+{"at_ms":18079,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":167}
+{"at_ms":18079,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5068}
+{"at_ms":18079,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":18079,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":18079,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":18079,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":18079,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":18079,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":18079,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":18079,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":19079,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":19079,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":19079,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":19079,"source":"gpu","name":"gpu_util_percent","case":"short","value":51,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":19079,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4907}
+{"at_ms":19079,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":0}
+{"at_ms":19079,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.8703}
+{"at_ms":19079,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":0}
+{"at_ms":19079,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":0}
+{"at_ms":19079,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":187}
+{"at_ms":19079,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5088}
+{"at_ms":19079,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":19079,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":19079,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":19079,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":19079,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":19079,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":19079,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":19079,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":20078,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":20078,"source":"gpu","name":"gpu_util_percent","case":"short","value":48,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":20078,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":20078,"source":"gpu","name":"gpu_util_percent","case":"short","value":52,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":20079,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4907}
+{"at_ms":20079,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":0}
+{"at_ms":20079,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.8703}
+{"at_ms":20079,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":0}
+{"at_ms":20079,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":0}
+{"at_ms":20079,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":206}
+{"at_ms":20079,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5107}
+{"at_ms":20079,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":20079,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":20079,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":20079,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":20079,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":20079,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":20079,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":20079,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":21080,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":21080,"source":"gpu","name":"gpu_util_percent","case":"short","value":48,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":21080,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":21080,"source":"gpu","name":"gpu_util_percent","case":"short","value":52,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":21080,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4907}
+{"at_ms":21080,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":0}
+{"at_ms":21080,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.8703}
+{"at_ms":21080,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":0}
+{"at_ms":21080,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":0}
+{"at_ms":21080,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":226}
+{"at_ms":21080,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5127}
+{"at_ms":21080,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":21080,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":21080,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":21080,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":21080,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":21080,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":21080,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":21080,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":22078,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":22078,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":22078,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":22078,"source":"gpu","name":"gpu_util_percent","case":"short","value":50,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":22078,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4907}
+{"at_ms":22078,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":0}
+{"at_ms":22078,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.8703}
+{"at_ms":22078,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":0}
+{"at_ms":22078,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":0}
+{"at_ms":22078,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":246}
+{"at_ms":22078,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5147}
+{"at_ms":22078,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":22078,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":22078,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":22078,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":22078,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":22078,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":22078,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":22078,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":22814,"source":"harness","name":"decode_tok_per_s","case":"short","repeat":1,"value":19.787580352847588}
+{"at_ms":22814,"source":"harness","name":"prefill_tok_per_s","case":"short","repeat":1,"value":834.122942946475}
+{"at_ms":22814,"source":"harness","name":"ttft_ms","case":"short","repeat":1,"value":5882.825837}
+{"at_ms":22814,"source":"harness","name":"latency_ms","case":"short","repeat":1,"value":18769.697069}
+{"at_ms":22814,"source":"harness","name":"tokens_in","case":"short","repeat":1,"value":4907}
+{"at_ms":22814,"source":"harness","name":"tokens_out","case":"short","repeat":1,"value":256}
+{"at_ms":23077,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":23077,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":23077,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":23077,"source":"gpu","name":"gpu_util_percent","case":"short","value":51,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":23078,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4911}
+{"at_ms":23078,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":4903}
+{"at_ms":23078,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.93308}
+{"at_ms":23078,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":256}
+{"at_ms":23078,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":12.8871}
+{"at_ms":23078,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":263}
+{"at_ms":23078,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":23078,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":23078,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":23078,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":23078,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":63.7085}
+{"at_ms":23078,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":19.7872}
+{"at_ms":23078,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":23078,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":23078,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":24078,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24078,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24078,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24078,"source":"gpu","name":"gpu_util_percent","case":"short","value":52,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24078,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4911}
+{"at_ms":24078,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":4903}
+{"at_ms":24078,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.93308}
+{"at_ms":24078,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":256}
+{"at_ms":24078,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":12.8871}
+{"at_ms":24078,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":283}
+{"at_ms":24078,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":24078,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":24078,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":24078,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":24078,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":24078,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":24078,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":24078,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":24078,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":25078,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25078,"source":"gpu","name":"gpu_util_percent","case":"short","value":48,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25078,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25078,"source":"gpu","name":"gpu_util_percent","case":"short","value":52,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25078,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4911}
+{"at_ms":25078,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":4903}
+{"at_ms":25078,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.93308}
+{"at_ms":25078,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":256}
+{"at_ms":25078,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":12.8871}
+{"at_ms":25078,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":302}
+{"at_ms":25078,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":25078,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":25078,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":25078,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":25078,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":25078,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":25078,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":25078,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":25078,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":26079,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26079,"source":"gpu","name":"gpu_util_percent","case":"short","value":48,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26079,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26079,"source":"gpu","name":"gpu_util_percent","case":"short","value":52,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26079,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4911}
+{"at_ms":26079,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":4903}
+{"at_ms":26079,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.93308}
+{"at_ms":26079,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":256}
+{"at_ms":26079,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":12.8871}
+{"at_ms":26079,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":322}
+{"at_ms":26079,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":26079,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":26079,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":26079,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":26079,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":26079,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":26079,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":26079,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":26079,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":27078,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27078,"source":"gpu","name":"gpu_util_percent","case":"short","value":48,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27078,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27078,"source":"gpu","name":"gpu_util_percent","case":"short","value":50,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27079,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4911}
+{"at_ms":27079,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":4903}
+{"at_ms":27079,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.93308}
+{"at_ms":27079,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":256}
+{"at_ms":27079,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":12.8871}
+{"at_ms":27079,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":342}
+{"at_ms":27079,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":27079,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":27079,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":27079,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":27079,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":27079,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":27079,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":27079,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":27079,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":28077,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28077,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28077,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28077,"source":"gpu","name":"gpu_util_percent","case":"short","value":51,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28077,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4911}
+{"at_ms":28077,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":4903}
+{"at_ms":28077,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.93308}
+{"at_ms":28077,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":256}
+{"at_ms":28077,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":12.8871}
+{"at_ms":28077,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":362}
+{"at_ms":28077,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":28077,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":28077,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":28077,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":28077,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":28077,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":28077,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":28077,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":28077,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":29078,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29078,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29078,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29078,"source":"gpu","name":"gpu_util_percent","case":"short","value":52,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29078,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4911}
+{"at_ms":29078,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":4903}
+{"at_ms":29078,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.93308}
+{"at_ms":29078,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":256}
+{"at_ms":29078,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":12.8871}
+{"at_ms":29078,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":382}
+{"at_ms":29078,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":29078,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":29078,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":29078,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":29078,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":29078,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":29078,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":29078,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":29078,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":30078,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30078,"source":"gpu","name":"gpu_util_percent","case":"short","value":48,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30078,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30078,"source":"gpu","name":"gpu_util_percent","case":"short","value":52,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30078,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4911}
+{"at_ms":30078,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":4903}
+{"at_ms":30078,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.93308}
+{"at_ms":30078,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":256}
+{"at_ms":30078,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":12.8871}
+{"at_ms":30078,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":401}
+{"at_ms":30078,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":30078,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":30078,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":30078,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":30078,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":30078,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":30078,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":30078,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":30078,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":31080,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31080,"source":"gpu","name":"gpu_util_percent","case":"short","value":48,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31080,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31080,"source":"gpu","name":"gpu_util_percent","case":"short","value":52,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31081,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4911}
+{"at_ms":31081,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":4903}
+{"at_ms":31081,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.93308}
+{"at_ms":31081,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":256}
+{"at_ms":31081,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":12.8871}
+{"at_ms":31081,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":421}
+{"at_ms":31081,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":31081,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":31081,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":31081,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":31081,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":31081,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":31081,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":31081,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":31081,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":32080,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":32080,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":32080,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":32080,"source":"gpu","name":"gpu_util_percent","case":"short","value":50,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":32080,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4911}
+{"at_ms":32080,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":4903}
+{"at_ms":32080,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.93308}
+{"at_ms":32080,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":256}
+{"at_ms":32080,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":12.8871}
+{"at_ms":32080,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":441}
+{"at_ms":32080,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":32080,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":32080,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":32080,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":32080,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":32080,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":32080,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":32080,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":32080,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":33078,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":33078,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":33078,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":33078,"source":"gpu","name":"gpu_util_percent","case":"short","value":51,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":33079,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4911}
+{"at_ms":33079,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":4903}
+{"at_ms":33079,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.93308}
+{"at_ms":33079,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":256}
+{"at_ms":33079,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":12.8871}
+{"at_ms":33079,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":461}
+{"at_ms":33079,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":33079,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":33079,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":33079,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":33079,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":33079,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":33079,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":33079,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":33079,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":34078,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":34078,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":34078,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":34078,"source":"gpu","name":"gpu_util_percent","case":"short","value":52,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":34078,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4911}
+{"at_ms":34078,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":4903}
+{"at_ms":34078,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.93308}
+{"at_ms":34078,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":256}
+{"at_ms":34078,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":12.8871}
+{"at_ms":34078,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":481}
+{"at_ms":34078,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":34078,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":34078,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":34078,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":34078,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":34078,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":34078,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":34078,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":34078,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":35080,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":35080,"source":"gpu","name":"gpu_util_percent","case":"short","value":48,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":35080,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":35080,"source":"gpu","name":"gpu_util_percent","case":"short","value":52,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":35080,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4911}
+{"at_ms":35080,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":4903}
+{"at_ms":35080,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.93308}
+{"at_ms":35080,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":256}
+{"at_ms":35080,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":12.8871}
+{"at_ms":35080,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":500}
+{"at_ms":35080,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":35080,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":35080,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":35080,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":35080,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":35080,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":35080,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":35080,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":35080,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":35892,"source":"harness","name":"tokens_out","case":"short","repeat":2,"value":256}
+{"at_ms":35892,"source":"harness","name":"decode_tok_per_s","case":"short","repeat":2,"value":19.791678023678053}
+{"at_ms":35892,"source":"harness","name":"prefill_tok_per_s","case":"short","repeat":2,"value":25326.76821384575}
+{"at_ms":35892,"source":"harness","name":"ttft_ms","case":"short","repeat":2,"value":193.747578}
+{"at_ms":35892,"source":"harness","name":"latency_ms","case":"short","repeat":2,"value":13077.950711}
+{"at_ms":35892,"source":"harness","name":"tokens_in","case":"short","repeat":2,"value":4907}
+{"at_ms":36077,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":36077,"source":"gpu","name":"gpu_util_percent","case":"short","value":48,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":36077,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":36077,"source":"gpu","name":"gpu_util_percent","case":"short","value":51,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":36077,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4911}
+{"at_ms":36077,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":9806}
+{"at_ms":36077,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.93308}
+{"at_ms":36077,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":512}
+{"at_ms":36077,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":25.7715}
+{"at_ms":36077,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":517}
+{"at_ms":36077,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":36077,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":36077,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":36077,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":36077,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":36077,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":19.7914}
+{"at_ms":36077,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":36077,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":36077,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":37078,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":37078,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":37078,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":37078,"source":"gpu","name":"gpu_util_percent","case":"short","value":51,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":37079,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4915}
+{"at_ms":37079,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":9806}
+{"at_ms":37079,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.99599}
+{"at_ms":37079,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":512}
+{"at_ms":37079,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":25.7715}
+{"at_ms":37079,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":537}
+{"at_ms":37079,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":37079,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":37079,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":37079,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":37079,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":63.588}
+{"at_ms":37079,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":37079,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":37079,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":37079,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":38077,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":38077,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":38077,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":38077,"source":"gpu","name":"gpu_util_percent","case":"short","value":51,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":38077,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4915}
+{"at_ms":38077,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":9806}
+{"at_ms":38077,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.99599}
+{"at_ms":38077,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":512}
+{"at_ms":38077,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":25.7715}
+{"at_ms":38077,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":557}
+{"at_ms":38077,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":38077,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":38077,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":38077,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":38077,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":38077,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":38077,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":38077,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":38077,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":39078,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":39078,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":39078,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":39078,"source":"gpu","name":"gpu_util_percent","case":"short","value":52,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":39078,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4915}
+{"at_ms":39078,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":9806}
+{"at_ms":39078,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.99599}
+{"at_ms":39078,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":512}
+{"at_ms":39078,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":25.7715}
+{"at_ms":39078,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":577}
+{"at_ms":39078,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":39078,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":39078,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":39078,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":39078,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":39078,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":39078,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":39078,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":39078,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":40078,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":40078,"source":"gpu","name":"gpu_util_percent","case":"short","value":48,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":40078,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":40078,"source":"gpu","name":"gpu_util_percent","case":"short","value":52,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":40079,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4915}
+{"at_ms":40079,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":9806}
+{"at_ms":40079,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.99599}
+{"at_ms":40079,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":512}
+{"at_ms":40079,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":25.7715}
+{"at_ms":40079,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":597}
+{"at_ms":40079,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":40079,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":40079,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":40079,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":40079,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":40079,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":40079,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":40079,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":40079,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":41080,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":41080,"source":"gpu","name":"gpu_util_percent","case":"short","value":48,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":41080,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":41080,"source":"gpu","name":"gpu_util_percent","case":"short","value":52,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":41080,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4915}
+{"at_ms":41080,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":9806}
+{"at_ms":41080,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.99599}
+{"at_ms":41080,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":512}
+{"at_ms":41080,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":25.7715}
+{"at_ms":41080,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":616}
+{"at_ms":41080,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":41080,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":41080,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":41080,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":41080,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":41080,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":41080,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":41080,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":41080,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":42079,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":42079,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":42079,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":42079,"source":"gpu","name":"gpu_util_percent","case":"short","value":50,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":42080,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4915}
+{"at_ms":42080,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":9806}
+{"at_ms":42080,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.99599}
+{"at_ms":42080,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":512}
+{"at_ms":42080,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":25.7715}
+{"at_ms":42080,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":636}
+{"at_ms":42080,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":42080,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":42080,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":42080,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":42080,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":42080,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":42080,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":42080,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":42080,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":43077,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":43077,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":43077,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":43077,"source":"gpu","name":"gpu_util_percent","case":"short","value":51,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":43078,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4915}
+{"at_ms":43078,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":9806}
+{"at_ms":43078,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.99599}
+{"at_ms":43078,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":512}
+{"at_ms":43078,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":25.7715}
+{"at_ms":43078,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":656}
+{"at_ms":43078,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":43078,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":43078,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":43078,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":43078,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":43078,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":43078,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":43078,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":43078,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":44079,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":44079,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":44079,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":44079,"source":"gpu","name":"gpu_util_percent","case":"short","value":52,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":44080,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4915}
+{"at_ms":44080,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":9806}
+{"at_ms":44080,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.99599}
+{"at_ms":44080,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":512}
+{"at_ms":44080,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":25.7715}
+{"at_ms":44080,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":676}
+{"at_ms":44080,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":44080,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":44080,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":44080,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":44080,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":44080,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":44080,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":44080,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":44080,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":45078,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":45078,"source":"gpu","name":"gpu_util_percent","case":"short","value":48,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":45078,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":45078,"source":"gpu","name":"gpu_util_percent","case":"short","value":52,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":45078,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4915}
+{"at_ms":45078,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":9806}
+{"at_ms":45078,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.99599}
+{"at_ms":45078,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":512}
+{"at_ms":45078,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":25.7715}
+{"at_ms":45078,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":696}
+{"at_ms":45078,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":45078,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":45078,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":45078,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":45078,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":45078,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":45078,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":45078,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":45078,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":46080,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":46080,"source":"gpu","name":"gpu_util_percent","case":"short","value":48,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":46080,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":46080,"source":"gpu","name":"gpu_util_percent","case":"short","value":52,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":46080,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4915}
+{"at_ms":46080,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":9806}
+{"at_ms":46080,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.99599}
+{"at_ms":46080,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":512}
+{"at_ms":46080,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":25.7715}
+{"at_ms":46080,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":715}
+{"at_ms":46080,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":46080,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":46080,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":46080,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":46080,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":46080,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":46080,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":46080,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":46080,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":47081,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":47081,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":47081,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":47081,"source":"gpu","name":"gpu_util_percent","case":"short","value":50,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":47081,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4915}
+{"at_ms":47081,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":9806}
+{"at_ms":47081,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.99599}
+{"at_ms":47081,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":512}
+{"at_ms":47081,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":25.7715}
+{"at_ms":47081,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":735}
+{"at_ms":47081,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":47081,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":47081,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":47081,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":47081,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":47081,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":47081,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":47081,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":47081,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":48078,"source":"gpu","name":"vram_used_mib","case":"short","value":7843,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":48078,"source":"gpu","name":"gpu_util_percent","case":"short","value":49,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":48078,"source":"gpu","name":"vram_used_mib","case":"short","value":8347,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":48078,"source":"gpu","name":"gpu_util_percent","case":"short","value":51,"labels":{"gpu":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":48079,"source":"runtime","name":"llamacpp:prompt_tokens_total","case":"short","value":4915}
+{"at_ms":48079,"source":"runtime","name":"llamacpp:prompt_tokens_cached_total","case":"short","value":9806}
+{"at_ms":48079,"source":"runtime","name":"llamacpp:prompt_seconds_total","case":"short","value":5.99599}
+{"at_ms":48079,"source":"runtime","name":"llamacpp:tokens_predicted_total","case":"short","value":512}
+{"at_ms":48079,"source":"runtime","name":"llamacpp:tokens_predicted_seconds_total","case":"short","value":25.7715}
+{"at_ms":48079,"source":"runtime","name":"llamacpp:n_decode_total","case":"short","value":755}
+{"at_ms":48079,"source":"runtime","name":"llamacpp:n_tokens_max","case":"short","value":5162}
+{"at_ms":48079,"source":"runtime","name":"llamacpp:spec_decode_num_draft_tokens_total","case":"short","value":0}
+{"at_ms":48079,"source":"runtime","name":"llamacpp:spec_decode_num_accepted_tokens_total","case":"short","value":0}
+{"at_ms":48079,"source":"runtime","name":"llamacpp:spec_decode_num_drafts_total","case":"short","value":0}
+{"at_ms":48079,"source":"runtime","name":"llamacpp:prompt_tokens_seconds","case":"short","value":0}
+{"at_ms":48079,"source":"runtime","name":"llamacpp:predicted_tokens_seconds","case":"short","value":0}
+{"at_ms":48079,"source":"runtime","name":"llamacpp:requests_processing","case":"short","value":1}
+{"at_ms":48079,"source":"runtime","name":"llamacpp:requests_deferred","case":"short","value":0}
+{"at_ms":48079,"source":"runtime","name":"llamacpp:n_busy_slots_per_decode","case":"short","value":1}
+{"at_ms":48972,"source":"harness","name":"decode_tok_per_s","case":"short","repeat":3,"value":19.790301923565565}
+{"at_ms":48972,"source":"harness","name":"prefill_tok_per_s","case":"short","repeat":3,"value":25274.716648638707}
+{"at_ms":48972,"source":"harness","name":"ttft_ms","case":"short","repeat":3,"value":194.146588}
+{"at_ms":48972,"source":"harness","name":"latency_ms","case":"short","repeat":3,"value":13079.245612}
+{"at_ms":48972,"source":"harness","name":"tokens_in","case":"short","repeat":3,"value":4907}
+{"at_ms":48972,"source":"harness","name":"tokens_out","case":"short","repeat":3,"value":256}

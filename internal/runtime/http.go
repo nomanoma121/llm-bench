@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 func setSampling(body map[string]any, req Request) {
@@ -82,4 +83,55 @@ func getJSON(ctx context.Context, client *http.Client, url string, out any) erro
 		return fmt.Errorf("runtime: %s returned %d", url, resp.StatusCode)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func chatCompletion(ctx context.Context, client *http.Client, baseURL, model string, req Request) (Completion, error) {
+	body := map[string]any{
+		"model":          model,
+		"messages":       []map[string]string{{"role": "user", "content": req.Prompt}},
+		"max_tokens":     req.MaxTokens,
+		"stream":         true,
+		"stream_options": map[string]any{"include_usage": true},
+	}
+	setSampling(body, req)
+	start := time.Now()
+	resp, err := postJSON(ctx, client, baseURL+"/v1/chat/completions", body)
+	if err != nil {
+		return Completion{}, err
+	}
+	var out Completion
+	var last time.Duration
+	err = streamSSE(ctx, resp, func(data []byte) error {
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
+				} `json:"delta"`
+			} `json:"choices"`
+			Usage *struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal(data, &chunk); err != nil {
+			return err
+		}
+		for _, c := range chunk.Choices {
+			if c.Delta.Content == "" && c.Delta.ReasoningContent == "" {
+				continue
+			}
+			last = time.Since(start)
+			if out.TTFT == 0 {
+				out.TTFT = last
+			}
+		}
+		if chunk.Usage != nil {
+			out.PromptTokens = chunk.Usage.PromptTokens
+			out.CompletionTokens = chunk.Usage.CompletionTokens
+		}
+		return nil
+	})
+	out.Total = last
+	return out, err
 }

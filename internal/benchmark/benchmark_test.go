@@ -25,8 +25,8 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_response(200); self.end_headers()
         for c in ["a", "b", "c"]:
             time.sleep(0.01)
-            self.wfile.write(("data: " + json.dumps({"content": c}) + "\n\n").encode()); self.wfile.flush()
-        self.wfile.write(("data: " + json.dumps({"content": "", "timings": {"prompt_n": 4, "predicted_n": 3}}) + "\n\n").encode())
+            self.wfile.write(("data: " + json.dumps({"choices": [{"delta": {"content": c}}]}) + "\n\n").encode()); self.wfile.flush()
+        self.wfile.write(("data: " + json.dumps({"choices": [], "usage": {"prompt_tokens": 4, "completion_tokens": 3}}) + "\n\n").encode())
 http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 ' "$port"
 `

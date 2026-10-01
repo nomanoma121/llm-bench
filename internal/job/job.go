@@ -75,7 +75,7 @@ func (c Case) RepeatCount() int {
 
 func (r Runtime) ListenPort() int {
 	if r.Port == 0 {
-		return 8080
+		return 18080
 	}
 	return r.Port
 }

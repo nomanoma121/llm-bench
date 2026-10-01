@@ -133,10 +133,13 @@ func chatCompletion(ctx context.Context, client *http.Client, baseURL, model str
 			if c.Delta.Content == "" && c.Delta.ReasoningContent == "" {
 				continue
 			}
-			last = time.Since(start)
+			now := time.Since(start)
 			if out.TTFT == 0 {
-				out.TTFT = last
+				out.TTFT = now
+			} else {
+				out.ITL = append(out.ITL, now-last)
 			}
+			last = now
 			content.WriteString(c.Delta.Content)
 		}
 		if u := chunk.Usage; u != nil {

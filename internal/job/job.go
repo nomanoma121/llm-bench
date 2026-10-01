@@ -64,6 +64,7 @@ type Budget struct {
 const (
 	MetricRuntime = "runtime"
 	MetricGPU     = "gpu"
+	MetricHost    = "host"
 )
 
 func (c Case) RepeatCount() int {
@@ -161,8 +162,8 @@ func (s Spec) Validate() error {
 		}
 	}
 	for _, m := range s.Metrics {
-		if m != MetricRuntime && m != MetricGPU {
-			add("metrics: unknown %q (runtime, gpu)", m)
+		if m != MetricRuntime && m != MetricGPU && m != MetricHost {
+			add("metrics: unknown %q (runtime, gpu, host)", m)
 		}
 	}
 	if s.Kind == Optimize && (s.Source == nil || s.Source.Repo == "") {
@@ -209,7 +210,7 @@ workload:
 sampling:
   temperature: 0
   seed: 1
-metrics: [runtime, gpu]
+metrics: [runtime, gpu, host]
 `
 	if kind == Optimize {
 		s += `source:

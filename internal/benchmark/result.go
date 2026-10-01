@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -127,6 +128,12 @@ func mean(sorted []float64) float64 {
 }
 
 func maximum(sorted []float64) float64 { return sorted[len(sorted)-1] }
+
+// percentile returns the nearest-rank q-quantile of sorted values.
+func percentile(sorted []float64, q float64) float64 {
+	i := int(math.Ceil(q*float64(len(sorted)))) - 1
+	return sorted[max(0, min(i, len(sorted)-1))]
+}
 
 func (r Result) readme() string {
 	var b strings.Builder

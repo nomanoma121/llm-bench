@@ -46,7 +46,9 @@ type Completion struct {
 	DraftTokens      int
 	DraftAccepted    int
 	TTFT             time.Duration
-	Total            time.Duration
+	// ITL holds the gaps between consecutive streamed chunks.
+	ITL   []time.Duration
+	Total time.Duration
 }
 
 type Metric struct {

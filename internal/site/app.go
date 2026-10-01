@@ -2,7 +2,6 @@ package site
 
 const appJS = `const rows = [...document.querySelectorAll("#results tbody tr")];
 const filters = document.getElementById("filters");
-const chart = document.getElementById("chart");
 const state = {model: "", runtime: "", gpu: "", valid: false};
 
 for (const key of ["model", "runtime", "gpu"]) {
@@ -45,42 +44,7 @@ function visible(r) {
 }
 
 function update() {
-  const shown = rows.filter(visible);
-  for (const r of rows) r.hidden = !shown.includes(r);
-  drawChart(shown.filter(r => r.dataset.decode));
-}
-
-function drawChart(shown) {
-  chart.replaceChildren();
-  if (!shown.length) return;
-  const ns = "http://www.w3.org/2000/svg", width = 640, rowHeight = 22, labelWidth = 220, valueWidth = 60;
-  const max = Math.max(...shown.map(r => parseFloat(r.dataset.decode)));
-  const scale = (width - labelWidth - valueWidth) / max;
-  const fig = document.createElement("figure");
-  const cap = document.createElement("figcaption");
-  cap.innerHTML = 'Decode <span class="muted">(tok/s)</span>';
-  const svg = document.createElementNS(ns, "svg");
-  svg.setAttribute("viewBox", "0 0 " + width + " " + rowHeight * shown.length);
-  shown.forEach((r, i) => {
-    const v = parseFloat(r.dataset.decode), top = i * rowHeight;
-    const text = (x, y, s, cls, anchor) => {
-      const t = document.createElementNS(ns, "text");
-      t.setAttribute("x", x); t.setAttribute("y", y); t.setAttribute("class", cls);
-      if (anchor) t.setAttribute("text-anchor", anchor);
-      t.textContent = s;
-      svg.append(t);
-    };
-    text(labelWidth - 8, top + 15, r.dataset.label, "label", "end");
-    const rect = document.createElementNS(ns, "rect");
-    for (const [k, val] of Object.entries({x: labelWidth, y: top + 4, width: Math.max(v * scale, 1), height: 14, rx: 3, class: "bar"})) rect.setAttribute(k, val);
-    const title = document.createElementNS(ns, "title");
-    title.textContent = r.dataset.label + " · " + r.dataset.runtime + " · " + v + " tok/s";
-    rect.append(title);
-    svg.append(rect);
-    text(labelWidth + v * scale + 6, top + 15, r.dataset.decode, "tick");
-  });
-  fig.append(cap, svg);
-  chart.append(fig);
+  for (const r of rows) r.hidden = !visible(r);
 }
 
 const picks = [...document.querySelectorAll(".pick")];
@@ -105,6 +69,7 @@ const metrics = [
   ["context", "Context used", "tokens"],
   ["vram", "VRAM used (all GPUs)", "MiB"],
   ["util", "GPU utilization (mean)", "%"],
+  ["power", "GPU power (all GPUs)", "W"],
   ["acceptance", "Draft (MTP) acceptance, cumulative", "ratio"],
 ];
 
@@ -182,11 +147,17 @@ Promise.all(ids.map(id => fetch(id + "/data.json").then(r => r.json()))).then(ru
     swatch.append(sw, a);
     first.append(swatch);
     tr.append(first);
-    for (const v of [r.model, r.runtime, r.args]) {
+    const base = runs[0].decode;
+    const cells = [r.model, r.runtime, r.args,
+      r.decode ? fmt(r.decode) : "",
+      i > 0 && r.decode && base ? "×" + (r.decode / base).toFixed(2) : "",
+      r.energy ? fmt(r.energy) : ""];
+    cells.forEach((v, j) => {
       const td = document.createElement("td");
+      if (j >= 3) td.className = "num";
       td.textContent = v;
       tr.append(td);
-    }
+    });
     body.append(tr);
   });
   const charts = document.getElementById("charts");

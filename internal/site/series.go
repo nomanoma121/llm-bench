@@ -14,6 +14,8 @@ type compareData struct {
 	Model   string                  `json:"model"`
 	Runtime string                  `json:"runtime"`
 	Args    string                  `json:"args"`
+	Decode  float64                 `json:"decode"`
+	Energy  float64                 `json:"energy"`
 	Series  map[string][][2]float64 `json:"series"`
 }
 
@@ -85,6 +87,7 @@ func compareSeries(samples []benchmark.Sample) map[string][][2]float64 {
 		"context":    runtimeSeries(samples, "llamacpp:context_tokens"),
 		"vram":       combine(perGPU(samples, "vram_used_mib"), false),
 		"util":       combine(perGPU(samples, "gpu_util_percent"), true),
+		"power":      combine(perGPU(samples, "power_w"), false),
 		"acceptance": ratioOverTime(samples, "llamacpp:spec_decode_num_accepted_tokens_total", "llamacpp:spec_decode_num_draft_tokens_total"),
 	}
 }
@@ -146,6 +149,48 @@ func memoryBars(info map[string]string) []bar {
 	for _, kind := range []string{"model", "kv", "compute"} {
 		if totals[kind] > 0 {
 			bars = append(bars, bar{Label: kind, Value: totals[kind]})
+		}
+	}
+	return bars
+}
+
+func hostSeries(samples []benchmark.Sample, name string) [][2]float64 {
+	var out [][2]float64
+	for _, s := range samples {
+		if s.Source == "host" && s.Name == name {
+			out = append(out, point(s))
+		}
+	}
+	return out
+}
+
+func plusOne(points [][2]float64) [][2]float64 {
+	out := make([][2]float64, len(points))
+	for i, p := range points {
+		out[i] = [2]float64{p[0], p[1] + 1}
+	}
+	return out
+}
+
+func distribution(points [][2]float64) []bar {
+	if len(points) == 0 {
+		return nil
+	}
+	values := make([]float64, len(points))
+	for i, p := range points {
+		values[i] = p[1]
+	}
+	sort.Float64s(values)
+	at := func(q float64) float64 { return values[int(q*float64(len(values)-1))] }
+	return []bar{{"min", values[0]}, {"p5", at(0.05)}, {"p50", at(0.5)}, {"p95", at(0.95)}, {"max", values[len(values)-1]}}
+}
+
+// metricBars charts every result metric whose name starts with prefix.
+func metricBars(r benchmark.Result, prefix string) []bar {
+	var bars []bar
+	for _, m := range r.Metrics {
+		if strings.HasPrefix(m.Name, prefix) {
+			bars = append(bars, bar{Label: strings.TrimSpace(m.Case + " " + strings.TrimPrefix(m.Name, prefix)), Value: m.Value})
 		}
 	}
 	return bars

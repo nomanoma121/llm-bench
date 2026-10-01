@@ -23,7 +23,7 @@ body:
         sampling:
           temperature: 0
           seed: 1
-        metrics: [runtime, gpu]
+        metrics: [runtime, gpu, host]
     validations:
       required: true
   - type: textarea

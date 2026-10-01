@@ -46,9 +46,12 @@ type Completion struct {
 	DraftTokens      int
 	DraftAccepted    int
 	TTFT             time.Duration
+	Total            time.Duration
 	// ITL holds the gaps between consecutive streamed chunks.
-	ITL   []time.Duration
-	Total time.Duration
+	ITL []time.Duration
+	// ExpertHitRate is the share of MoE expert lookups the GPU cache served,
+	// or 0 when the runtime does not report it.
+	ExpertHitRate float64
 }
 
 type Metric struct {
@@ -72,6 +75,8 @@ func New(engine string, o Options) (Adapter, error) {
 		return llamaCpp{o, client}, nil
 	case "freetoken":
 		return freeToken{o, client}, nil
+	case "strata":
+		return strata{o, client}, nil
 	}
-	return nil, fmt.Errorf("runtime: unknown engine %q (llamacpp, freetoken)", engine)
+	return nil, fmt.Errorf("runtime: unknown engine %q (llamacpp, freetoken, strata)", engine)
 }

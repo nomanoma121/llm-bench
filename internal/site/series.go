@@ -51,7 +51,7 @@ func runtimeSeries(samples []benchmark.Sample, name string) [][2]float64 {
 }
 
 func decodeOverTime(samples []benchmark.Sample) [][2]float64 {
-	decoded := runtimeSeries(samples, "llamacpp:slot_decoded_tokens")
+	decoded := runtimeSeries(samples, "decoded_tokens")
 	var out [][2]float64
 	for i := 1; i < len(decoded); i++ {
 		dt, dv := decoded[i][0]-decoded[i-1][0], decoded[i][1]-decoded[i-1][1]
@@ -84,7 +84,7 @@ func combine(lines []line, mean bool) [][2]float64 {
 func compareSeries(samples []benchmark.Sample) map[string][][2]float64 {
 	return map[string][][2]float64{
 		"decode":     decodeOverTime(samples),
-		"context":    runtimeSeries(samples, "llamacpp:context_tokens"),
+		"context":    runtimeSeries(samples, "context_tokens"),
 		"vram":       combine(perGPU(samples, "vram_used_mib"), false),
 		"util":       combine(perGPU(samples, "gpu_util_percent"), true),
 		"power":      combine(perGPU(samples, "power_w"), false),

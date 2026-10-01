@@ -10,3 +10,7 @@
 	path = runtimes/freetoken/upstream
 	url = https://github.com/FlashML-org/FreeToken.git
 	branch = main
+[submodule "runtimes/strata/upstream"]
+	path = runtimes/strata/upstream
+	url = https://github.com/Niko1221/Strata.git
+	branch = main

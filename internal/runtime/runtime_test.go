@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -78,5 +79,55 @@ I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 8192, kv_unified = 
 		if info[k] != want {
 			t.Errorf("%s = %q, want %q (%v)", k, info[k], want, info)
 		}
+	}
+}
+
+func TestStrata(t *testing.T) {
+	loaded := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			fmt.Fprintf(w, `{"status":"ok","loaded":%t}`, loaded)
+		case "/v1/chat/completions":
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}],\"timings\":{\"draft_n\":4,\"draft_n_accepted\":3}}\n\n")
+			fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n")
+		case "/metrics":
+			fmt.Fprint(w, `{"engine":{"max_context":32768},"live":{"state":"generating","prompt_tokens":100,"generated":20,"tok_s":41.5},"requests":[{"hit_rate":0.83}]}`)
+		}
+	}))
+	defer srv.Close()
+	o := testOptions(t, srv)
+	o.ModelPath = "/models/strata/config/strata-iq2_xs.json"
+	a, err := New("strata", o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if argv := a.Argv(); argv[0] != "/opt/strata/.venv/bin/python" || argv[1] != "/opt/strata/serve/server.py" {
+		t.Fatalf("argv %v", argv)
+	}
+	ctx := context.Background()
+	if err := a.Ready(ctx); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("ready while loading: %v", err)
+	}
+	loaded = true
+	if err := a.Ready(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c, err := a.Complete(ctx, Request{Prompt: "hi", MaxTokens: 2})
+	if err != nil || c.DraftAccepted != 3 || c.ExpertHitRate != 0.83 || len(c.ITL) != 1 {
+		t.Fatalf("completion %+v %v", c, err)
+	}
+	m, err := a.Metrics(ctx)
+	got := map[string]float64{}
+	for _, x := range m {
+		got[x.Name] = x.Value
+	}
+	if err != nil || got["decoded_tokens"] != 20 || got["context_tokens"] != 120 || got["context_size"] != 32768 || got["strata:tok_s"] != 41.5 {
+		t.Fatalf("metrics %v %v", got, err)
+	}
+	info := a.Info("strata generate: layer split auto: K=19 - the caches hold 11767 of 12288 profiled pairs (fullest device 100%)\nstrata serve: layer split: layers 0-18 (CUDA0), 19-47 (CUDA1), one hand-off per window\n")
+	if info["split_layer"] != "19" || info["cached_expert_pairs"] != "11767" || info["layer_split"] != "layers 0-18 (CUDA0), 19-47 (CUDA1), one hand-off per window" {
+		t.Fatalf("info %v", info)
 	}
 }

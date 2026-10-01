@@ -39,8 +39,12 @@ type Request struct {
 }
 
 type Completion struct {
+	Content          string
 	PromptTokens     int
 	CompletionTokens int
+	CachedTokens     int
+	DraftTokens      int
+	DraftAccepted    int
 	TTFT             time.Duration
 	Total            time.Duration
 }

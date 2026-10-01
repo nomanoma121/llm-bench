@@ -171,6 +171,47 @@ func logTail(path string, lines int) string {
 	return strings.Join(all, "\n")
 }
 
+func (r *run) saveOutput(caseName string, repeat int, content string) error {
+	name := fmt.Sprintf("%s-%d", caseName, repeat)
+	if err := os.MkdirAll(filepath.Join(r.cfg.OutDir, "raw", "outputs"), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(r.cfg.OutDir, "raw", "outputs", name+".md"), []byte(content), 0o644); err != nil {
+		return err
+	}
+	html := extractHTML(content)
+	if html == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Join(r.cfg.OutDir, "output"), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(r.cfg.OutDir, "output", name+".html"), []byte(html), 0o644)
+}
+
+func extractHTML(content string) string {
+	if i := strings.Index(content, "```html"); i >= 0 {
+		rest := content[i+len("```html"):]
+		if j := strings.Index(rest, "```"); j >= 0 {
+			return strings.TrimSpace(rest[:j])
+		}
+		return strings.TrimSpace(rest)
+	}
+	lower := strings.ToLower(content)
+	start := strings.Index(lower, "<!doctype html")
+	if start < 0 {
+		start = strings.Index(lower, "<html")
+	}
+	if start < 0 {
+		return ""
+	}
+	end := strings.LastIndex(lower, "</html>")
+	if end < start {
+		return strings.TrimSpace(content[start:])
+	}
+	return content[start : end+len("</html>")]
+}
+
 func readPrompts(root string, cases []job.Case) (map[string]string, map[string]string, error) {
 	prompts, digests := map[string]string{}, map[string]string{}
 	for _, c := range cases {
@@ -236,6 +277,9 @@ func (r *run) measure(ctx context.Context, prompts map[string]string) {
 				r.invalidate(fmt.Sprintf("case %s repeat %d produced %d tokens; no decode rate can be measured", c.Name, i, got.CompletionTokens))
 			}
 			r.recordCompletion(c.Name, i, got)
+			if err := r.saveOutput(c.Name, i, got.Content); err != nil {
+				r.invalidate(fmt.Sprintf("case %s repeat %d output could not be saved: %v", c.Name, i, err))
+			}
 		}
 	}
 	r.setCase("")
@@ -254,6 +298,10 @@ func (r *run) recordCompletion(caseName string, repeat int, got runtime.Completi
 	if got.PromptTokens > 0 && got.TTFT > 0 {
 		values["prefill_tok_per_s"] = float64(got.PromptTokens) / got.TTFT.Seconds()
 	}
+	if got.DraftTokens > 0 {
+		values["draft_acceptance"] = float64(got.DraftAccepted) / float64(got.DraftTokens)
+	}
+	values["cached_tokens"] = float64(got.CachedTokens)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	at := time.Since(r.start).Milliseconds()
@@ -380,6 +428,8 @@ var harnessMetrics = []struct {
 	{"prefill_tok_per_s", "tok/s", median},
 	{"tokens_in", "tokens", median},
 	{"tokens_out", "tokens", median},
+	{"draft_acceptance", "ratio", median},
+	{"cached_tokens", "tokens", median},
 }
 
 func (r *run) result(jobspec, series []byte, prompts map[string]string) Result {

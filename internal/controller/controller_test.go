@@ -82,16 +82,21 @@ type fakeSandbox struct {
 	*recorder
 	onExec   func(argv []string) sandbox.Output
 	setupEnv map[string]string
+	deleted  bool
 }
 
 func (s *fakeSandbox) Ensure(_ context.Context, _, engine string) error {
 	s.add("sandbox ensure %s", engine)
 	return nil
 }
-func (s *fakeSandbox) Delete(context.Context, string) error { s.add("sandbox delete"); return nil }
-func (s *fakeSandbox) Exec(_ context.Context, _ string, argv []string, env map[string]string) (sandbox.Output, error) {
+func (s *fakeSandbox) Delete(context.Context, string) error         { s.add("sandbox delete"); return nil }
+func (s *fakeSandbox) Exists(context.Context, string) (bool, error) { return !s.deleted, nil }
+func (s *fakeSandbox) Exec(ctx context.Context, _ string, argv []string, env map[string]string) (sandbox.Output, error) {
 	if argv[0] == "sh" {
 		s.setupEnv = env
+	} else if s.deleted {
+		<-ctx.Done() // an exec into a deleted sandbox never returns on its own
+		return sandbox.Output{}, ctx.Err()
 	}
 	if s.onExec == nil || argv[0] == "sh" {
 		return sandbox.Output{}, nil
@@ -130,6 +135,7 @@ func setup(labels ...string) (*Controller, *fakeGitHub, *fakeSandbox, *fakeGitOp
 		GitToken:     func(context.Context) (string, error) { return "t", nil },
 		Interval:     time.Millisecond,
 		PauseTimeout: 20 * time.Millisecond,
+		SandboxCheck: 5 * time.Millisecond,
 		Logf:         func(string, ...any) {},
 	}
 	return c, gh, sb, ops, rec
@@ -154,6 +160,21 @@ func TestBenchmarkOpensPRThenRestores(t *testing.T) {
 	}
 	if err := c.Poll(context.Background()); err != nil || len(rec.events) != len(want) {
 		t.Fatal("a finished issue was picked up again")
+	}
+}
+
+// Poll returning at all is the check: without the watchdog it waits forever.
+func TestDeletedSandboxFailsBenchmark(t *testing.T) {
+	c, _, sb, _, rec := setup(LabelBenchmark)
+	sb.deleted = true
+	if err := c.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := rec.String()
+	for _, want := range []string{"sandbox delete", "restore", "label +llmbench:failed"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in:\n%s", want, got)
+		}
 	}
 }
 

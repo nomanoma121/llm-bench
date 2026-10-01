@@ -1,0 +1,31 @@
+name: freetoken
+
+on:
+  push:
+    paths:
+      - "runtimes/freetoken/**"
+      - ".github/workflows/freetoken.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/freetoken
+    steps:
+      - uses: actions/checkout@v4
+      - run: git submodule update --init --depth 1 runtimes/freetoken/upstream
+      # The CUDA devel image, torch and the kernel cache need more disk than the runner has free.
+      - run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+      # This commit pins both the upstream submodule and runtimes/freetoken/Dockerfile.
+      - run: echo "TAG=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_ENV"
+      - run: docker build -t "$IMAGE:$TAG" runtimes/freetoken
+      - run: echo "${{ github.token }}" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+      - run: docker push "$IMAGE:$TAG"
+      - if: github.ref == 'refs/heads/main'
+        run: docker tag "$IMAGE:$TAG" "$IMAGE:latest" && docker push "$IMAGE:latest"

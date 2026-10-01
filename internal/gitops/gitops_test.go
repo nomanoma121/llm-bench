@@ -11,6 +11,7 @@ type fakeManifests struct {
 	file     []byte
 	branches map[string][]byte
 	prs      map[string]*github.PullRequest
+	opened   int
 }
 
 func (f *fakeManifests) HeadSHA(context.Context) (string, error) { return "sha", nil }
@@ -29,17 +30,20 @@ func (f *fakeManifests) CommitFile(_ context.Context, b, _, _ string, c []byte) 
 	f.branches[b] = c
 	return nil
 }
+
+// prs holds the open pull requests by head branch; opened counts every one.
 func (f *fakeManifests) PullRequest(_ context.Context, head string) (*github.PullRequest, error) {
 	return f.prs[head], nil
 }
 func (f *fakeManifests) OpenPullRequest(_ context.Context, head, _, _ string) (int, error) {
-	f.prs[head] = &github.PullRequest{Number: len(f.prs) + 1, State: "open"}
-	return len(f.prs), nil
+	f.opened++
+	f.prs[head] = &github.PullRequest{Number: f.opened}
+	return f.opened, nil
 }
 func (f *fakeManifests) ClosePullRequest(_ context.Context, n int) error {
-	for _, pr := range f.prs {
+	for head, pr := range f.prs {
 		if pr.Number == n {
-			pr.State = "closed"
+			delete(f.prs, head)
 		}
 	}
 	return nil
@@ -47,7 +51,8 @@ func (f *fakeManifests) ClosePullRequest(_ context.Context, n int) error {
 
 func (f *fakeManifests) merge(branch string) {
 	f.file = f.branches[branch]
-	f.prs[branch].State, f.prs[branch].Merged = "closed", true
+	delete(f.prs, branch)
+	delete(f.branches, branch)
 }
 
 type fakeCluster struct{ running bool }
@@ -76,27 +81,33 @@ func TestPauseAndRestore(t *testing.T) {
 	}
 	g.Cluster = cluster
 
-	for i := 0; i < 2; i++ {
-		if done, err := g.Pause(ctx, "j"); done || err != nil {
-			t.Fatalf("pause before merge: %v %v", done, err)
+	// The second run is a rerun of the same job: its branch names are reused.
+	for run := 1; run <= 2; run++ {
+		for i := 0; i < 2; i++ {
+			if done, err := g.Pause(ctx, "j"); done || err != nil {
+				t.Fatalf("run %d: pause before merge: %v %v", run, done, err)
+			}
+		}
+		if len(m.prs) != 1 {
+			t.Fatalf("run %d: want one pause PR, got %d", run, len(m.prs))
+		}
+		m.merge("llmbench/pause-j")
+		cluster.running = false
+		if done, err := g.Pause(ctx, "j"); !done || err != nil {
+			t.Fatalf("run %d: pause after merge: %v %v", run, done, err)
+		}
+
+		if done, err := g.Restore(ctx, "j"); done || err != nil || m.prs["llmbench/restore-j"] == nil {
+			t.Fatalf("run %d: restore before merge: %v %v", run, done, err)
+		}
+		m.merge("llmbench/restore-j")
+		cluster.running = true
+		if done, err := g.Restore(ctx, "j"); !done || err != nil {
+			t.Fatalf("run %d: restore after merge: %v %v", run, done, err)
 		}
 	}
-	if len(m.prs) != 1 {
-		t.Fatalf("want one pause PR, got %d", len(m.prs))
-	}
-	m.merge("llmbench/pause-j")
-	cluster.running = false
-	if done, err := g.Pause(ctx, "j"); !done || err != nil {
-		t.Fatalf("pause after merge: %v %v", done, err)
-	}
-
-	if done, err := g.Restore(ctx, "j"); done || err != nil {
-		t.Fatalf("restore before merge: %v %v", done, err)
-	}
-	m.merge("llmbench/restore-j")
-	cluster.running = true
-	if done, err := g.Restore(ctx, "j"); !done || err != nil {
-		t.Fatalf("restore after merge: %v %v", done, err)
+	if m.opened != 4 {
+		t.Fatalf("want 4 PRs over two runs, got %d", m.opened)
 	}
 }
 
@@ -114,7 +125,7 @@ func TestRestoreClosesUnmergedPause(t *testing.T) {
 	if done, err := g.Restore(ctx, "j"); !done || err != nil {
 		t.Fatalf("restore: %v %v", done, err)
 	}
-	if m.prs["llmbench/pause-j"].State != "closed" || len(m.branches) != 0 {
+	if m.prs["llmbench/pause-j"] != nil || len(m.branches) != 0 {
 		t.Fatal("pause PR was not rolled back")
 	}
 }

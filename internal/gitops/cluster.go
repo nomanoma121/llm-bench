@@ -22,8 +22,9 @@ func (k KubeCluster) ArgoSynced(ctx context.Context, namespace, name, revision s
 	if err != nil {
 		return false, err
 	}
-	sync := nested(app.Object, "status", "sync")
-	return sync["status"] == "Synced" && sync["revision"] == revision, nil
+	op := nested(app.Object, "status", "operationState")
+	result := nested(op, "syncResult")
+	return op["phase"] == "Succeeded" && result["revision"] == revision, nil
 }
 
 func (k KubeCluster) DeploymentStopped(ctx context.Context, namespace, name string) (bool, error) {

@@ -1,0 +1,55 @@
+0.00.001.288 I srv  llama_server: initializing ...
+0.00.267.292 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.267.678 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.269.773 I srv    load_model: loading model '/models/Qwen3.8-27B/Qwen3.8-27B-Q4_0.gguf'
+0.01.040.418 W model has unused tensor blk.64.attn_norm.weight (size = 20480 bytes) -- ignoring
+0.01.040.424 W model has unused tensor blk.64.post_attention_norm.weight (size = 20480 bytes) -- ignoring
+0.01.040.431 W model has unused tensor blk.64.attn_q.weight (size = 35389440 bytes) -- ignoring
+0.01.040.434 W model has unused tensor blk.64.attn_k.weight (size = 2949120 bytes) -- ignoring
+0.01.040.437 W model has unused tensor blk.64.attn_v.weight (size = 2949120 bytes) -- ignoring
+0.01.040.446 W model has unused tensor blk.64.attn_output.weight (size = 17694720 bytes) -- ignoring
+0.01.040.449 W model has unused tensor blk.64.attn_q_norm.weight (size = 1024 bytes) -- ignoring
+0.01.040.452 W model has unused tensor blk.64.attn_k_norm.weight (size = 1024 bytes) -- ignoring
+0.01.040.454 W model has unused tensor blk.64.ffn_gate.weight (size = 50135040 bytes) -- ignoring
+0.01.040.457 W model has unused tensor blk.64.ffn_down.weight (size = 50135040 bytes) -- ignoring
+0.01.040.460 W model has unused tensor blk.64.ffn_up.weight (size = 50135040 bytes) -- ignoring
+0.01.040.464 W model has unused tensor blk.64.nextn.eh_proj.weight (size = 55705600 bytes) -- ignoring
+0.01.040.467 W model has unused tensor blk.64.nextn.enorm.weight (size = 20480 bytes) -- ignoring
+0.01.040.470 W model has unused tensor blk.64.nextn.hnorm.weight (size = 20480 bytes) -- ignoring
+0.01.040.478 W model has unused tensor blk.64.nextn.shared_head_norm.weight (size = 20480 bytes) -- ignoring
+0.02.887.686 I cmn          init: llama threadpool init, n_threads = 12
+0.03.063.761 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 8192, kv_unified = 'true'
+0.03.067.878 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+0.03.067.915 I srv  llama_server: model loaded
+0.03.067.919 I srv  llama_server: listening on http://127.0.0.1:18080
+0.04.007.905 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+0.04.007.956 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+0.08.015.640 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =   4096, progress = 0.84, t =   4.01 s / 1022.05 tokens per second
+0.08.454.637 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =   4339, progress = 0.89, t =   4.45 s / 975.80 tokens per second
+0.09.187.363 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =   4851, progress = 1.00, t =   5.18 s / 936.60 tokens per second
+0.09.707.837 I slot print_timing: id  3 | task 0 | prompt eval time =    5699.82 ms /  4855 tokens (    1.17 ms per token,   851.78 tokens per second)
+0.09.707.845 I slot print_timing: id  3 | task 0 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token,     0.00 tokens per second)
+0.09.707.846 I slot print_timing: id  3 | task 0 |       total time =    5699.82 ms /  4856 tokens
+0.09.707.848 I slot print_timing: id  3 | task 0 |    graphs reused =          1
+0.09.708.030 I slot      release: id  3 | task 0 | stop processing: n_tokens = 4855, truncated = 0
+0.09.717.933 I slot get_availabl: id  3 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 1.000
+0.09.717.958 I slot launch_slot_: id  3 | task 11 | processing task, is_child = 0
+0.13.685.038 I slot print_timing: id  3 | task 11 | prompt processing, n_tokens =   4096, progress = 0.84, t =   3.97 s / 1032.51 tokens per second
+0.14.124.726 I slot print_timing: id  3 | task 11 | prompt processing, n_tokens =   4339, progress = 0.89, t =   4.41 s / 984.63 tokens per second
+0.14.860.270 I slot print_timing: id  3 | task 11 | prompt processing, n_tokens =   4851, progress = 1.00, t =   5.14 s / 943.36 tokens per second
+0.15.376.242 I slot print_timing: id  3 | task 11 | prompt eval time =    5658.24 ms /  4855 tokens (    1.17 ms per token,   858.04 tokens per second)
+0.15.376.248 I slot print_timing: id  3 | task 11 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token,     0.00 tokens per second)
+0.15.376.248 I slot print_timing: id  3 | task 11 |       total time =    5658.24 ms /  4856 tokens
+0.15.376.249 I slot print_timing: id  3 | task 11 |    graphs reused =          1
+0.15.376.422 I slot      release: id  3 | task 11 | stop processing: n_tokens = 4855, truncated = 0
+0.15.386.279 I slot get_availabl: id  3 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 1.000
+0.15.386.304 I slot launch_slot_: id  3 | task 23 | processing task, is_child = 0
+0.19.361.634 I slot print_timing: id  3 | task 23 | prompt processing, n_tokens =   4096, progress = 0.84, t =   3.98 s / 1030.37 tokens per second
+0.19.804.514 I slot print_timing: id  3 | task 23 | prompt processing, n_tokens =   4339, progress = 0.89, t =   4.42 s / 982.08 tokens per second
+0.20.541.424 I slot print_timing: id  3 | task 23 | prompt processing, n_tokens =   4851, progress = 1.00, t =   5.16 s / 941.01 tokens per second
+0.21.058.871 I slot print_timing: id  3 | task 23 | prompt eval time =    5672.53 ms /  4855 tokens (    1.17 ms per token,   855.88 tokens per second)
+0.21.058.874 I slot print_timing: id  3 | task 23 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token,     0.00 tokens per second)
+0.21.058.874 I slot print_timing: id  3 | task 23 |       total time =    5672.53 ms /  4856 tokens
+0.21.058.875 I slot print_timing: id  3 | task 23 |    graphs reused =          1
+0.21.059.053 I slot      release: id  3 | task 23 | stop processing: n_tokens = 4855, truncated = 0
+0.21.059.548 I srv    operator(): operator(): cleaning up before exit...

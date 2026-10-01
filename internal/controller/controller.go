@@ -35,6 +35,7 @@ type GitHub interface {
 type Sandbox interface {
 	Ensure(ctx context.Context, jobID, engine string) error
 	Delete(ctx context.Context, jobID string) error
+	Exists(ctx context.Context, jobID string) (bool, error)
 	Exec(ctx context.Context, jobID string, argv []string, env map[string]string) (sandbox.Output, error)
 }
 
@@ -59,6 +60,8 @@ type Controller struct {
 	GitToken     func(ctx context.Context) (string, error)
 	Interval     time.Duration
 	PauseTimeout time.Duration
+	// SandboxCheck is how often a running benchmark checks its sandbox still exists.
+	SandboxCheck time.Duration
 	Logf         func(format string, args ...any)
 }
 
@@ -217,8 +220,34 @@ func (c *Controller) benchmarkArgv(j Job) []string {
 	)
 }
 
+// benchmark runs the measurement in the sandbox. A sandbox deleted under a
+// running exec leaves the exec waiting forever, so its existence is checked
+// while it runs. It has been seen deleted right after the measurement pushed
+// its result, so a deleted sandbox is not a failure by itself: publish then
+// opens the PR if the result branch exists and fails the job if it does not.
+var errSandboxDeleted = errors.New("the sandbox was deleted while the benchmark ran")
+
 func (c *Controller) benchmark(ctx context.Context, j Job) error {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(c.SandboxCheck):
+			}
+			if ok, err := c.Sandbox.Exists(ctx, j.ID); err == nil && !ok {
+				cancel(errSandboxDeleted)
+				return
+			}
+		}
+	}()
 	_, err := c.exec(ctx, j, append(c.benchmarkArgv(j), "--push"), nil)
+	if errors.Is(context.Cause(ctx), errSandboxDeleted) {
+		c.Logf("job %s: %v", j.ID, errSandboxDeleted)
+		return nil
+	}
 	return err
 }
 

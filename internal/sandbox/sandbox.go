@@ -81,6 +81,22 @@ func (c *Client) Delete(ctx context.Context, jobID string) error {
 	})
 }
 
+// Exists reports whether the job's sandbox claim is present and not being deleted.
+func (c *Client) Exists(ctx context.Context, jobID string) (bool, error) {
+	claims, err := c.claims()
+	if err != nil {
+		return false, err
+	}
+	claim, err := claims.Get(ctx, Name(jobID), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return claim.DeletionTimestamp == nil, nil
+}
+
 type Output struct {
 	Stdout   string
 	Stderr   string

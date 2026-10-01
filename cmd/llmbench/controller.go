@@ -130,6 +130,7 @@ func buildController(cfg config, kubeconfig string) (*controller.Controller, err
 		GitToken:     app.Token,
 		Interval:     time.Duration(cfg.PollIntervalSeconds) * time.Second,
 		PauseTimeout: time.Duration(cfg.PauseTimeoutMinutes) * time.Minute,
+		SandboxCheck: time.Minute,
 		Logf:         logger.Printf,
 	}
 	if h := cfg.Harness; h != nil {

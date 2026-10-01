@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -81,13 +80,16 @@ func (g *fakeGitHub) OpenPullRequest(_ context.Context, head, _, _ string) (int,
 
 type fakeSandbox struct {
 	*recorder
-	onExec func(argv []string) sandbox.Output
+	onExec   func(argv []string) sandbox.Output
+	setupEnv map[string]string
 }
 
 func (s *fakeSandbox) Ensure(context.Context, string) error                 { s.add("sandbox ensure"); return nil }
 func (s *fakeSandbox) Delete(context.Context, string) error                 { s.add("sandbox delete"); return nil }
-func (s *fakeSandbox) Put(context.Context, string, string, io.Reader) error { return nil }
-func (s *fakeSandbox) Exec(_ context.Context, _ string, argv []string, _ map[string]string) (sandbox.Output, error) {
+func (s *fakeSandbox) Exec(_ context.Context, _ string, argv []string, env map[string]string) (sandbox.Output, error) {
+	if argv[0] == "sh" {
+		s.setupEnv = env
+	}
 	if s.onExec == nil || argv[0] == "sh" {
 		return sandbox.Output{}, nil
 	}
@@ -143,6 +145,9 @@ func TestBenchmarkOpensPRThenRestores(t *testing.T) {
 		"comment Completed: PR #7", "sandbox delete", "restore", "label +llmbench:done", "label -llmbench:running"}
 	if got := rec.String(); got != strings.Join(want, "\n") {
 		t.Fatalf("events:\n%s", got)
+	}
+	if !strings.Contains(sb.setupEnv["LLMBENCH_SPEC"], "kind: benchmark") || sb.setupEnv["LLMBENCH_SPEC_PATH"] != "/tmp/llmbench-2026-09-27-issue1.yaml" {
+		t.Fatalf("setup env %v", sb.setupEnv)
 	}
 	if err := c.Poll(context.Background()); err != nil || len(rec.events) != len(want) {
 		t.Fatal("a finished issue was picked up again")

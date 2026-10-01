@@ -1,0 +1,204 @@
+{
+  "job_id": "2026-10-01-issue90",
+  "kind": "benchmark",
+  "started_at": "2026-10-01T21:25:58.186392559Z",
+  "duration_seconds": 1649.737058425,
+  "model": {
+    "id": "qwen38-flash-next-nvfp4",
+    "path": "/models/qwen38-flash-next-nvfp4",
+    "digest": "sha256:3cc792d27642e808c8cd903da7f395f266be934616c3c21f36d255e941a1e9a2"
+  },
+  "runtime": {
+    "engine": "freetoken-kai",
+    "binary": "ft",
+    "args": [
+      "--pp-size",
+      "2",
+      "--gpu",
+      "1,0",
+      "--pp-layers",
+      "30",
+      "--moe-strategy",
+      "offload",
+      "--text-model-only",
+      "--dense-quant",
+      "none",
+      "--kv-cache-dtype",
+      "auto",
+      "--kv-reserve-tokens",
+      "32768",
+      "--memory-ratio",
+      "0.95",
+      "--max-running-requests",
+      "1",
+      "--prefill-mixer-pieces",
+      "8",
+      "--moe-prefill-hit-d2d",
+      "--prefill-chunk-budget",
+      "0.7"
+    ]
+  },
+  "gpus": [
+    "NVIDIA GeForce RTX 3060",
+    "NVIDIA GeForce RTX 3060"
+  ],
+  "driver": "595.91.07",
+  "measurement_valid": true,
+  "metrics": [
+    {
+      "name": "ttft_ms",
+      "case": "visual",
+      "unit": "ms",
+      "value": 68770.577605,
+      "min": 68770.577605,
+      "max": 68770.577605,
+      "samples": 1
+    },
+    {
+      "name": "latency_ms",
+      "case": "visual",
+      "unit": "ms",
+      "value": 1415093.404494,
+      "min": 1415093.404494,
+      "max": 1415093.404494,
+      "samples": 1
+    },
+    {
+      "name": "decode_tok_per_s",
+      "case": "visual",
+      "unit": "tok/s",
+      "value": 18.252680196163716,
+      "min": 18.252680196163716,
+      "max": 18.252680196163716,
+      "samples": 1
+    },
+    {
+      "name": "prefill_tok_per_s",
+      "case": "visual",
+      "unit": "tok/s",
+      "value": 71.35318868753015,
+      "min": 71.35318868753015,
+      "max": 71.35318868753015,
+      "samples": 1
+    },
+    {
+      "name": "tokens_in",
+      "case": "visual",
+      "unit": "tokens",
+      "value": 4907,
+      "min": 4907,
+      "max": 4907,
+      "samples": 1
+    },
+    {
+      "name": "tokens_out",
+      "case": "visual",
+      "unit": "tokens",
+      "value": 24575,
+      "min": 24575,
+      "max": 24575,
+      "samples": 1
+    },
+    {
+      "name": "cached_tokens",
+      "case": "visual",
+      "unit": "tokens",
+      "value": 0,
+      "min": 0,
+      "max": 0,
+      "samples": 1
+    },
+    {
+      "name": "itl_ms_p50",
+      "case": "visual",
+      "unit": "ms",
+      "value": 53.44271,
+      "min": 53.44271,
+      "max": 53.44271,
+      "samples": 1
+    },
+    {
+      "name": "itl_ms_p95",
+      "case": "visual",
+      "unit": "ms",
+      "value": 70.973476,
+      "min": 70.973476,
+      "max": 70.973476,
+      "samples": 1
+    },
+    {
+      "name": "itl_ms_p99",
+      "case": "visual",
+      "unit": "ms",
+      "value": 85.164602,
+      "min": 85.164602,
+      "max": 85.164602,
+      "samples": 1
+    },
+    {
+      "name": "energy_j_per_token",
+      "case": "visual",
+      "unit": "J/token",
+      "value": 10.732021742014222,
+      "min": 10.732021742014222,
+      "max": 10.732021742014222,
+      "samples": 1
+    },
+    {
+      "name": "vram_used_mib",
+      "unit": "MiB",
+      "value": 11837,
+      "min": 11801,
+      "max": 11837,
+      "samples": 2830
+    },
+    {
+      "name": "gpu_util_percent",
+      "unit": "%",
+      "value": 47.03710247349823,
+      "min": 0,
+      "max": 100,
+      "samples": 2830
+    },
+    {
+      "name": "power_w",
+      "unit": "W",
+      "value": 93.229448763251,
+      "min": 18.59,
+      "max": 176.54,
+      "samples": 2830
+    },
+    {
+      "name": "temperature_c",
+      "unit": "°C",
+      "value": 68,
+      "min": 36,
+      "max": 68,
+      "samples": 2830
+    },
+    {
+      "name": "cpu_util_percent",
+      "unit": "%",
+      "value": 6.278362607329801,
+      "min": 4.488778054862843,
+      "max": 13.42534504391468,
+      "samples": 1414
+    },
+    {
+      "name": "ram_used_mib",
+      "unit": "MiB",
+      "value": 77892.79296875,
+      "min": 75234.828125,
+      "max": 77892.79296875,
+      "samples": 1415
+    }
+  ],
+  "digests": {
+    "jobspec": "2122ba20610732e7512489960d8e7000c25514fdd3dcd874dbc8c01c8da5d7e4",
+    "series": "9aded9feb197b4a7063e310620593f6d9f0d022b73652c5b142e6bb61f2d3ea8",
+    "workload": "c3bb7c0393c739178bd64c7d0256649f41b3f1f92e359730037abe33a0b7f32a",
+    "prompts": {
+      "visual": "109930400202bc401653514dcd1d2181f3dfabd2768d44a7a220b824c6109dae"
+    }
+  }
+}

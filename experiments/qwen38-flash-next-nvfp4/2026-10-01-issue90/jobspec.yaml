@@ -1,0 +1,42 @@
+kind: benchmark
+model: qwen38-flash-next-nvfp4
+runtime:
+    engine: freetoken-kai
+    args:
+        - --pp-size
+        - "2"
+        - --gpu
+        - 1,0
+        - --pp-layers
+        - "30"
+        - --moe-strategy
+        - offload
+        - --text-model-only
+        - --dense-quant
+        - none
+        - --kv-cache-dtype
+        - auto
+        - --kv-reserve-tokens
+        - "32768"
+        - --memory-ratio
+        - "0.95"
+        - --max-running-requests
+        - "1"
+        - --prefill-mixer-pieces
+        - "8"
+        - --moe-prefill-hit-d2d
+        - --prefill-chunk-budget
+        - "0.7"
+    ready_timeout_seconds: 3600
+workload:
+    - name: visual
+      prompt: benchmarks/visual/prompt.md
+      max_tokens: 24576
+      repeats: 1
+sampling:
+    temperature: 0
+    seed: 1
+metrics:
+    - runtime
+    - gpu
+    - host

@@ -163,7 +163,8 @@ func TestBenchmarkOpensPRThenRestores(t *testing.T) {
 	}
 }
 
-// Poll returning at all is the check: without the watchdog it waits forever.
+// Poll returning at all is the first check: without the watchdog it waits
+// forever. With no result branch the job fails.
 func TestDeletedSandboxFailsBenchmark(t *testing.T) {
 	c, _, sb, _, rec := setup(LabelBenchmark)
 	sb.deleted = true
@@ -175,6 +176,18 @@ func TestDeletedSandboxFailsBenchmark(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in:\n%s", want, got)
 		}
+	}
+}
+
+func TestDeletedSandboxPublishesPushedResult(t *testing.T) {
+	c, gh, sb, _, rec := setup(LabelBenchmark)
+	sb.deleted = true
+	gh.branches["llmbench/2026-09-27-issue1"] = true
+	if err := c.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := rec.String(); !strings.Contains(got, "pr llmbench/2026-09-27-issue1") || !strings.Contains(got, "label +llmbench:done") {
+		t.Fatalf("events:\n%s", got)
 	}
 }
 

@@ -40,6 +40,7 @@ type Request struct {
 
 type Completion struct {
 	Content          string
+	Reasoning        string
 	PromptTokens     int
 	CompletionTokens int
 	CachedTokens     int

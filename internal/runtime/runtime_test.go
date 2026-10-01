@@ -43,7 +43,7 @@ func TestLlamaCpp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.PromptTokens != 5 || c.CompletionTokens != 2 || c.TTFT <= 0 || c.Total < c.TTFT {
+	if c.PromptTokens != 5 || c.CompletionTokens != 2 || c.TTFT <= 0 || c.Total < c.TTFT || c.Content != "b" || c.Reasoning != "a" {
 		t.Fatalf("completion %+v", c)
 	}
 	m, err := a.Metrics(ctx)

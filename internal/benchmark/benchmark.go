@@ -187,13 +187,18 @@ func logTail(path string, lines int) string {
 	return strings.Join(all, "\n")
 }
 
-func (r *run) saveOutput(caseName string, repeat int, content string) error {
+func (r *run) saveOutput(caseName string, repeat int, content, reasoning string) error {
 	name := fmt.Sprintf("%s-%d", caseName, repeat)
 	if err := os.MkdirAll(filepath.Join(r.cfg.OutDir, "raw", "outputs"), 0o755); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(r.cfg.OutDir, "raw", "outputs", name+".md"), []byte(content), 0o644); err != nil {
 		return err
+	}
+	if reasoning != "" {
+		if err := os.WriteFile(filepath.Join(r.cfg.OutDir, "raw", "outputs", name+".reasoning.md"), []byte(reasoning), 0o644); err != nil {
+			return err
+		}
 	}
 	html := extractHTML(content)
 	if html == "" {
@@ -293,7 +298,7 @@ func (r *run) measure(ctx context.Context, prompts map[string]string) {
 				r.invalidate(fmt.Sprintf("case %s repeat %d produced %d tokens; no decode rate can be measured", c.Name, i, got.CompletionTokens))
 			}
 			r.recordCompletion(c.Name, i, got)
-			if err := r.saveOutput(c.Name, i, got.Content); err != nil {
+			if err := r.saveOutput(c.Name, i, got.Content, got.Reasoning); err != nil {
 				r.invalidate(fmt.Sprintf("case %s repeat %d output could not be saved: %v", c.Name, i, err))
 			}
 		}

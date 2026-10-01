@@ -1,11 +1,9 @@
 package controller
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"sort"
 	"strings"
 	"time"
@@ -38,7 +36,6 @@ type Sandbox interface {
 	Ensure(ctx context.Context, jobID string) error
 	Delete(ctx context.Context, jobID string) error
 	Exec(ctx context.Context, jobID string, argv []string, env map[string]string) (sandbox.Output, error)
-	Put(ctx context.Context, jobID, path string, r io.Reader) error
 }
 
 type GitOps interface {
@@ -184,6 +181,7 @@ git config --global user.email 'llmbench[bot]@users.noreply.github.com'
 git config --global credential.helper store
 printf 'https://x-access-token:%s@github.com\n' "$LLMBENCH_GIT_TOKEN" > ~/.git-credentials
 [ -d "$LLMBENCH_WORKDIR/.git" ] || git clone "https://github.com/$LLMBENCH_REPOSITORY" "$LLMBENCH_WORKDIR"
+printf '%s' "$LLMBENCH_SPEC" > "$LLMBENCH_SPEC_PATH"
 `
 
 func (c *Controller) prepare(ctx context.Context, j Job) error {
@@ -196,18 +194,18 @@ func (c *Controller) prepare(ctx context.Context, j Job) error {
 	if err != nil {
 		return err
 	}
-	if _, err := c.exec(ctx, j, []string{"sh", "-c", setupScript}, map[string]string{
-		"LLMBENCH_GIT_TOKEN":  token,
-		"LLMBENCH_WORKDIR":    c.Workdir,
-		"LLMBENCH_REPOSITORY": c.Repository,
-	}); err != nil {
-		return err
-	}
 	spec, err := yaml.Marshal(j.Spec)
 	if err != nil {
 		return err
 	}
-	return c.Sandbox.Put(ctx, j.ID, j.SpecPath(), bytes.NewReader(spec))
+	_, err = c.exec(ctx, j, []string{"sh", "-c", setupScript}, map[string]string{
+		"LLMBENCH_GIT_TOKEN":  token,
+		"LLMBENCH_WORKDIR":    c.Workdir,
+		"LLMBENCH_REPOSITORY": c.Repository,
+		"LLMBENCH_SPEC":       string(spec),
+		"LLMBENCH_SPEC_PATH":  j.SpecPath(),
+	})
+	return err
 }
 
 func (c *Controller) benchmarkArgv(j Job) []string {

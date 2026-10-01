@@ -22,7 +22,8 @@ jobs:
       - run: git submodule update --init --depth 1 runtimes/strata/upstream
       # The CUDA devel image and the engine build need more disk than the runner has free.
       - run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
-      - run: echo "TAG=$(git -C runtimes/strata/upstream rev-parse --short=12 HEAD)" >> "$GITHUB_ENV"
+      # This commit pins both the upstream submodule and runtimes/strata/Dockerfile.
+      - run: echo "TAG=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_ENV"
       # Only the RTX 3060 (sm_86) and no image encoder.
       - run: docker build -t strata-upstream --build-arg CUDA_ARCHITECTURES=86 --build-arg BUILD_VISION=0 runtimes/strata/upstream
       - run: docker build -t "$IMAGE:$TAG" --build-arg BASE=strata-upstream runtimes/strata

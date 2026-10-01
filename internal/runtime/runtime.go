@@ -74,10 +74,12 @@ func New(engine string, o Options) (Adapter, error) {
 	switch engine {
 	case "llamacpp":
 		return llamaCpp{o, client}, nil
-	case "freetoken":
+	// freetoken-kai is the FreeToken-Kai fork, served the same way but from
+	// its own sandbox.
+	case "freetoken", "freetoken-kai":
 		return freeToken{o, client}, nil
 	case "strata":
 		return strata{o, client}, nil
 	}
-	return nil, fmt.Errorf("runtime: unknown engine %q (llamacpp, freetoken, strata)", engine)
+	return nil, fmt.Errorf("runtime: unknown engine %q (llamacpp, freetoken, freetoken-kai, strata)", engine)
 }

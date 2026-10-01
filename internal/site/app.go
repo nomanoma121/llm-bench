@@ -105,6 +105,7 @@ const metrics = [
   ["context", "Context used", "tokens"],
   ["vram", "VRAM used (all GPUs)", "MiB"],
   ["util", "GPU utilization (mean)", "%"],
+  ["acceptance", "Draft (MTP) acceptance, cumulative", "ratio"],
 ];
 
 function el(name, attrs, text) {

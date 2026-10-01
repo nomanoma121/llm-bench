@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/nomanoma121/llm-bench/internal/benchmark"
 )
@@ -80,11 +81,74 @@ func combine(lines []line, mean bool) [][2]float64 {
 
 func compareSeries(samples []benchmark.Sample) map[string][][2]float64 {
 	return map[string][][2]float64{
-		"decode":  decodeOverTime(samples),
-		"context": runtimeSeries(samples, "llamacpp:context_tokens"),
-		"vram":    combine(perGPU(samples, "vram_used_mib"), false),
-		"util":    combine(perGPU(samples, "gpu_util_percent"), true),
+		"decode":     decodeOverTime(samples),
+		"context":    runtimeSeries(samples, "llamacpp:context_tokens"),
+		"vram":       combine(perGPU(samples, "vram_used_mib"), false),
+		"util":       combine(perGPU(samples, "gpu_util_percent"), true),
+		"acceptance": ratioOverTime(samples, "llamacpp:spec_decode_num_accepted_tokens_total", "llamacpp:spec_decode_num_draft_tokens_total"),
 	}
+}
+
+func ratioOverTime(samples []benchmark.Sample, num, den string) [][2]float64 {
+	nums, dens := runtimeSeries(samples, num), runtimeSeries(samples, den)
+	byTime := map[float64]float64{}
+	for _, p := range dens {
+		byTime[p[0]] = p[1]
+	}
+	var out [][2]float64
+	for _, p := range nums {
+		if d := byTime[p[0]]; d > 0 {
+			out = append(out, [2]float64{p[0], p[1] / d})
+		}
+	}
+	return out
+}
+
+func acceptanceByPosition(samples []benchmark.Sample) []bar {
+	last := map[string]float64{}
+	var drafts float64
+	for _, s := range samples {
+		switch {
+		case s.Source != "runtime":
+		case s.Name == "llamacpp:spec_decode_num_accepted_tokens_per_pos_total":
+			last[s.Labels["position"]] = s.Value
+		case s.Name == "llamacpp:spec_decode_num_drafts_total":
+			drafts = s.Value
+		}
+	}
+	if drafts == 0 {
+		return nil
+	}
+	var bars []bar
+	for i := 0; ; i++ {
+		v, ok := last[strconv.Itoa(i)]
+		if !ok {
+			return bars
+		}
+		bars = append(bars, bar{Label: fmt.Sprintf("position %d", i+1), Value: v / drafts})
+	}
+}
+
+func memoryBars(info map[string]string) []bar {
+	totals := map[string]float64{}
+	for k, v := range info {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			continue
+		}
+		for _, kind := range []string{"model", "kv", "compute"} {
+			if strings.HasPrefix(k, kind+"_buffer_mib.") {
+				totals[kind] += f
+			}
+		}
+	}
+	var bars []bar
+	for _, kind := range []string{"model", "kv", "compute"} {
+		if totals[kind] > 0 {
+			bars = append(bars, bar{Label: kind, Value: totals[kind]})
+		}
+	}
+	return bars
 }
 
 func point(s benchmark.Sample) [2]float64 {

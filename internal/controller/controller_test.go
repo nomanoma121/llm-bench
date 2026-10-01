@@ -84,8 +84,8 @@ type fakeSandbox struct {
 	setupEnv map[string]string
 }
 
-func (s *fakeSandbox) Ensure(context.Context, string) error                 { s.add("sandbox ensure"); return nil }
-func (s *fakeSandbox) Delete(context.Context, string) error                 { s.add("sandbox delete"); return nil }
+func (s *fakeSandbox) Ensure(context.Context, string) error { s.add("sandbox ensure"); return nil }
+func (s *fakeSandbox) Delete(context.Context, string) error { s.add("sandbox delete"); return nil }
 func (s *fakeSandbox) Exec(_ context.Context, _ string, argv []string, env map[string]string) (sandbox.Output, error) {
 	if argv[0] == "sh" {
 		s.setupEnv = env

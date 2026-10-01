@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -160,6 +161,15 @@ func digestPath(root string) (string, error) {
 	return fmt.Sprintf("sha256:%x", h.Sum(nil)), nil
 }
 
+func logTail(path string, lines int) string {
+	b, _ := os.ReadFile(path)
+	all := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	if len(all) > lines {
+		all = all[len(all)-lines:]
+	}
+	return strings.Join(all, "\n")
+}
+
 func readPrompts(root string, cases []job.Case) (map[string]string, map[string]string, error) {
 	prompts, digests := map[string]string{}, map[string]string{}
 	for _, c := range cases {
@@ -194,7 +204,7 @@ func (r *run) waitReady(ctx context.Context, proc *process) error {
 		}
 		select {
 		case <-proc.exited:
-			return fmt.Errorf("runtime exited before becoming ready (see raw/runtime.log)")
+			return fmt.Errorf("runtime exited before becoming ready:\n%s", logTail(filepath.Join(r.cfg.OutDir, "raw", "runtime.log"), 20))
 		case <-ctx.Done():
 			return fmt.Errorf("runtime not ready after %s: %w", timeout, err)
 		case <-time.After(time.Second):

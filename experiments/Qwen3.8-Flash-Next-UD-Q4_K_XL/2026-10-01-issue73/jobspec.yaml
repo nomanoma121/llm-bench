@@ -1,0 +1,28 @@
+kind: benchmark
+model: UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
+runtime:
+    engine: llamacpp
+    args:
+        - --device
+        - CUDA0
+        - --ctx-size
+        - "32768"
+        - -ngl
+        - "99"
+        - -fa
+        - "on"
+        - -ot
+        - ffn_(gate|up|down)_exps\.weight=CPU,per_layer_token_embd\.weight=CPU
+    ready_timeout_seconds: 1800
+workload:
+    - name: visual
+      prompt: benchmarks/visual/prompt.md
+      max_tokens: 24576
+      repeats: 1
+sampling:
+    temperature: 0
+    seed: 1
+metrics:
+    - runtime
+    - gpu
+    - host

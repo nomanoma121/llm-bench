@@ -145,8 +145,14 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 }
 
 func digestPath(root string) (string, error) {
+	// A model directory moved elsewhere can be left behind as a symlink, which
+	// WalkDir would not enter.
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
 	h := sha256.New()
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}

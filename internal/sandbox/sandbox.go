@@ -18,13 +18,23 @@ import (
 
 type Client struct {
 	Namespace string
-	WarmPool  string
-	REST      *rest.Config
+	// WarmPool is used for every engine without its own entry in EngineWarmPools,
+	// which holds the pools whose image carries a different runtime.
+	WarmPool        string
+	EngineWarmPools map[string]string
+	REST            *rest.Config
+}
+
+func (c *Client) warmPool(engine string) string {
+	if pool, ok := c.EngineWarmPools[engine]; ok {
+		return pool
+	}
+	return c.WarmPool
 }
 
 func Name(jobID string) string { return "llmbench-" + strings.ToLower(jobID) }
 
-func (c *Client) Ensure(ctx context.Context, jobID string) error {
+func (c *Client) Ensure(ctx context.Context, jobID, engine string) error {
 	claims, err := c.claims()
 	if err != nil {
 		return err
@@ -32,7 +42,7 @@ func (c *Client) Ensure(ctx context.Context, jobID string) error {
 	name := Name(jobID)
 	_, err = claims.Create(ctx, &extv1beta1.SandboxClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{"app.kubernetes.io/managed-by": "llmbench"}},
-		Spec:       extv1beta1.SandboxClaimSpec{WarmPoolRef: extv1beta1.SandboxWarmPoolRef{Name: c.WarmPool}},
+		Spec:       extv1beta1.SandboxClaimSpec{WarmPoolRef: extv1beta1.SandboxWarmPoolRef{Name: c.warmPool(engine)}},
 	}, metav1.CreateOptions{})
 	if err != nil && !apierrors.IsAlreadyExists(err) {
 		return err

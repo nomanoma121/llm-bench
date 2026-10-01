@@ -321,6 +321,9 @@ func (r *run) recordCompletion(caseName string, repeat int, got runtime.Completi
 		values["itl_ms_p95"] = percentile(itl, 0.95)
 		values["itl_ms_p99"] = percentile(itl, 0.99)
 	}
+	if got.ExpertHitRate > 0 {
+		values["expert_hit_rate"] = got.ExpertHitRate
+	}
 	values["cached_tokens"] = float64(got.CachedTokens)
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -507,6 +510,7 @@ var harnessMetrics = []struct {
 	{"tokens_out", "tokens", median},
 	{"draft_acceptance", "ratio", median},
 	{"mtp_accept_len", "tokens", median},
+	{"expert_hit_rate", "ratio", median},
 	{"cached_tokens", "tokens", median},
 	{"itl_ms_p50", "ms", median},
 	{"itl_ms_p95", "ms", median},

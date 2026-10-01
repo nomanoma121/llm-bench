@@ -110,9 +110,9 @@ func (a llamaCpp) Metrics(ctx context.Context) ([]Metric, error) {
 		}
 		decoded := float64(s.NextToken[0].NDecoded)
 		metrics = append(metrics,
-			Metric{Name: "llamacpp:slot_decoded_tokens", Value: decoded},
-			Metric{Name: "llamacpp:context_tokens", Value: float64(s.NPromptTokens) + decoded},
-			Metric{Name: "llamacpp:context_size", Value: float64(s.NCtx)},
+			Metric{Name: "decoded_tokens", Value: decoded},
+			Metric{Name: "context_tokens", Value: float64(s.NPromptTokens) + decoded},
+			Metric{Name: "context_size", Value: float64(s.NCtx)},
 		)
 	}
 	return metrics, nil

@@ -33,7 +33,7 @@ type GitHub interface {
 }
 
 type Sandbox interface {
-	Ensure(ctx context.Context, jobID string) error
+	Ensure(ctx context.Context, jobID, engine string) error
 	Delete(ctx context.Context, jobID string) error
 	Exec(ctx context.Context, jobID string, argv []string, env map[string]string) (sandbox.Output, error)
 }
@@ -187,7 +187,7 @@ printf '%s' "$LLMBENCH_SPEC" > "$LLMBENCH_SPEC_PATH"
 func (c *Controller) prepare(ctx context.Context, j Job) error {
 	ensureCtx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
-	if err := c.Sandbox.Ensure(ensureCtx, j.ID); err != nil {
+	if err := c.Sandbox.Ensure(ensureCtx, j.ID, j.Spec.Runtime.Engine); err != nil {
 		return err
 	}
 	token, err := c.GitToken(ctx)

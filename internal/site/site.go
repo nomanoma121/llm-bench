@@ -301,8 +301,11 @@ func charts(r benchmark.Result, samples []benchmark.Sample) []section {
 		barChart("Draft acceptance by position", "ratio", acceptanceByPosition(samples)),
 		perRepeat("draft_acceptance", "Draft acceptance per repeat", "ratio"),
 	)
+	group("Experts",
+		perRepeat("expert_hit_rate", "GPU expert cache hit rate per repeat", "ratio"),
+	)
 	group("Context and requests",
-		single("Context used", "tokens", runtimeSeries(samples, "llamacpp:context_tokens")),
+		single("Context used", "tokens", runtimeSeries(samples, "context_tokens")),
 		single("Prompt cache hit, cumulative", "ratio", ratioOverTime(samples, "llamacpp:prompt_tokens_cached_total", "llamacpp:prompt_tokens_total")),
 		single("Busy slots per decode", "slots", runtimeSeries(samples, "llamacpp:n_busy_slots_per_decode")),
 		lineChart("Requests", "requests", []line{

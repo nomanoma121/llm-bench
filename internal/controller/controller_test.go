@@ -84,7 +84,10 @@ type fakeSandbox struct {
 	setupEnv map[string]string
 }
 
-func (s *fakeSandbox) Ensure(context.Context, string) error { s.add("sandbox ensure"); return nil }
+func (s *fakeSandbox) Ensure(_ context.Context, _, engine string) error {
+	s.add("sandbox ensure %s", engine)
+	return nil
+}
 func (s *fakeSandbox) Delete(context.Context, string) error { s.add("sandbox delete"); return nil }
 func (s *fakeSandbox) Exec(_ context.Context, _ string, argv []string, env map[string]string) (sandbox.Output, error) {
 	if argv[0] == "sh" {
@@ -141,7 +144,7 @@ func TestBenchmarkOpensPRThenRestores(t *testing.T) {
 	if err := c.Poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"label +llmbench:running", "pause", "sandbox ensure", "pr llmbench/2026-09-27-issue1",
+	want := []string{"label +llmbench:running", "pause", "sandbox ensure llamacpp", "pr llmbench/2026-09-27-issue1",
 		"comment Completed: PR #7", "sandbox delete", "restore", "label +llmbench:done", "label -llmbench:running"}
 	if got := rec.String(); got != strings.Join(want, "\n") {
 		t.Fatalf("events:\n%s", got)

@@ -29,10 +29,12 @@ type config struct {
 		PrivateKeyFile string `yaml:"private_key_file"`
 	} `yaml:"github_app"`
 	Sandbox struct {
-		Namespace string   `yaml:"namespace"`
-		WarmPool  string   `yaml:"warm_pool"`
-		Workdir   string   `yaml:"workdir"`
-		LLMBench  []string `yaml:"llmbench"`
+		Namespace string `yaml:"namespace"`
+		WarmPool  string `yaml:"warm_pool"`
+		// EngineWarmPools maps an engine to the warm pool whose image runs it.
+		EngineWarmPools map[string]string `yaml:"engine_warm_pools"`
+		Workdir         string            `yaml:"workdir"`
+		LLMBench        []string          `yaml:"llmbench"`
 	} `yaml:"sandbox"`
 	GitOps  gitops.Target `yaml:"gitops"`
 	Harness *struct {
@@ -120,7 +122,7 @@ func buildController(cfg config, kubeconfig string) (*controller.Controller, err
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	c := &controller.Controller{
 		GitHub:       repo,
-		Sandbox:      &sandbox.Client{Namespace: cfg.Sandbox.Namespace, WarmPool: cfg.Sandbox.WarmPool, REST: rest},
+		Sandbox:      &sandbox.Client{Namespace: cfg.Sandbox.Namespace, WarmPool: cfg.Sandbox.WarmPool, EngineWarmPools: cfg.Sandbox.EngineWarmPools, REST: rest},
 		GitOps:       &gitops.GitOps{Target: cfg.GitOps, Manifests: manifests, Cluster: gitops.KubeCluster{Dynamic: dyn, Client: kube}},
 		Repository:   cfg.Repository,
 		Workdir:      cfg.Sandbox.Workdir,

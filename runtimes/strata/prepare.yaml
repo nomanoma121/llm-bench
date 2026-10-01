@@ -1,0 +1,66 @@
+# Prepares Strata's model under the models hostPath, where the strata sandbox
+# reads it: the IQ2_XS GGUF (~70 GB), Strata's pack, the MTP draft layer and the
+# install config, /models/strata/config/strata-iq2_xs.json, which a job spec
+# names as its model. setup.py sizes the model for the GPUs it sees, so run it
+# while the inference workload is paused:
+#
+#   kubectl apply -f runtimes/strata/prepare.yaml
+#   kubectl -n llm-bench logs -f job/strata-prepare
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: strata-prepare
+  namespace: llm-bench
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      resourceClaims:
+        - name: gpu
+          resourceClaimTemplateName: rtx3060x2
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: inference
+          effect: NoSchedule
+      containers:
+        - name: prepare
+          image: ghcr.io/nomanoma121/strata:latest
+          workingDir: /opt/strata
+          command: [sh, -c]
+          args:
+            - |
+              set -e
+              .venv/bin/python setup.py --setup --yes --family qwen --model IQ2_XS \
+                --context 32768 --vision no --low-ram off --gpus 0,1 \
+                --data-dir /models/strata --host 127.0.0.1 --port 18080 --no-start
+              mkdir -p /models/strata/config
+              # The engine logs to the server's output, which the benchmark keeps,
+              # and reads every prompt from the start, as llama.cpp does with
+              # cache_prompt off.
+              .venv/bin/python - <<'PY'
+              import json
+              cfg = json.load(open("strata-iq2_xs.json"))
+              cfg.pop("log", None)
+              cfg["args"] += ["--prompt-cache", "0"]
+              json.dump(cfg, open("/models/strata/config/strata-iq2_xs.json", "w"), indent=1)
+              PY
+              cat /models/strata/config/strata-iq2_xs.json
+          resources:
+            requests:
+              cpu: "8"
+              memory: 32Gi
+            limits:
+              memory: 120Gi
+            claims:
+              - name: gpu
+          volumeMounts:
+            - name: models
+              mountPath: /models
+      volumes:
+        - name: models
+          hostPath:
+            path: /var/lib/llama-cpp/models
+            type: Directory

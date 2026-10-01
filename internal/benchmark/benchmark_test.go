@@ -197,3 +197,15 @@ func TestSourceVersion(t *testing.T) {
 		t.Fatalf("local commit: %q", v)
 	}
 }
+
+func TestDigestPathFollowsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "real"), 0o755)
+	os.WriteFile(filepath.Join(dir, "real", "w.safetensors"), []byte("w"), 0o644)
+	os.Symlink(filepath.Join(dir, "real"), filepath.Join(dir, "link"))
+	real, err1 := digestPath(filepath.Join(dir, "real"))
+	link, err2 := digestPath(filepath.Join(dir, "link"))
+	if err1 != nil || err2 != nil || real != link {
+		t.Fatalf("%s %v / %s %v", real, err1, link, err2)
+	}
+}

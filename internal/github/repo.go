@@ -141,19 +141,19 @@ func (r *Repo) CommitFile(ctx context.Context, branch, path, message string, con
 
 type PullRequest struct {
 	Number int
-	State  string
-	Merged bool
 }
 
+// PullRequest returns the open pull request from head, or nil. Merged and
+// closed ones are history: a rerun of the same job reuses the branch name.
 func (r *Repo) PullRequest(ctx context.Context, head string) (*PullRequest, error) {
 	prs, _, err := r.c.PullRequests.List(ctx, r.Owner, r.Name, &gh.PullRequestListOptions{
-		State: "all", Head: r.Owner + ":" + head, ListOptions: gh.ListOptions{PerPage: 1},
+		State: "open", Head: r.Owner + ":" + head, ListOptions: gh.ListOptions{PerPage: 1},
 	})
 	if err != nil || len(prs) == 0 {
 		return nil, err
 	}
 	pr := prs[0]
-	return &PullRequest{Number: pr.GetNumber(), State: pr.GetState(), Merged: pr.MergedAt != nil}, nil
+	return &PullRequest{Number: pr.GetNumber()}, nil
 }
 
 func (r *Repo) OpenPullRequest(ctx context.Context, head, title, body string) (int, error) {

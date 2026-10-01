@@ -119,6 +119,9 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		return Result{}, fmt.Errorf("%w: %w", ErrNoResult, err)
 	}
 
+	if log, err := os.ReadFile(filepath.Join(cfg.OutDir, "raw", "runtime.log")); err == nil {
+		r.runtime.Info = adapter.Info(string(log))
+	}
 	series := r.seriesJSONL()
 	if err := os.WriteFile(filepath.Join(cfg.OutDir, "series.jsonl"), series, 0o644); err != nil {
 		return Result{}, err

@@ -45,6 +45,7 @@ type row struct {
 	Decode  string
 	Prefill string
 	TTFT    string
+	Accept  string
 	VRAM    string
 	Valid   string
 	Outputs int
@@ -82,6 +83,8 @@ var pageTemplate = template.Must(template.New("page").Parse(`<!DOCTYPE html>
 <dt>started</dt><dd>{{.StartedAt.Format "2006-01-02 15:04 UTC"}} ({{printf "%.0f" .DurationSeconds}}s)</dd>
 <dt>measurement valid</dt><dd>{{.MeasurementValid}}{{range .InvalidReasons}}<br>{{.}}{{end}}</dd>
 </dl>
+{{with .Runtime.Info}}<h2>Runtime</h2>
+<table>{{range $k, $v := .}}<tr><td class="muted">{{$k}}</td><td>{{$v}}</td></tr>{{end}}</table>{{end}}
 <h2>Metrics</h2>
 <table><tr><th>case</th><th>metric</th><th class="num">value</th><th class="num">min</th><th class="num">max</th><th class="num">n</th></tr>
 {{range .Metrics}}<tr><td>{{.Case}}</td><td>{{.Name}} <span class="muted">{{.Unit}}</span></td><td class="num">{{printf "%.2f" .Value}}</td><td class="num">{{printf "%.2f" .Min}}</td><td class="num">{{printf "%.2f" .Max}}</td><td class="num">{{.Samples}}</td></tr>
@@ -104,11 +107,11 @@ var indexTemplate = template.Must(template.New("index").Parse(`<!DOCTYPE html>
 <p><button id="compare" disabled>Compare selected</button> <span class="muted">up to 3</span></p>
 <div class="scroll"><table id="results"><thead><tr>
 <th></th><th data-sort="date">experiment</th><th data-sort="model">model</th><th data-sort="runtime">runtime</th><th>args</th><th data-sort="gpu">gpu</th><th>case</th>
-<th class="num" data-sort="decode">decode tok/s</th><th class="num" data-sort="prefill">prefill tok/s</th><th class="num" data-sort="ttft">ttft ms</th><th class="num" data-sort="vram">vram MiB</th><th>valid</th><th class="num">outputs</th>
+<th class="num" data-sort="decode">decode tok/s</th><th class="num" data-sort="prefill">prefill tok/s</th><th class="num" data-sort="ttft">ttft ms</th><th class="num" data-sort="accept">mtp accept</th><th class="num" data-sort="vram">vram MiB</th><th>valid</th><th class="num">outputs</th>
 </tr></thead><tbody>
-{{range .}}<tr data-date="{{.ID}}" data-model="{{.Model}}" data-runtime="{{.Runtime}}" data-gpu="{{.GPU}}" data-valid="{{.Valid}}" data-decode="{{.Decode}}" data-prefill="{{.Prefill}}" data-ttft="{{.TTFT}}" data-vram="{{.VRAM}}" data-label="{{.ID}} {{.Case}}">
+{{range .}}<tr data-date="{{.ID}}" data-model="{{.Model}}" data-runtime="{{.Runtime}}" data-gpu="{{.GPU}}" data-valid="{{.Valid}}" data-decode="{{.Decode}}" data-prefill="{{.Prefill}}" data-ttft="{{.TTFT}}" data-accept="{{.Accept}}" data-vram="{{.VRAM}}" data-label="{{.ID}} {{.Case}}">
 <td><input type="checkbox" class="pick" value="{{.Model}}/{{.ID}}"></td><td><a href="{{.URL}}">{{.ID}}</a></td><td>{{.Model}}</td><td>{{.Runtime}}</td><td class="muted">{{.Args}}</td><td>{{.GPU}}</td><td>{{.Case}}</td>
-<td class="num">{{.Decode}}</td><td class="num">{{.Prefill}}</td><td class="num">{{.TTFT}}</td><td class="num">{{.VRAM}}</td><td>{{.Valid}}</td><td class="num">{{if .Outputs}}<a href="{{.URL}}#outputs">{{.Outputs}}</a>{{end}}</td></tr>
+<td class="num">{{.Decode}}</td><td class="num">{{.Prefill}}</td><td class="num">{{.TTFT}}</td><td class="num">{{.Accept}}</td><td class="num">{{.VRAM}}</td><td>{{.Valid}}</td><td class="num">{{if .Outputs}}<a href="{{.URL}}#outputs">{{.Outputs}}</a>{{end}}</td></tr>
 {{end}}</tbody></table></div>
 </body></html>
 `))
@@ -141,7 +144,7 @@ func Build(root, out string) error {
 		if r, err := benchmark.LoadResult(dir); err == nil {
 			e.Result = &r
 			e.Samples = loadSamples(filepath.Join(dir, "series.jsonl"))
-			e.Charts = charts(e.Samples)
+			e.Charts = charts(e.Samples, r.Runtime.Info)
 		}
 		files, _ := filepath.Glob(filepath.Join(dir, "output", "*.html"))
 		for _, f := range files {
@@ -228,6 +231,9 @@ func rowsOf(e experiment) []row {
 		if m, ok := r.Metric("ttft_ms", c); ok {
 			rw.TTFT = number(m.Value)
 		}
+		if m, ok := r.Metric("draft_acceptance", c); ok {
+			rw.Accept = number(m.Value)
+		}
 		rows = append(rows, rw)
 	}
 	if len(rows) == 0 {
@@ -236,7 +242,7 @@ func rowsOf(e experiment) []row {
 	return rows
 }
 
-func charts(samples []benchmark.Sample) []template.HTML {
+func charts(samples []benchmark.Sample, info map[string]string) []template.HTML {
 	var out []template.HTML
 	add := func(c template.HTML) {
 		if c != "" {
@@ -245,6 +251,11 @@ func charts(samples []benchmark.Sample) []template.HTML {
 	}
 	add(lineChart("Decode speed over time", "tok/s", []line{{Name: "decode", Points: decodeOverTime(samples)}}))
 	add(lineChart("Context used", "tokens", []line{{Name: "context", Points: runtimeSeries(samples, "llamacpp:context_tokens")}}))
+	add(lineChart("Draft (MTP) acceptance, cumulative", "ratio", []line{{Name: "acceptance", Points: ratioOverTime(samples, "llamacpp:spec_decode_num_accepted_tokens_total", "llamacpp:spec_decode_num_draft_tokens_total")}}))
+	add(barChart("Draft (MTP) acceptance by position", "ratio", acceptanceByPosition(samples)))
+	add(lineChart("Prompt cache hit, cumulative", "ratio", []line{{Name: "cache hit", Points: ratioOverTime(samples, "llamacpp:prompt_tokens_cached_total", "llamacpp:prompt_tokens_total")}}))
+	add(lineChart("Busy slots per decode", "slots", []line{{Name: "slots", Points: runtimeSeries(samples, "llamacpp:n_busy_slots_per_decode")}}))
+	add(barChart("Memory by buffer (all devices)", "MiB", memoryBars(info)))
 	add(lineChart("VRAM used", "MiB", perGPU(samples, "vram_used_mib")))
 	add(lineChart("GPU utilization", "%", perGPU(samples, "gpu_util_percent")))
 	for _, metric := range []struct{ name, title, unit string }{

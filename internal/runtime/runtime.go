@@ -60,6 +60,7 @@ type Adapter interface {
 	Ready(ctx context.Context) error
 	Complete(ctx context.Context, req Request) (Completion, error)
 	Metrics(ctx context.Context) ([]Metric, error)
+	Info(log string) map[string]string
 }
 
 func New(engine string, o Options) (Adapter, error) {

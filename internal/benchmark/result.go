@@ -34,10 +34,11 @@ type Model struct {
 }
 
 type Runtime struct {
-	Engine  string   `json:"engine"`
-	Binary  string   `json:"binary"`
-	Version string   `json:"version,omitempty"`
-	Args    []string `json:"args,omitempty"`
+	Engine  string            `json:"engine"`
+	Binary  string            `json:"binary"`
+	Version string            `json:"version,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Info    map[string]string `json:"info,omitempty"`
 }
 
 func (r Runtime) Label() string {

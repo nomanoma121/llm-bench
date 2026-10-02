@@ -40,6 +40,8 @@ type Request struct {
 	Temperature *float64
 	TopP        *float64
 	Seed        *int64
+	// ReasoningEffort is none, low, medium or high; empty leaves the default.
+	ReasoningEffort string
 }
 
 type Completion struct {

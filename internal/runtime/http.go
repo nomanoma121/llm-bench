@@ -22,6 +22,25 @@ func setSampling(body map[string]any, req Request) {
 	if req.Seed != nil {
 		body["seed"] = *req.Seed
 	}
+	SetReasoningEffort(body, req.ReasoningEffort)
+}
+
+// SetReasoningEffort asks for an effort the OpenAI way. "none" also turns
+// thinking off through the chat template, which is how llama.cpp, Strata and
+// FreeToken switch Qwen-style thinking off.
+func SetReasoningEffort(body map[string]any, effort string) {
+	if effort == "" {
+		return
+	}
+	body["reasoning_effort"] = effort
+	if effort == "none" {
+		kwargs, _ := body["chat_template_kwargs"].(map[string]any)
+		if kwargs == nil {
+			kwargs = map[string]any{}
+		}
+		kwargs["enable_thinking"] = false
+		body["chat_template_kwargs"] = kwargs
+	}
 }
 
 func streamSSE(ctx context.Context, body io.ReadCloser, onData func([]byte) error) error {

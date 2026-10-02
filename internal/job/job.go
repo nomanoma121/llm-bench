@@ -57,6 +57,9 @@ type Sampling struct {
 	Temperature *float64 `yaml:"temperature,omitempty" json:"temperature,omitempty"`
 	TopP        *float64 `yaml:"top_p,omitempty" json:"top_p,omitempty"`
 	Seed        *int64   `yaml:"seed,omitempty" json:"seed,omitempty"`
+	// ReasoningEffort is none, low, medium or high; empty leaves the model's
+	// default.
+	ReasoningEffort string `yaml:"reasoning_effort,omitempty" json:"reasoning_effort,omitempty"`
 }
 
 type Source struct {
@@ -182,6 +185,13 @@ func (s Spec) Validate() error {
 			add("workload[%d].harness %q must be a plain name", i, c.Harness)
 		}
 	}
+	if s.Sampling != nil {
+		switch s.Sampling.ReasoningEffort {
+		case "", "none", "low", "medium", "high":
+		default:
+			add("sampling.reasoning_effort %q must be none, low, medium or high", s.Sampling.ReasoningEffort)
+		}
+	}
 	for _, m := range s.Metrics {
 		if m != MetricRuntime && m != MetricGPU && m != MetricHost {
 			add("metrics: unknown %q (runtime, gpu, host)", m)
@@ -232,6 +242,7 @@ workload:
 sampling:
   temperature: 0
   seed: 1
+  reasoning_effort: low
 metrics: [runtime, gpu, host]
 `
 	if kind == Optimize {

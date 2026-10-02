@@ -291,7 +291,7 @@ func (r *run) measure(ctx context.Context, prompts map[string]string) {
 			if ctx.Err() != nil {
 				return
 			}
-			if c.Harness != "" {
+			if c.Harness != nil {
 				if err := r.runHarness(ctx, c, i, prompts[c.Name], sampling); err != nil {
 					r.invalidate(fmt.Sprintf("case %s repeat %d: %v", c.Name, i, err))
 				}
@@ -696,5 +696,5 @@ func (r *run) harnessVersions() map[string]string {
 	if r.harnesses == nil {
 		return nil
 	}
-	return r.harnesses.versions
+	return r.harnesses.installed
 }

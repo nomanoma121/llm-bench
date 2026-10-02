@@ -24,6 +24,8 @@ func TestInvalidSpecs(t *testing.T) {
 		"unknown field":   "```yaml\nkind: benchmark\nfoo: 1\n```",
 		"optimize no src": "```yaml\nkind: optimize\nmodel: m\nruntime: {engine: llamacpp}\nworkload: [{name: a, prompt_text: hi, max_tokens: 1}]\n```",
 		"escaping prompt": "```yaml\nkind: benchmark\nmodel: m\nruntime: {engine: llamacpp}\nworkload: [{name: a, prompt: ../x, max_tokens: 1}]\n```",
+		"unknown harness": "```yaml\nkind: benchmark\nmodel: m\nruntime: {engine: llamacpp}\nworkload: [{name: a, prompt_text: hi, harness: {name: nope}}]\n```",
+		"no max_tokens":   "```yaml\nkind: benchmark\nmodel: m\nruntime: {engine: llamacpp}\nworkload: [{name: a, prompt_text: hi}]\n```",
 	} {
 		if _, err := FromIssueBody(body); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%s: got %v, want ErrInvalid", name, err)

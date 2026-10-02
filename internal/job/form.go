@@ -30,9 +30,7 @@ const (
 	fieldBenchmark    = "Benchmark"
 	fieldHarness      = "Harness"
 	fieldHarnessArgs  = "Extra harness args"
-	fieldEffort       = "Reasoning effort"
 	fieldMaxTokens    = "Max tokens"
-	fieldSkip         = "Leave out metrics"
 	fieldRepo         = "Source repository"
 	fieldRef          = "Source ref"
 	fieldMaxRounds    = "Max rounds"
@@ -43,16 +41,13 @@ const (
 	optOn      = "on"
 	optOff     = "off"
 	// GitHub rejects "None" as a dropdown option.
-	noHarness   = "direct"
-	noReasoning = "no thinking"
-	noResponse  = "_No response_"
+	noHarness  = "direct"
+	noResponse = "_No response_"
 )
 
 var (
-	allMetrics = []string{MetricRuntime, MetricGPU, MetricHost}
-	efforts    = []string{optDefault, noReasoning, "low", "medium", "high"}
-	toggles    = []string{optDefault, optOn, optOff}
-	contexts   = []string{optDefault, "32K", "64K", "128K"}
+	toggles  = []string{optDefault, optOn, optOff}
+	contexts = []string{optDefault, "32K", "64K", "128K"}
 )
 
 type issueForm struct {
@@ -82,10 +77,6 @@ type fieldAttributes struct {
 
 type validations struct {
 	Required bool `yaml:"required"`
-}
-
-type checkbox struct {
-	Label string `yaml:"label"`
 }
 
 // Benchmarks lists the directories under dir that hold a prompt.md.
@@ -130,11 +121,6 @@ func Form(kind Kind, benchmarks []string) ([]byte, error) {
 	for _, g := range runtime.NodeGPUs {
 		gpus = append(gpus, g.String())
 	}
-	// Form checkboxes start unchecked, so they name what to leave out.
-	skip := formField{Type: "checkboxes", ID: "skip_metrics", Attributes: fieldAttributes{Label: fieldSkip}}
-	for _, m := range allMetrics {
-		skip.Attributes.Options = append(skip.Attributes.Options, checkbox{m})
-	}
 
 	body := []formField{
 		dropdown("model", fieldModel, "", models, ""),
@@ -148,9 +134,7 @@ func Form(kind Kind, benchmarks []string) ([]byte, error) {
 		dropdown("benchmark", fieldBenchmark, "", benchmarks, "visual"),
 		dropdown("harness", fieldHarness, "Run the prompt through a coding agent instead of a direct request.", append([]string{noHarness}, harness.Names...), ""),
 		input("harness_args", fieldHarnessArgs, "Passed to the harness before the task.", ""),
-		dropdown("effort", fieldEffort, "", efforts, "low"),
 		input("max_tokens", fieldMaxTokens, "Caps a direct request; unused with a harness.", "28672"),
-		skip,
 	}
 	f := issueForm{Name: "Benchmark", Description: "Measure a model and runtime once and open a PR with the result",
 		Title: "[benchmark] ", Labels: []string{"llmbench:benchmark"}}
@@ -229,6 +213,7 @@ func FromIssue(kind Kind, body string) (Spec, error) {
 		}
 		s.Runtime.GPUs = append(s.Runtime.GPUs, runtime.NodeGPUs[i].Index)
 	}
+	slices.Sort(s.Runtime.GPUs)
 	if c := f[fieldContext]; c != "" && c != optDefault {
 		k, err := strconv.Atoi(strings.TrimSuffix(c, "K"))
 		if err != nil {
@@ -250,25 +235,6 @@ func FromIssue(kind Kind, body string) (Spec, error) {
 		c.MaxTokens = number(fieldMaxTokens)
 	}
 	s.Workload = []Case{c}
-	switch e := f[fieldEffort]; e {
-	case optDefault:
-	case noReasoning:
-		s.Sampling.ReasoningEffort = "none"
-	default:
-		s.Sampling.ReasoningEffort = e
-	}
-	skipped := map[string]bool{}
-	for _, line := range strings.Split(f[fieldSkip], "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "- [x] ") || strings.HasPrefix(line, "- [X] ") {
-			skipped[line[len("- [x] "):]] = true
-		}
-	}
-	for _, m := range allMetrics {
-		if !skipped[m] {
-			s.Metrics = append(s.Metrics, m)
-		}
-	}
 	if kind == Optimize {
 		s.Source = &Source{Repo: f[fieldRepo], Ref: f[fieldRef]}
 		s.Budget = &Budget{MaxRounds: number(fieldMaxRounds)}
@@ -277,10 +243,12 @@ func FromIssue(kind Kind, body string) (Spec, error) {
 		return Spec{}, fmt.Errorf("%w: %w", ErrInvalid, errors.Join(errs...))
 	}
 
-	if o := f[fieldOverride]; o != "" {
-		if block, ok := yamlBlock(o); ok {
-			o = block
-		}
+	o := f[fieldOverride]
+	if block, ok := yamlBlock(o); ok {
+		o = block
+	}
+	// GitHub writes an empty fenced block for an empty YAML field.
+	if strings.TrimSpace(o) != "" {
 		dec := yaml.NewDecoder(strings.NewReader(o))
 		dec.KnownFields(true)
 		if err := dec.Decode(&s); err != nil {

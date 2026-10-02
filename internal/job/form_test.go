@@ -31,7 +31,7 @@ func form(fields ...string) string {
 	values := map[string]string{
 		"Model":              "Flash-Next UD-Q4_K_XL",
 		"Runtime":            "llamacpp",
-		"GPUs":               "GPU 0 · RTX 3060 12GB, GPU 1 · RTX 3060 12GB",
+		"GPUs":               "GPU 1 · RTX 3060 12GB, GPU 0 · RTX 3060 12GB",
 		"Context":            "64K",
 		"MTP":                "on",
 		"KV cache":           "q8_0",
@@ -40,9 +40,7 @@ func form(fields ...string) string {
 		"Benchmark":          "visual",
 		"Harness":            "opencode",
 		"Extra harness args": "_No response_",
-		"Reasoning effort":   "low",
 		"Max tokens":         "28672",
-		"Leave out metrics":  "- [ ] runtime\n- [X] gpu\n- [ ] host",
 		"Spec override":      "_No response_",
 		"Notes":              "_No response_",
 	}
@@ -66,17 +64,17 @@ func TestFromIssue(t *testing.T) {
 		!reflect.DeepEqual(r.GPUs, []int{0, 1}) || r.Context != 65536 || !*r.MTP || r.KVCache != "q8_0" || r.ExpertsOnCPU != nil ||
 		!reflect.DeepEqual(r.Args, []string{"-ot", `per_layer_token_embd\.weight=CPU`, "--flag", "a b"}) ||
 		c.Name != "visual" || c.Prompt != "benchmarks/visual/prompt.md" || c.Harness.Name != "opencode" || c.MaxTokens != 0 ||
-		s.Sampling.ReasoningEffort != "low" || *s.Sampling.Seed != 1 || !reflect.DeepEqual(s.Metrics, []string{"runtime", "host"}) {
+		s.Sampling.ReasoningEffort != "" || *s.Sampling.Seed != 1 {
 		t.Fatalf("unexpected spec %+v %+v", s, c)
 	}
 }
 
-func TestFromIssueDirectWithoutThinking(t *testing.T) {
-	s, err := FromIssue(Benchmark, form("Harness", "direct", "Reasoning effort", "no thinking"))
+func TestFromIssueDirect(t *testing.T) {
+	s, err := FromIssue(Benchmark, form("Harness", "direct"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c := s.Workload[0]; c.Harness != nil || c.MaxTokens != 28672 || s.Sampling.ReasoningEffort != "none" {
+	if c := s.Workload[0]; c.Harness != nil || c.MaxTokens != 28672 {
 		t.Fatalf("unexpected spec %+v %+v", c, s.Sampling)
 	}
 }
@@ -96,6 +94,13 @@ func TestFormsAvoidNone(t *testing.T) {
 	}
 }
 
+// An empty YAML field comes as an empty fenced block (issue #127).
+func TestFromIssueEmptyOverride(t *testing.T) {
+	if _, err := FromIssue(Benchmark, form("Spec override", "```yaml\n\n```")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFromIssueOverride(t *testing.T) {
 	body := form("Spec override", "```yaml\nruntime:\n  engine: llamacpp\n  context: 4096\n### not a heading\nsampling:\n  seed: 7\n```") +
 		"### Source repository\n\nggml-org/llama.cpp\n\n### Source ref\n\nmaster\n\n### Max rounds\n\n5"
@@ -103,7 +108,7 @@ func TestFromIssueOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Runtime.Context != 4096 || len(s.Runtime.GPUs) != 2 || *s.Sampling.Seed != 7 || s.Sampling.ReasoningEffort != "low" ||
+	if s.Runtime.Context != 4096 || len(s.Runtime.GPUs) != 2 || *s.Sampling.Seed != 7 ||
 		s.Source.Repo != "ggml-org/llama.cpp" || s.Budget.MaxRounds != 5 {
 		t.Fatalf("unexpected spec %+v %+v", s, s.Sampling)
 	}

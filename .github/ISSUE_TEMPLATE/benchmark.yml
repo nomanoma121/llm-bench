@@ -120,33 +120,12 @@ body:
     attributes:
       label: Extra harness args
       description: Passed to the harness before the task.
-  - type: dropdown
-    id: effort
-    attributes:
-      label: Reasoning effort
-      options:
-        - default
-        - no thinking
-        - low
-        - medium
-        - high
-      default: 2
-    validations:
-      required: true
   - type: input
     id: max_tokens
     attributes:
       label: Max tokens
       description: Caps a direct request; unused with a harness.
       value: "28672"
-  - type: checkboxes
-    id: skip_metrics
-    attributes:
-      label: Leave out metrics
-      options:
-        - label: runtime
-        - label: gpu
-        - label: host
   - type: textarea
     id: override
     attributes:

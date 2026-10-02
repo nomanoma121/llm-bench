@@ -1,35 +1,33 @@
-Write a single `index.html` that renders an interactive 3D scene of a stylized Japanese castle town in spring, built from voxel-style blocks with Three.js.
+Create a single self-contained `index.html` that renders a 3D Japanese castle scene using Three.js.
 
-You get one answer and no tools: you cannot run or view the page. Keep your planning short (a brief outline, not a detailed design) and spend most of your answer on the code. The whole answer must fit in about 20,000 tokens; aim for 500–900 lines of HTML and JavaScript. Finish the file: a complete, working page matters more than any single detail.
+Constraints:
+- Use only a single HTML file.
+- Load Three.js from a CDN.
+- Do not use external models, textures, images, or data files.
+- Generate everything procedurally in code.
+- Use a deterministic random seed: `1337`.
 
-## Scene
+Scene requirements:
+- Create a Japanese castle with a clearly visible vertical layout.
+- Place the main keep on the highest elevation near the back-center of the scene.
+- Build 3 stepped stone terraces leading up to the keep.
+- Surround the main castle area with a moat.
+- Add one main wooden bridge crossing the moat from the front.
+- Add one main gate at the front entrance.
+- Add 2 watchtowers on the lower level, one on the left and one on the right.
+- Include many cherry blossom trees, especially near the approach path and lower terraces.
+- Make the elevation differences easy to recognize from the initial camera view.
+- Include a visible path from the front gate to the keep.
 
-- A five-level castle keep on a raised stone base at the center, each level smaller than the one below, with curved, layered roofs, white walls and dark wooden trim.
-- Stone walls, a moat with water around the castle, at least one bridge and a main gate.
-- A castle town of roughly 60–100 small buildings to the south and east: varied houses, shops and a few larger warehouses, with roads, a few narrow alleys and a market square.
-- 40–60 cherry blossom trees in pink (concentrated along the moat and main road) and some green trees.
-- A small shrine with a torii gate, stone lanterns, fences and a few other props.
-- Gentle terrain: the castle sits clearly above the town.
+Visual style:
+- Aim for a coherent, detailed, and visually pleasing scene.
+- Use white castle walls, dark tiled roofs, gray stone walls, green ground, and pink cherry blossoms.
+- Avoid a toy-like or overly minimal result.
 
-## Look
+Interaction and animation:
+- Add mouse camera controls so the user can inspect the whole scene.
+- Add a gentle falling cherry blossom petal animation.
 
-- Voxel-inspired but with real proportions and layered detail, not a pile of plain cubes.
-- Soft spring daylight with shadows, light fog for depth, and a pleasant default camera view of the whole town with the castle as the focal point.
-
-## Interaction
-
-- OrbitControls to rotate, zoom and pan.
-- A key or button that toggles between day and dusk lighting.
-
-## Technical rules
-
-- One self-contained `index.html` with HTML, CSS and JavaScript.
-- Load Three.js and its addons from a CDN with an import map, for example `https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js` and `https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/`.
-- No external models, textures or images: create all geometry in code.
-- Use a seeded random generator with seed `1337` so the layout is the same on every load.
-- Reuse geometries and materials, and use InstancedMesh or merged geometry for repeated parts so it runs smoothly.
-- Handle window resizing.
-
-## Output
-
-Reply with the complete file in one ```html code block and nothing after it.
+Output requirements:
+- The scene should be complete and directly viewable by opening `index.html`.
+- Keep the code reasonably clean and organized.

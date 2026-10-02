@@ -1,6 +1,0 @@
-# The harnesses a benchmark can run, pinned. llmbench installs them with
-# `mise install` in the sandbox; harnesses.yaml says how to run each one.
-[tools]
-node = "22"
-"github:anomalyco/opencode" = { version = "1.18.34", asset_pattern = "opencode-linux-x64.tar.gz" }
-"npm:@earendil-works/pi-coding-agent" = "1.0.0"

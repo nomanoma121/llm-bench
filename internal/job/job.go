@@ -3,6 +3,7 @@ package job
 import (
 	"errors"
 	"fmt"
+	"github.com/nomanoma121/llm-bench/internal/harness"
 	"io"
 	"os"
 	"path/filepath"
@@ -47,8 +48,8 @@ type Case struct {
 	// MaxTokens caps a direct request; a harness decides its own requests.
 	MaxTokens int `yaml:"max_tokens,omitempty" json:"max_tokens,omitempty"`
 	Repeats   int `yaml:"repeats,omitempty" json:"repeats,omitempty"`
-	// Harness runs the prompt through a coding agent from harnesses/ instead
-	// of sending it to the runtime directly.
+	// Harness runs the prompt through a coding agent (opencode, pi, dsh or
+	// hermes) instead of sending it to the runtime directly.
 	Harness        string `yaml:"harness,omitempty" json:"harness,omitempty"`
 	TimeoutMinutes int    `yaml:"timeout_minutes,omitempty" json:"timeout_minutes,omitempty"`
 }
@@ -181,8 +182,10 @@ func (s Spec) Validate() error {
 		if c.Harness == "" && c.MaxTokens <= 0 {
 			add("workload[%d].max_tokens must be positive without a harness", i)
 		}
-		if c.Harness != "" && !isName(c.Harness) {
-			add("workload[%d].harness %q must be a plain name", i, c.Harness)
+		if c.Harness != "" {
+			if _, err := harness.New(c.Harness); err != nil {
+				add("workload[%d]: %v", i, err)
+			}
 		}
 	}
 	if s.Sampling != nil {
@@ -238,7 +241,7 @@ workload:
     prompt: benchmarks/visual/prompt.md
     max_tokens: 28672
     repeats: 1
-    # harness: opencode   # run through a coding agent in harnesses/ instead (max_tokens then unused)
+    # harness: opencode   # or pi, dsh, hermes: run through a coding agent (max_tokens then unused)
 sampling:
   temperature: 0
   seed: 1

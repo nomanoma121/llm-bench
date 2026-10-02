@@ -696,5 +696,5 @@ func (r *run) harnessVersions() map[string]string {
 	if r.harnesses == nil {
 		return nil
 	}
-	return r.harnesses.versions
+	return r.harnesses.installed
 }

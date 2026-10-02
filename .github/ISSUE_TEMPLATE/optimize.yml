@@ -20,7 +20,7 @@ body:
             prompt: benchmarks/visual/prompt.md
             max_tokens: 28672
             repeats: 1
-            # harness: opencode   # run through a coding agent in harnesses/ instead (max_tokens then unused)
+            # harness: opencode   # or pi, dsh, hermes: run through a coding agent (max_tokens then unused)
         sampling:
           temperature: 0
           seed: 1

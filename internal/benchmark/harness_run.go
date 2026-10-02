@@ -8,55 +8,54 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/nomanoma121/llm-bench/internal/harness"
 	"github.com/nomanoma121/llm-bench/internal/job"
 )
 
-// harnessRunner holds what every harness session of a run shares: the
-// definitions, the installed tools and the proxy they reach the runtime by.
+// harnessRunner holds what every harness session of a run shares: mise, the
+// proxy the harnesses reach the runtime by, and the tools each one used.
 type harnessRunner struct {
-	defs     map[string]harness.Definition
-	mise     harness.Mise
-	proxy    *proxy
-	versions map[string]string
+	mise      harness.Mise
+	proxy     *proxy
+	installed map[string]string
 }
 
-func (r *run) harnessRunner(ctx context.Context, sampling job.Sampling) (*harnessRunner, error) {
+func (r *run) harnessRunner(sampling job.Sampling) (*harnessRunner, error) {
 	if r.harnesses != nil {
 		return r.harnesses, nil
-	}
-	defs, err := harness.Load(r.cfg.Root)
-	if err != nil {
-		return nil, err
-	}
-	m := harness.Mise{Root: r.cfg.Root, DataDir: filepath.Join(os.TempDir(), "llmbench-mise")}
-	r.cfg.Logf("installing harnesses")
-	if err := m.Install(ctx); err != nil {
-		return nil, err
 	}
 	p, err := startProxy(r.adapter.BaseURL(), sampling)
 	if err != nil {
 		return nil, err
 	}
-	r.harnesses = &harnessRunner{defs: defs, mise: m, proxy: p, versions: map[string]string{}}
+	r.harnesses = &harnessRunner{
+		mise:      harness.Mise{DataDir: filepath.Join(os.TempDir(), "llmbench-mise")},
+		proxy:     p,
+		installed: map[string]string{},
+	}
 	return r.harnesses, nil
 }
 
 // runHarness gives the prompt to a harness and measures every request it
 // makes. The files it leaves in its working directory are the output.
 func (r *run) runHarness(ctx context.Context, c job.Case, repeat int, prompt string, sampling job.Sampling) error {
-	h, err := r.harnessRunner(ctx, sampling)
+	h, err := r.harnessRunner(sampling)
 	if err != nil {
 		return err
 	}
-	def, ok := h.defs[c.Harness]
-	if !ok {
-		return fmt.Errorf("harness %q is not defined in %s/harnesses.yaml", c.Harness, harness.Dir)
+	agent, err := harness.New(c.Harness)
+	if err != nil {
+		return err
 	}
-	if _, ok := h.versions[c.Harness]; !ok {
-		h.versions[c.Harness] = def.Tool + "@" + h.mise.Version(ctx, def.Tool)
+	if _, ok := h.installed[c.Harness]; !ok {
+		r.cfg.Logf("installing harness %s", c.Harness)
+		if err := h.mise.Install(ctx, agent); err != nil {
+			return err
+		}
+		h.installed[c.Harness] = strings.Join(agent.Tools(), " ")
 	}
 	dir, err := os.MkdirTemp("", "llmbench-harness-")
 	if err != nil {
@@ -84,7 +83,7 @@ func (r *run) runHarness(ctx context.Context, c job.Case, repeat int, prompt str
 	runCtx, cancel := context.WithTimeout(ctx, c.Timeout())
 	defer cancel()
 	mark, start := h.proxy.mark(), time.Now()
-	runErr := h.mise.Run(runCtx, def, params, work, log)
+	runErr := h.mise.Run(runCtx, agent, params, work, log)
 	elapsed := time.Since(start)
 	reqs := h.proxy.since(mark)
 	if runErr != nil {

@@ -12,7 +12,7 @@ func TestTemplatesAreValid(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", kind, err)
 		}
-		if spec.Kind != kind || spec.Workload[0].RepeatCount() != 3 {
+		if spec.Kind != kind || spec.Workload[0].Name != "visual" {
 			t.Fatalf("%s: unexpected spec %+v", kind, spec)
 		}
 	}

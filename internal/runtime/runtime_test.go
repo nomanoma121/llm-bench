@@ -7,7 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -135,5 +138,73 @@ strata serve: 478 MiB of VRAM free with everything loaded
 	if info["version"] != "0.1.31" || info["gpu_resident_experts"] != "10306" || info["vram_free_mib"] != "478" ||
 		info["layer_split"] != "layers 0-21 (CUDA0), 22-47 (CUDA1), one hand-off per window" {
 		t.Fatalf("info %v", info)
+	}
+}
+
+func TestSettings(t *testing.T) {
+	yes, no := true, false
+	all := Settings{GPUs: []int{0, 1}, Context: 65536, MTP: &yes, KVCache: "q8_0", ExpertsOnCPU: &yes}
+	for _, tc := range []struct {
+		engine string
+		s      Settings
+		want   string
+	}{
+		{"llamacpp", all, "--device CUDA0,CUDA1 --ctx-size 65536 --cache-type-k q8_0 --cache-type-v q8_0 --spec-type draft-mtp --cpu-moe --x"},
+		{"freetoken", Settings{GPUs: []int{1, 0}, Context: 8192, ExpertsOnCPU: &no}, "--tp-size 2 --gpu 1,0 --max-seq-len-override 8192 --moe-strategy fused --x"},
+		{"strata", Settings{GPUs: []int{1}, MTP: &yes}, "--gpu 1 --x"},
+	} {
+		a, err := New(tc.engine, Options{Settings: tc.s, Args: []string{"--x"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		argv := a.Argv()
+		if got := strings.Join(argv[len(argv)-len(strings.Fields(tc.want)):], " "); got != tc.want {
+			t.Errorf("%s: %s", tc.engine, got)
+		}
+	}
+	for _, tc := range []struct {
+		engine string
+		s      Settings
+	}{
+		{"freetoken", Settings{MTP: &yes}},
+		{"strata", Settings{MTP: &no}},
+		{"strata", Settings{KVCache: "q4_0"}},
+		{"llamacpp", Settings{GPUs: []int{2}}},
+		{"llamacpp", Settings{GPUs: []int{0, 0}}},
+	} {
+		if _, err := New(tc.engine, Options{Settings: tc.s}); err == nil {
+			t.Errorf("%s accepted %+v", tc.engine, tc.s)
+		}
+	}
+}
+
+// Every listed engine can be made, and nothing else.
+func TestEngines(t *testing.T) {
+	for _, e := range Engines {
+		if _, err := New(e, Options{}); err != nil {
+			t.Error(err)
+		}
+	}
+	if _, err := New("nope", Options{}); err == nil {
+		t.Error("an unknown engine was accepted")
+	}
+}
+
+func TestStrataPrepareRewritesConfig(t *testing.T) {
+	dir := t.TempDir()
+	config := filepath.Join(dir, "in.json")
+	os.WriteFile(config, []byte(`{"exe":"strata","args":["--max-context","32768","--spec","4"],"log":"/dev/stderr"}`), 0o644)
+	a, err := New("strata", Options{ModelPath: config, Settings: Settings{Context: 65536, KVCache: "q8_0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.(Preparer).Prepare(dir); err != nil {
+		t.Fatal(err)
+	}
+	argv := strings.Join(a.Argv(), " ")
+	out, _ := os.ReadFile(filepath.Join(dir, "strata-config.json"))
+	if !strings.Contains(argv, "--config "+filepath.Join(dir, "strata-config.json")) ||
+		!strings.Contains(string(out), `"65536"`) || !strings.Contains(string(out), `"int8"`) || !strings.Contains(string(out), `"/dev/stderr"`) {
+		t.Fatalf("argv %s\nconfig %s", argv, out)
 	}
 }

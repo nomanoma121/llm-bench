@@ -75,6 +75,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		ModelID:   model.ID,
 		ModelPath: model.Path,
 		Port:      spec.Runtime.ListenPort(),
+		Settings:  spec.Runtime.Settings,
 		Args:      spec.Runtime.Args,
 	})
 	if err != nil {
@@ -86,6 +87,11 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	}
 	if err := os.MkdirAll(filepath.Join(cfg.OutDir, "raw"), 0o755); err != nil {
 		return Result{}, err
+	}
+	if p, ok := adapter.(runtime.Preparer); ok {
+		if err := p.Prepare(filepath.Join(cfg.OutDir, "raw")); err != nil {
+			return Result{}, fmt.Errorf("%w: prepare runtime: %w", ErrNoResult, err)
+		}
 	}
 	jobspec, err := yaml.Marshal(spec)
 	if err != nil {

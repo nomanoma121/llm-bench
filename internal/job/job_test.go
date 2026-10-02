@@ -2,13 +2,13 @@ package job
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
 func TestTemplatesAreValid(t *testing.T) {
 	for _, kind := range []Kind{Benchmark, Optimize} {
-		body := "notes\n\n```yaml\n" + Template(kind) + "```\n"
-		spec, err := FromIssueBody(body)
+		spec, err := Parse(strings.NewReader(Template(kind)))
 		if err != nil {
 			t.Fatalf("%s: %v", kind, err)
 		}
@@ -20,14 +20,13 @@ func TestTemplatesAreValid(t *testing.T) {
 
 func TestInvalidSpecs(t *testing.T) {
 	for name, body := range map[string]string{
-		"no block":        "just text",
-		"unknown field":   "```yaml\nkind: benchmark\nfoo: 1\n```",
-		"optimize no src": "```yaml\nkind: optimize\nmodel: m\nruntime: {engine: llamacpp}\nworkload: [{name: a, prompt_text: hi, max_tokens: 1}]\n```",
-		"escaping prompt": "```yaml\nkind: benchmark\nmodel: m\nruntime: {engine: llamacpp}\nworkload: [{name: a, prompt: ../x, max_tokens: 1}]\n```",
-		"unknown harness": "```yaml\nkind: benchmark\nmodel: m\nruntime: {engine: llamacpp}\nworkload: [{name: a, prompt_text: hi, harness: {name: nope}}]\n```",
-		"no max_tokens":   "```yaml\nkind: benchmark\nmodel: m\nruntime: {engine: llamacpp}\nworkload: [{name: a, prompt_text: hi}]\n```",
+		"unknown field":   "kind: benchmark\nfoo: 1",
+		"optimize no src": "kind: optimize\nmodel: m\nruntime: {engine: llamacpp}\nworkload: [{name: a, prompt_text: hi, max_tokens: 1}]",
+		"escaping prompt": "kind: benchmark\nmodel: m\nruntime: {engine: llamacpp}\nworkload: [{name: a, prompt: ../x, max_tokens: 1}]",
+		"unknown harness": "kind: benchmark\nmodel: m\nruntime: {engine: llamacpp}\nworkload: [{name: a, prompt_text: hi, harness: {name: nope}}]",
+		"no max_tokens":   "kind: benchmark\nmodel: m\nruntime: {engine: llamacpp}\nworkload: [{name: a, prompt_text: hi}]",
 	} {
-		if _, err := FromIssueBody(body); !errors.Is(err, ErrInvalid) {
+		if _, err := Parse(strings.NewReader(body)); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%s: got %v, want ErrInvalid", name, err)
 		}
 	}

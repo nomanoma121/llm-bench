@@ -12,7 +12,7 @@ import (
 // Every harness builds a run that carries the task and the model and whose
 // settings parse.
 func TestCommands(t *testing.T) {
-	for _, name := range []string{"opencode", "pi", "dsh", "hermes"} {
+	for _, name := range Names {
 		h, err := New(name)
 		if err != nil {
 			t.Fatal(err)

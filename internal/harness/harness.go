@@ -45,6 +45,8 @@ const (
 	maxOutputTokens = 32768
 )
 
+var Names = []string{"opencode", "pi", "dsh", "hermes"}
+
 func New(name string) (Harness, error) {
 	switch name {
 	case "opencode":
@@ -56,7 +58,7 @@ func New(name string) (Harness, error) {
 	case "hermes":
 		return hermes{}, nil
 	}
-	return nil, fmt.Errorf("harness: unknown %q (opencode, pi, dsh, hermes)", name)
+	return nil, fmt.Errorf("harness: unknown %q (%s)", name, strings.Join(Names, ", "))
 }
 
 // Mise keeps its data in one place so tools installed once are found again

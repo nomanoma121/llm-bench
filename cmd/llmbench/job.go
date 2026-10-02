@@ -26,6 +26,27 @@ func newJobCmd() *cobra.Command {
 			},
 		},
 		&cobra.Command{
+			Use:   "form benchmark|optimize",
+			Short: "Print the GitHub issue form for a job kind",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				kind := job.Kind(args[0])
+				if kind != job.Benchmark && kind != job.Optimize {
+					return fmt.Errorf("%w: kind must be benchmark or optimize", job.ErrInvalid)
+				}
+				benchmarks, err := job.Benchmarks("benchmarks")
+				if err != nil {
+					return err
+				}
+				form, err := job.Form(kind, benchmarks)
+				if err != nil {
+					return err
+				}
+				_, err = cmd.OutOrStdout().Write(form)
+				return err
+			},
+		},
+		&cobra.Command{
 			Use:   "validate <spec.yaml>",
 			Short: "Check a job spec",
 			Args:  cobra.ExactArgs(1),

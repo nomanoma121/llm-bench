@@ -300,6 +300,7 @@ func (r *run) measure(ctx context.Context, prompts map[string]string) {
 			got, err := r.adapter.Complete(ctx, runtime.Request{
 				Prompt: prompts[c.Name], MaxTokens: c.MaxTokens,
 				Temperature: sampling.Temperature, TopP: sampling.TopP, Seed: sampling.Seed,
+				ReasoningEffort: sampling.ReasoningEffort,
 			})
 			if err != nil {
 				r.invalidate(fmt.Sprintf("case %s repeat %d failed: %v", c.Name, i, err))

@@ -36,7 +36,7 @@ func TestProxyMeasuresAndOverridesSampling(t *testing.T) {
 	}))
 	defer upstream.Close()
 	zero := 0.0
-	p, err := startProxy(upstream.URL, job.Sampling{Temperature: &zero})
+	p, err := startProxy(upstream.URL, job.Sampling{Temperature: &zero, ReasoningEffort: "none"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestProxyMeasuresAndOverridesSampling(t *testing.T) {
 	if out := post(`{"model":"m","stream":true,"temperature":0.9,"messages":[]}`); !strings.Contains(out, `"content":"c"`) {
 		t.Fatalf("stream not passed through: %s", out)
 	}
-	if sent := got; sent["temperature"] != 0.0 || sent["stream_options"] == nil {
+	if sent := got; sent["temperature"] != 0.0 || sent["stream_options"] == nil || sent["reasoning_effort"] != "none" || sent["chat_template_kwargs"].(map[string]any)["enable_thinking"] != false {
 		t.Fatalf("upstream got %v", got)
 	}
 	post(`{"model":"m","messages":[]}`)

@@ -24,6 +24,7 @@ body:
         sampling:
           temperature: 0
           seed: 1
+          reasoning_effort: low
         metrics: [runtime, gpu, host]
     validations:
       required: true

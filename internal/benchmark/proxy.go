@@ -98,6 +98,7 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s := p.sampling.Seed; s != nil {
 		body["seed"] = *s
 	}
+	runtime.SetReasoningEffort(body, p.sampling.ReasoningEffort)
 	b, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.target.JoinPath(r.URL.Path).String(), bytes.NewReader(b))
 	if err != nil {

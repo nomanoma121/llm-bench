@@ -39,6 +39,7 @@ type row struct {
 	ID      string
 	Model   string
 	Runtime string
+	Harness string
 	Args    string
 	GPU     string
 	Case    string
@@ -111,11 +112,11 @@ var indexTemplate = template.Must(template.New("index").Parse(`<!DOCTYPE html>
 <div class="filters" id="filters"></div>
 <p><button id="compare" disabled>Compare selected</button> <span class="muted">up to 3</span></p>
 <div class="scroll"><table id="results"><thead><tr>
-<th></th><th data-sort="date">experiment</th><th data-sort="model">model</th><th data-sort="runtime">runtime</th><th>args</th><th data-sort="gpu">gpu</th><th>case</th>
+<th></th><th data-sort="date">experiment</th><th data-sort="model">model</th><th data-sort="runtime">runtime</th><th data-sort="harness">harness</th><th>args</th><th data-sort="gpu">gpu</th><th>case</th>
 <th class="num" data-sort="decode">decode tok/s</th><th class="num" data-sort="prefill">prefill tok/s</th><th class="num" data-sort="ttft">ttft ms</th><th class="num" data-sort="itl">itl p95 ms</th><th class="num" data-sort="accept">mtp accept</th><th class="num" data-sort="step">tok/step</th><th class="num" data-sort="energy">J/tok</th><th class="num" data-sort="vram">vram MiB</th><th>valid</th><th class="num">outputs</th>
 </tr></thead><tbody>
-{{range .}}<tr data-date="{{.ID}}" data-model="{{.Model}}" data-runtime="{{.Runtime}}" data-gpu="{{.GPU}}" data-valid="{{.Valid}}" data-decode="{{.Decode}}" data-prefill="{{.Prefill}}" data-ttft="{{.TTFT}}" data-itl="{{.ITL}}" data-accept="{{.Accept}}" data-step="{{.Step}}" data-energy="{{.Energy}}" data-vram="{{.VRAM}}">
-<td><input type="checkbox" class="pick" value="{{.Model}}/{{.ID}}"></td><td><a href="{{.URL}}">{{.ID}}</a></td><td>{{.Model}}</td><td>{{.Runtime}}</td><td class="muted args" title="{{.Args}}">{{.Args}}</td><td>{{.GPU}}</td><td>{{.Case}}</td>
+{{range .}}<tr data-date="{{.ID}}" data-model="{{.Model}}" data-runtime="{{.Runtime}}" data-harness="{{.Harness}}" data-gpu="{{.GPU}}" data-valid="{{.Valid}}" data-decode="{{.Decode}}" data-prefill="{{.Prefill}}" data-ttft="{{.TTFT}}" data-itl="{{.ITL}}" data-accept="{{.Accept}}" data-step="{{.Step}}" data-energy="{{.Energy}}" data-vram="{{.VRAM}}">
+<td><input type="checkbox" class="pick" value="{{.Model}}/{{.ID}}"></td><td><a href="{{.URL}}">{{.ID}}</a></td><td>{{.Model}}</td><td>{{.Runtime}}</td><td>{{.Harness}}</td><td class="muted args" title="{{.Args}}">{{.Args}}</td><td>{{.GPU}}</td><td>{{.Case}}</td>
 <td class="num">{{.Decode}}</td><td class="num">{{.Prefill}}</td><td class="num">{{.TTFT}}</td><td class="num">{{.ITL}}</td><td class="num">{{.Accept}}</td><td class="num">{{.Step}}</td><td class="num">{{.Energy}}</td><td class="num">{{.VRAM}}</td><td>{{.Valid}}</td><td class="num">{{if .Outputs}}<a href="{{.URL}}#outputs">{{.Outputs}}</a>{{end}}</td></tr>
 {{end}}</tbody></table></div>
 </body></html>
@@ -151,11 +152,18 @@ func Build(root, out string) error {
 			e.Samples = loadSamples(filepath.Join(dir, "series.jsonl"))
 			e.Charts = charts(r, e.Samples)
 		}
+		// A direct request's page is output/<case>-<n>.html; a harness leaves
+		// its working directory as output/<case>-<n>/, shown by its index.html.
 		files, _ := filepath.Glob(filepath.Join(dir, "output", "*.html"))
-		for _, f := range files {
+		pages, _ := filepath.Glob(filepath.Join(dir, "output", "*", "index.html"))
+		for _, f := range append(files, pages...) {
+			name := strings.TrimSuffix(filepath.Base(f), ".html")
+			if name == "index" {
+				name = filepath.Base(filepath.Dir(f))
+			}
 			if html, err := os.ReadFile(f); err == nil && len(html) > 0 {
 				e.Outputs = append(e.Outputs, output{
-					Name:   strings.TrimSuffix(filepath.Base(f), ".html"),
+					Name:   name,
 					SrcDoc: `<meta http-equiv="Content-Security-Policy" content="` + artifactCSP + `">` + string(html),
 				})
 			}
@@ -216,6 +224,7 @@ func rowsOf(e experiment) []row {
 	base := row{
 		URL: e.URL, ID: e.ID, Model: e.Model,
 		Runtime: r.Runtime.Label(),
+		Harness: strings.Join(sortedKeys(r.Harnesses), ", "),
 		Args:    strings.Join(r.Runtime.Args, " "),
 		GPU:     strings.Join(unique(r.GPUs), ", "),
 		Valid:   map[bool]string{true: "yes", false: "no"}[r.MeasurementValid],
@@ -395,4 +404,13 @@ func firstCase(r benchmark.Result, name string) (benchmark.Metric, bool) {
 		}
 	}
 	return benchmark.Metric{}, false
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

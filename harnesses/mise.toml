@@ -1,0 +1,6 @@
+# The harnesses a benchmark can run, pinned. llmbench installs them with
+# `mise install` in the sandbox; harnesses.yaml says how to run each one.
+[tools]
+node = "22"
+"npm:opencode-ai" = "1.18.34"
+"npm:@mariozechner/pi-coding-agent" = "0.73.1"

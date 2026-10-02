@@ -51,6 +51,8 @@ type run struct {
 	gpu         gpuReading
 	// prevCPU is the previous /proc/stat reading, used only by the sampler.
 	prevCPU []cpuTimes
+	// harnesses is set up on the first case that names a harness.
+	harnesses *harnessRunner
 }
 
 func Run(ctx context.Context, cfg Config) (Result, error) {
@@ -117,6 +119,9 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	stopSampling := r.sample(ctx)
 	r.measure(ctx, prompts)
 	stopSampling()
+	if r.harnesses != nil {
+		r.harnesses.proxy.Close()
+	}
 	proc.stop()
 	if err := ctx.Err(); err != nil {
 		return Result{}, fmt.Errorf("%w: %w", ErrNoResult, err)
@@ -286,6 +291,12 @@ func (r *run) measure(ctx context.Context, prompts map[string]string) {
 			if ctx.Err() != nil {
 				return
 			}
+			if c.Harness != "" {
+				if err := r.runHarness(ctx, c, i, prompts[c.Name], sampling); err != nil {
+					r.invalidate(fmt.Sprintf("case %s repeat %d: %v", c.Name, i, err))
+				}
+				continue
+			}
 			got, err := r.adapter.Complete(ctx, runtime.Request{
 				Prompt: prompts[c.Name], MaxTokens: c.MaxTokens,
 				Temperature: sampling.Temperature, TopP: sampling.TopP, Seed: sampling.Seed,
@@ -297,7 +308,7 @@ func (r *run) measure(ctx context.Context, prompts map[string]string) {
 			if got.CompletionTokens < 2 || got.TTFT == 0 {
 				r.invalidate(fmt.Sprintf("case %s repeat %d produced %d tokens; no decode rate can be measured", c.Name, i, got.CompletionTokens))
 			}
-			r.recordCompletion(c.Name, i, got)
+			r.record(c.Name, i, requestValues([]runtime.Completion{got}))
 			if err := r.saveOutput(c.Name, i, got.Content, got.Reasoning); err != nil {
 				r.invalidate(fmt.Sprintf("case %s repeat %d output could not be saved: %v", c.Name, i, err))
 			}
@@ -306,42 +317,74 @@ func (r *run) measure(ctx context.Context, prompts map[string]string) {
 	r.setCase("")
 }
 
-func (r *run) recordCompletion(caseName string, repeat int, got runtime.Completion) {
-	values := map[string]float64{
-		"ttft_ms":    ms(got.TTFT),
-		"latency_ms": ms(got.Total),
-		"tokens_in":  float64(got.PromptTokens),
-		"tokens_out": float64(got.CompletionTokens),
+// requestValues summarizes the chat completions of one repeat: the single
+// direct request, or every request a harness made. Times and counts add up
+// over the requests, so a session's decode speed is its total decode tokens
+// over its total decode time.
+func requestValues(reqs []runtime.Completion) map[string]float64 {
+	values := map[string]float64{"requests": float64(len(reqs))}
+	var promptTokens, cachedTokens, completionTokens, decodeTokens, drafts, accepted, draftedTokens int
+	var ttft, decodeTime, total time.Duration
+	var ttfts, itl, hitRates []float64
+	for _, got := range reqs {
+		promptTokens += got.PromptTokens
+		cachedTokens += got.CachedTokens
+		completionTokens += got.CompletionTokens
+		ttft += got.TTFT
+		total += got.Total
+		ttfts = append(ttfts, ms(got.TTFT))
+		if got.CompletionTokens > 1 && got.Total > got.TTFT {
+			decodeTokens += got.CompletionTokens - 1
+			decodeTime += got.Total - got.TTFT
+		}
+		if got.DraftTokens > 0 {
+			drafts += got.DraftTokens
+			accepted += got.DraftAccepted
+			draftedTokens += got.CompletionTokens
+		}
+		for _, d := range got.ITL {
+			itl = append(itl, ms(d))
+		}
+		if got.ExpertHitRate > 0 {
+			hitRates = append(hitRates, got.ExpertHitRate)
+		}
 	}
-	if got.CompletionTokens > 1 && got.Total > got.TTFT {
-		values["decode_tok_per_s"] = float64(got.CompletionTokens-1) / (got.Total - got.TTFT).Seconds()
+	values["tokens_in"] = float64(promptTokens)
+	values["cached_tokens"] = float64(cachedTokens)
+	values["tokens_out"] = float64(completionTokens)
+	values["latency_ms"] = ms(total)
+	if len(ttfts) > 0 {
+		sort.Float64s(ttfts)
+		values["ttft_ms"] = median(ttfts)
+	}
+	if decodeTime > 0 {
+		values["decode_tok_per_s"] = float64(decodeTokens) / decodeTime.Seconds()
 	}
 	// Prompt caching stays on as runtimes are used; only the tokens the cache
 	// did not hold were read before the first token.
-	if read := got.PromptTokens - got.CachedTokens; read > 0 && got.TTFT > 0 {
-		values["prefill_tok_per_s"] = float64(read) / got.TTFT.Seconds()
+	if read := promptTokens - cachedTokens; read > 0 && ttft > 0 {
+		values["prefill_tok_per_s"] = float64(read) / ttft.Seconds()
 	}
-	if got.DraftTokens > 0 {
-		values["draft_acceptance"] = float64(got.DraftAccepted) / float64(got.DraftTokens)
+	if drafts > 0 {
+		values["draft_acceptance"] = float64(accepted) / float64(drafts)
 		// Each verification step emits one token plus the drafts it accepted.
-		if steps := got.CompletionTokens - got.DraftAccepted; steps > 0 {
-			values["mtp_accept_len"] = float64(got.CompletionTokens) / float64(steps)
+		if steps := draftedTokens - accepted; steps > 0 {
+			values["mtp_accept_len"] = float64(draftedTokens) / float64(steps)
 		}
 	}
-	if len(got.ITL) > 0 {
-		itl := make([]float64, len(got.ITL))
-		for i, d := range got.ITL {
-			itl[i] = ms(d)
-		}
+	if len(itl) > 0 {
 		sort.Float64s(itl)
 		values["itl_ms_p50"] = percentile(itl, 0.50)
 		values["itl_ms_p95"] = percentile(itl, 0.95)
 		values["itl_ms_p99"] = percentile(itl, 0.99)
 	}
-	if got.ExpertHitRate > 0 {
-		values["expert_hit_rate"] = got.ExpertHitRate
+	if len(hitRates) > 0 {
+		values["expert_hit_rate"] = mean(hitRates)
 	}
-	values["cached_tokens"] = float64(got.CachedTokens)
+	return values
+}
+
+func (r *run) record(caseName string, repeat int, values map[string]float64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	at := time.Since(r.start).Milliseconds()
@@ -527,6 +570,8 @@ var harnessMetrics = []struct {
 	{"tokens_out", "tokens", median},
 	{"draft_acceptance", "ratio", median},
 	{"mtp_accept_len", "tokens", median},
+	{"requests", "requests", median},
+	{"completed", "ratio", mean},
 	{"expert_hit_rate", "ratio", median},
 	{"cached_tokens", "tokens", median},
 	{"itl_ms_p50", "ms", median},
@@ -601,6 +646,7 @@ func (r *run) result(jobspec, series []byte, prompts map[string]string) Result {
 		MeasurementValid: len(r.invalid) == 0,
 		InvalidReasons:   r.invalid,
 		Metrics:          metrics,
+		Harnesses:        r.harnessVersions(),
 		Digests: Digests{
 			JobSpec:  digest(jobspec),
 			Series:   digest(series),
@@ -643,4 +689,11 @@ func energyPerToken(samples []Sample, caseName string) (Metric, bool) {
 	}
 	v := joules / tokens
 	return Metric{Name: "energy_j_per_token", Case: caseName, Unit: "J/token", Value: v, Min: v, Max: v, Samples: repeats}, true
+}
+
+func (r *run) harnessVersions() map[string]string {
+	if r.harnesses == nil {
+		return nil
+	}
+	return r.harnesses.versions
 }

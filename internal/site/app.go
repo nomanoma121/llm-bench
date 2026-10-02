@@ -2,9 +2,9 @@ package site
 
 const appJS = `const rows = [...document.querySelectorAll("#results tbody tr")];
 const filters = document.getElementById("filters");
-const state = {model: "", runtime: "", gpu: "", valid: false};
+const state = {model: "", runtime: "", harness: "", gpu: "", valid: false};
 
-for (const key of ["model", "runtime", "gpu"]) {
+for (const key of ["model", "runtime", "harness", "gpu"]) {
   const values = [...new Set(rows.map(r => r.dataset[key]).filter(Boolean))].sort();
   const select = document.createElement("select");
   select.append(new Option("all", ""), ...values.map(v => new Option(v, v)));
@@ -39,6 +39,7 @@ for (const th of document.querySelectorAll("th[data-sort]")) {
 function visible(r) {
   return (!state.model || r.dataset.model === state.model)
     && (!state.runtime || r.dataset.runtime === state.runtime)
+    && (!state.harness || r.dataset.harness === state.harness)
     && (!state.gpu || r.dataset.gpu === state.gpu)
     && (!state.valid || r.dataset.valid === "yes");
 }

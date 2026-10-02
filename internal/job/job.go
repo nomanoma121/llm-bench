@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -43,8 +44,13 @@ type Case struct {
 	Name       string `yaml:"name" json:"name"`
 	Prompt     string `yaml:"prompt,omitempty" json:"prompt,omitempty"`
 	PromptText string `yaml:"prompt_text,omitempty" json:"prompt_text,omitempty"`
-	MaxTokens  int    `yaml:"max_tokens" json:"max_tokens"`
-	Repeats    int    `yaml:"repeats,omitempty" json:"repeats,omitempty"`
+	// MaxTokens caps a direct request; a harness decides its own requests.
+	MaxTokens int `yaml:"max_tokens,omitempty" json:"max_tokens,omitempty"`
+	Repeats   int `yaml:"repeats,omitempty" json:"repeats,omitempty"`
+	// Harness runs the prompt through a coding agent from harnesses/ instead
+	// of sending it to the runtime directly.
+	Harness        string `yaml:"harness,omitempty" json:"harness,omitempty"`
+	TimeoutMinutes int    `yaml:"timeout_minutes,omitempty" json:"timeout_minutes,omitempty"`
 }
 
 type Sampling struct {
@@ -73,6 +79,14 @@ func (c Case) RepeatCount() int {
 		return 1
 	}
 	return c.Repeats
+}
+
+// Timeout bounds one harness session.
+func (c Case) Timeout() time.Duration {
+	if c.TimeoutMinutes <= 0 {
+		return time.Hour
+	}
+	return time.Duration(c.TimeoutMinutes) * time.Minute
 }
 
 func (r Runtime) ListenPort() int {
@@ -161,8 +175,11 @@ func (s Spec) Validate() error {
 		if c.Prompt != "" && !filepath.IsLocal(c.Prompt) {
 			add("workload[%d].prompt %q must be a repository-relative path", i, c.Prompt)
 		}
-		if c.MaxTokens <= 0 {
-			add("workload[%d].max_tokens must be positive", i)
+		if c.Harness == "" && c.MaxTokens <= 0 {
+			add("workload[%d].max_tokens must be positive without a harness", i)
+		}
+		if c.Harness != "" && !isName(c.Harness) {
+			add("workload[%d].harness %q must be a plain name", i, c.Harness)
 		}
 	}
 	for _, m := range s.Metrics {
@@ -211,6 +228,7 @@ workload:
     prompt: benchmarks/visual/prompt.md
     max_tokens: 28672
     repeats: 1
+    # harness: opencode   # run through a coding agent in harnesses/ instead (max_tokens then unused)
 sampling:
   temperature: 0
   seed: 1

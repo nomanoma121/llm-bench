@@ -24,9 +24,9 @@ func setSampling(body map[string]any, req Request) {
 	}
 }
 
-func streamSSE(ctx context.Context, resp *http.Response, onData func([]byte) error) error {
-	defer resp.Body.Close()
-	scanner := bufio.NewScanner(resp.Body)
+func streamSSE(ctx context.Context, body io.ReadCloser, onData func([]byte) error) error {
+	defer body.Close()
+	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64<<10), 4<<20)
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
@@ -102,10 +102,16 @@ func chatCompletion(ctx context.Context, client *http.Client, baseURL, model str
 	if err != nil {
 		return Completion{}, err
 	}
+	return ReadStream(ctx, resp.Body, start)
+}
+
+// ReadStream reads an OpenAI chat completion event stream that was requested
+// at start, timing its tokens and collecting usage and llama.cpp's timings.
+func ReadStream(ctx context.Context, body io.ReadCloser, start time.Time) (Completion, error) {
 	var out Completion
 	var last time.Duration
 	var content, reasoning strings.Builder
-	err = streamSSE(ctx, resp, func(data []byte) error {
+	err := streamSSE(ctx, body, func(data []byte) error {
 		var chunk struct {
 			Choices []struct {
 				Delta struct {

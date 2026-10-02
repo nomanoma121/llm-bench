@@ -23,6 +23,10 @@ type Options struct {
 
 func (o Options) baseURL() string { return fmt.Sprintf("http://127.0.0.1:%d", o.Port) }
 
+func (a llamaCpp) BaseURL() string  { return a.opts.baseURL() }
+func (a freeToken) BaseURL() string { return a.opts.baseURL() }
+func (a strata) BaseURL() string    { return a.opts.baseURL() }
+
 func (o Options) binary(fallback string) string {
 	if o.Binary != "" {
 		return o.Binary
@@ -63,6 +67,8 @@ type Metric struct {
 
 type Adapter interface {
 	Argv() []string
+	// BaseURL is where the runtime serves its OpenAI-compatible API.
+	BaseURL() string
 	Ready(ctx context.Context) error
 	Complete(ctx context.Context, req Request) (Completion, error)
 	Metrics(ctx context.Context) ([]Metric, error)
@@ -74,12 +80,10 @@ func New(engine string, o Options) (Adapter, error) {
 	switch engine {
 	case "llamacpp":
 		return llamaCpp{o, client}, nil
-	// freetoken-kai is the FreeToken-Kai fork, served the same way but from
-	// its own sandbox.
-	case "freetoken", "freetoken-kai":
+	case "freetoken":
 		return freeToken{o, client}, nil
 	case "strata":
 		return strata{o, client}, nil
 	}
-	return nil, fmt.Errorf("runtime: unknown engine %q (llamacpp, freetoken, freetoken-kai, strata)", engine)
+	return nil, fmt.Errorf("runtime: unknown engine %q (llamacpp, freetoken, strata)", engine)
 }

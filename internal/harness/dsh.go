@@ -6,13 +6,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// dsh is DeepSeek Harness (https://github.com/deepseek-ai/deepseek-harness),
-// run with its headless profile and a patch that adds the endpoint as a
-// custom provider and makes it the default model.
 type dsh struct{}
 
 func (dsh) Tools() []string {
-	return []string{"node@22", "npm:@deepseek-ai/dsh@0.2.0-rc.2"}
+	return []string{"node@24", "npm:@deepseek-ai/dsh@0.2.0-rc.2"}
 }
 
 func (dsh) Command(p Params) (Invocation, error) {
@@ -33,7 +30,8 @@ func (dsh) Command(p Params) (Invocation, error) {
 		return Invocation{}, err
 	}
 	return Invocation{
-		Argv:  []string{"dsh", "--profile", "headless", "--patch", filepath.Join(p.Home, "llmbench.patch.yml"), p.Prompt},
+		Argv:  []string{"dsh", "--profile", "headless", "--patch", filepath.Join(p.Home, "llmbench.patch.yml")},
+		Task:  []string{p.Prompt},
 		Env:   map[string]string{"DSH_HOME": filepath.Join(p.Home, ".dsh"), "LLMBENCH_API_KEY": apiKey},
 		Files: map[string][]byte{"llmbench.patch.yml": patch},
 	}, nil

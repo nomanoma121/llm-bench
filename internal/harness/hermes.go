@@ -2,8 +2,6 @@ package harness
 
 import "gopkg.in/yaml.v3"
 
-// hermes is Nous Research's Hermes Agent (https://github.com/NousResearch/hermes-agent),
-// with the endpoint as its custom provider in the config.yaml of its own home.
 type hermes struct{}
 
 func (hermes) Tools() []string {
@@ -20,9 +18,8 @@ func (hermes) Command(p Params) (Invocation, error) {
 		return Invocation{}, err
 	}
 	return Invocation{
-		// -Q prints only the answer; --yolo approves every command; rules
-		// such as AGENTS.md are not injected.
-		Argv:  []string{"hermes", "chat", "-Q", "--yolo", "--ignore-rules", "-m", p.Model, "-q", p.Prompt},
+		Argv:  []string{"hermes", "chat", "-Q", "--yolo", "--ignore-rules", "-m", p.Model},
+		Task:  []string{"-q", p.Prompt},
 		Files: map[string][]byte{".hermes/config.yaml": config},
 	}, nil
 }

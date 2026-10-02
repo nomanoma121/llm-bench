@@ -48,10 +48,16 @@ type Case struct {
 	// MaxTokens caps a direct request; a harness decides its own requests.
 	MaxTokens int `yaml:"max_tokens,omitempty" json:"max_tokens,omitempty"`
 	Repeats   int `yaml:"repeats,omitempty" json:"repeats,omitempty"`
-	// Harness runs the prompt through a coding agent (opencode, pi, dsh or
-	// hermes) instead of sending it to the runtime directly.
-	Harness        string `yaml:"harness,omitempty" json:"harness,omitempty"`
-	TimeoutMinutes int    `yaml:"timeout_minutes,omitempty" json:"timeout_minutes,omitempty"`
+	// Harness runs the prompt through a coding agent instead of sending it to
+	// the runtime directly.
+	Harness        *Harness `yaml:"harness,omitempty" json:"harness,omitempty"`
+	TimeoutMinutes int      `yaml:"timeout_minutes,omitempty" json:"timeout_minutes,omitempty"`
+}
+
+type Harness struct {
+	Name string            `yaml:"name" json:"name"`
+	Args []string          `yaml:"args,omitempty" json:"args,omitempty"`
+	Env  map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
 }
 
 type Sampling struct {
@@ -179,11 +185,11 @@ func (s Spec) Validate() error {
 		if c.Prompt != "" && !filepath.IsLocal(c.Prompt) {
 			add("workload[%d].prompt %q must be a repository-relative path", i, c.Prompt)
 		}
-		if c.Harness == "" && c.MaxTokens <= 0 {
+		if c.Harness == nil && c.MaxTokens <= 0 {
 			add("workload[%d].max_tokens must be positive without a harness", i)
 		}
-		if c.Harness != "" {
-			if _, err := harness.New(c.Harness); err != nil {
+		if c.Harness != nil {
+			if _, err := harness.New(c.Harness.Name); err != nil {
 				add("workload[%d]: %v", i, err)
 			}
 		}
@@ -241,7 +247,10 @@ workload:
     prompt: benchmarks/visual/prompt.md
     max_tokens: 28672
     repeats: 1
-    # harness: opencode   # or pi, dsh, hermes: run through a coding agent (max_tokens then unused)
+    # harness:              # run through a coding agent instead (max_tokens then unused)
+    #   name: opencode      # or pi, dsh, hermes
+    #   args: []            # extra arguments for the harness
+    #   env: {}             # extra environment for the harness
 sampling:
   temperature: 0
   seed: 1

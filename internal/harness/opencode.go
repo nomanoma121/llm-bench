@@ -2,8 +2,7 @@ package harness
 
 import "encoding/json"
 
-// openCode is opencode (https://opencode.ai), from its release binary: the
-// npm package fetches the binary in a postinstall script mise does not run.
+// The npm package fetches the binary in a postinstall script mise skips.
 type openCode struct{}
 
 func (openCode) Tools() []string {
@@ -32,7 +31,8 @@ func (openCode) Command(p Params) (Invocation, error) {
 		return Invocation{}, err
 	}
 	return Invocation{
-		Argv: []string{"opencode", "run", "--auto", "--model", "llmbench/" + p.Model, p.Prompt},
+		Argv: []string{"opencode", "run", "--auto", "--model", "llmbench/" + p.Model},
+		Task: []string{p.Prompt},
 		Env:  map[string]string{"OPENCODE_CONFIG_CONTENT": string(config), "OPENCODE_DISABLE_AUTOUPDATE": "1"},
 	}, nil
 }

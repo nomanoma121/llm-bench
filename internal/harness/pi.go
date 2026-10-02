@@ -1,13 +1,14 @@
 package harness
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"path/filepath"
+)
 
-// pi is the pi coding agent (https://pi.dev), which reads custom endpoints
-// from models.json in its agent directory.
 type pi struct{}
 
 func (pi) Tools() []string {
-	return []string{"node@22", "npm:@earendil-works/pi-coding-agent@1.0.0"}
+	return []string{"node@24", "npm:@earendil-works/pi-coding-agent@1.0.0"}
 }
 
 func (pi) Command(p Params) (Invocation, error) {
@@ -25,7 +26,9 @@ func (pi) Command(p Params) (Invocation, error) {
 		return Invocation{}, err
 	}
 	return Invocation{
-		Argv:  []string{"pi", "--print", "--provider", "llmbench", "--model", p.Model, p.Prompt},
-		Files: map[string][]byte{".pi/agent/models.json": models},
+		Argv:  []string{"pi", "--print", "--provider", "llmbench", "--model", p.Model},
+		Task:  []string{p.Prompt},
+		Env:   map[string]string{"PI_CODING_AGENT_DIR": filepath.Join(p.Home, "pi")},
+		Files: map[string][]byte{"pi/models.json": models},
 	}, nil
 }

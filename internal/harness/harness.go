@@ -1,6 +1,5 @@
-// Package harness runs coding agents (opencode, pi, DSH, Hermes) once and
-// non-interactively against a runtime for a benchmark. Each harness pins the
-// mise tools it needs; mise installs them in the sandbox.
+// Package harness runs coding agents once, non-interactively, against a
+// runtime for a benchmark.
 package harness
 
 import (
@@ -14,41 +13,37 @@ import (
 	"strings"
 )
 
-// Harness says how to run one coding agent.
 type Harness interface {
-	// Tools are the mise tools it needs, each with its version.
+	// Tools are mise tool specs, pinned.
 	Tools() []string
-	// Command builds a single non-interactive run.
 	Command(p Params) (Invocation, error)
 }
 
-// Params describe the run a harness is asked for.
 type Params struct {
-	// Prompt is the task.
 	Prompt string
-	// BaseURL is the OpenAI-compatible endpoint, ending in /v1.
+	// BaseURL ends in /v1.
 	BaseURL string
-	// Model is the model name the runtime serves.
-	Model string
-	// Context is the runtime's context length in tokens, 0 when unknown.
+	Model   string
+	// Context is 0 when the runtime does not say.
 	Context int
-	// Home is the harness's own home directory.
-	Home string
+	Home    string
+	// Args and Env come from the job spec and are added to the harness's own.
+	Args []string
+	Env  map[string]string
 }
 
-// Invocation is a command line with the environment and the files under
-// Params.Home it needs.
+// Invocation runs Argv, then the job's extra arguments, then Task.
 type Invocation struct {
 	Argv  []string
+	Task  []string
 	Env   map[string]string
 	Files map[string][]byte
 }
 
-// apiKey is what harnesses send as their key; the runtime ignores it.
-const apiKey = "llmbench"
-
-// maxOutputTokens is the longest answer a harness may ask for.
-const maxOutputTokens = 32768
+const (
+	apiKey          = "llmbench"
+	maxOutputTokens = 32768
+)
 
 func New(name string) (Harness, error) {
 	switch name {
@@ -64,8 +59,8 @@ func New(name string) (Harness, error) {
 	return nil, fmt.Errorf("harness: unknown %q (opencode, pi, dsh, hermes)", name)
 }
 
-// Mise installs and runs harness tools. The data directory is fixed so the
-// tools installed once are found again under each harness's own home.
+// Mise keeps its data in one place so tools installed once are found again
+// under each harness's own HOME.
 type Mise struct {
 	DataDir string
 }
@@ -84,8 +79,6 @@ func (m Mise) Install(ctx context.Context, h Harness) error {
 	return nil
 }
 
-// Run runs the harness in workdir until it exits or ctx ends, writing its
-// output to log. A harness that exits non-zero has still been measured.
 func (m Mise) Run(ctx context.Context, h Harness, p Params, workdir string, log io.Writer) error {
 	inv, err := h.Command(p)
 	if err != nil {
@@ -100,14 +93,17 @@ func (m Mise) Run(ctx context.Context, h Harness, p Params, workdir string, log 
 			return err
 		}
 	}
-	args := append([]string{"exec"}, h.Tools()...)
-	cmd := m.cmd(ctx, append(append(args, "--"), inv.Argv...)...)
+	args := append(append([]string{"exec"}, h.Tools()...), "--")
+	args = append(append(append(args, inv.Argv...), p.Args...), inv.Task...)
+	cmd := m.cmd(ctx, args...)
 	cmd.Dir = workdir
 	cmd.Stdout, cmd.Stderr = log, log
 	cmd.Env = append(cmd.Env, "HOME="+p.Home, "XDG_CONFIG_HOME="+filepath.Join(p.Home, ".config"),
 		"XDG_DATA_HOME="+filepath.Join(p.Home, ".local", "share"), "XDG_CACHE_HOME="+filepath.Join(p.Home, ".cache"))
-	for k, v := range inv.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
+	for _, env := range []map[string]string{inv.Env, p.Env} {
+		for k, v := range env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
 	}
 	err = cmd.Run()
 	if ctx.Err() != nil {

@@ -26,8 +26,8 @@ func TestCommands(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s: %v", name, err)
 			}
-			everything := strings.Join(inv.Argv, " ") + fmtMap(inv.Env) + fmtFiles(inv.Files)
-			if !slices.Contains(inv.Argv, p.Prompt) || !strings.Contains(everything, p.BaseURL) || !strings.Contains(everything, p.Model) {
+			everything := strings.Join(append(inv.Argv, inv.Task...), " ") + fmtMap(inv.Env) + fmtFiles(inv.Files)
+			if !slices.Contains(inv.Task, p.Prompt) || !strings.Contains(everything, p.BaseURL) || !strings.Contains(everything, p.Model) {
 				t.Errorf("%s: the run does not carry the task, endpoint and model: %q %v", name, inv.Argv, inv.Env)
 			}
 			for path, b := range inv.Files {

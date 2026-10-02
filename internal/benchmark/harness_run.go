@@ -15,8 +15,6 @@ import (
 	"github.com/nomanoma121/llm-bench/internal/job"
 )
 
-// harnessRunner holds what every harness session of a run shares: mise, the
-// proxy the harnesses reach the runtime by, and the tools each one used.
 type harnessRunner struct {
 	mise      harness.Mise
 	proxy     *proxy
@@ -39,23 +37,21 @@ func (r *run) harnessRunner(sampling job.Sampling) (*harnessRunner, error) {
 	return r.harnesses, nil
 }
 
-// runHarness gives the prompt to a harness and measures every request it
-// makes. The files it leaves in its working directory are the output.
 func (r *run) runHarness(ctx context.Context, c job.Case, repeat int, prompt string, sampling job.Sampling) error {
 	h, err := r.harnessRunner(sampling)
 	if err != nil {
 		return err
 	}
-	agent, err := harness.New(c.Harness)
+	agent, err := harness.New(c.Harness.Name)
 	if err != nil {
 		return err
 	}
-	if _, ok := h.installed[c.Harness]; !ok {
-		r.cfg.Logf("installing harness %s", c.Harness)
+	if _, ok := h.installed[c.Harness.Name]; !ok {
+		r.cfg.Logf("installing harness %s", c.Harness.Name)
 		if err := h.mise.Install(ctx, agent); err != nil {
 			return err
 		}
-		h.installed[c.Harness] = strings.Join(agent.Tools(), " ")
+		h.installed[c.Harness.Name] = strings.Join(agent.Tools(), " ")
 	}
 	dir, err := os.MkdirTemp("", "llmbench-harness-")
 	if err != nil {
@@ -79,7 +75,7 @@ func (r *run) runHarness(ctx context.Context, c job.Case, repeat int, prompt str
 	}
 	defer log.Close()
 
-	params := harness.Params{Prompt: prompt, BaseURL: h.proxy.URL + "/v1", Model: r.model.ID, Context: r.contextSize(ctx), Home: home}
+	params := harness.Params{Prompt: prompt, BaseURL: h.proxy.URL + "/v1", Model: r.model.ID, Context: r.contextSize(ctx), Home: home, Args: c.Harness.Args, Env: c.Harness.Env}
 	runCtx, cancel := context.WithTimeout(ctx, c.Timeout())
 	defer cancel()
 	mark, start := h.proxy.mark(), time.Now()
@@ -97,8 +93,7 @@ func (r *run) runHarness(ctx context.Context, c job.Case, repeat int, prompt str
 		values["completed"] = 1
 	}
 	r.record(c.Name, repeat, values)
-	// A harness may answer with the page instead of writing it, as a direct
-	// request does; then the page in its reply is the output.
+	// A harness may answer with the page instead of writing it.
 	if _, err := os.Stat(filepath.Join(work, "index.html")); errors.Is(err, fs.ErrNotExist) {
 		if reply, err := os.ReadFile(log.Name()); err == nil {
 			if html := extractHTML(string(reply)); html != "" {
@@ -110,13 +105,11 @@ func (r *run) runHarness(ctx context.Context, c job.Case, repeat int, prompt str
 		return fmt.Errorf("output could not be saved: %w", err)
 	}
 	if len(reqs) == 0 {
-		return fmt.Errorf("harness %s made no requests: %v", c.Harness, runErr)
+		return fmt.Errorf("harness %s made no requests: %v", c.Harness.Name, runErr)
 	}
 	return nil
 }
 
-// contextSize asks the runtime for its context length, which some harnesses
-// need to know when to compact.
 func (r *run) contextSize(ctx context.Context) int {
 	metrics, err := r.adapter.Metrics(ctx)
 	if err != nil {
@@ -130,8 +123,6 @@ func (r *run) contextSize(ctx context.Context) int {
 	return 0
 }
 
-// copyTree copies the regular files under src, leaving out dependency and
-// version control directories a harness may have created.
 func copyTree(src, dst string) error {
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {

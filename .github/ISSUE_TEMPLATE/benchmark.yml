@@ -107,7 +107,7 @@ body:
       label: Harness
       description: Run the prompt through a coding agent instead of a direct request.
       options:
-        - none
+        - direct
         - opencode
         - pi
         - dsh
@@ -126,7 +126,7 @@ body:
       label: Reasoning effort
       options:
         - default
-        - none
+        - no thinking
         - low
         - medium
         - high

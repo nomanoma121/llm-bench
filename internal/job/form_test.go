@@ -71,6 +71,31 @@ func TestFromIssue(t *testing.T) {
 	}
 }
 
+func TestFromIssueDirectWithoutThinking(t *testing.T) {
+	s, err := FromIssue(Benchmark, form("Harness", "direct", "Reasoning effort", "no thinking"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := s.Workload[0]; c.Harness != nil || c.MaxTokens != 28672 || s.Sampling.ReasoningEffort != "none" {
+		t.Fatalf("unexpected spec %+v %+v", c, s.Sampling)
+	}
+}
+
+// GitHub rejects a form whose dropdown offers "None".
+func TestFormsAvoidNone(t *testing.T) {
+	for _, kind := range []Kind{Benchmark, Optimize} {
+		form, err := Form(kind, []string{"visual"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(string(form), "\n") {
+			if v, ok := strings.CutPrefix(strings.TrimSpace(line), "- "); ok && strings.EqualFold(strings.Trim(v, `"'`), "none") {
+				t.Errorf("%s: option %q", kind, v)
+			}
+		}
+	}
+}
+
 func TestFromIssueOverride(t *testing.T) {
 	body := form("Spec override", "```yaml\nruntime:\n  engine: llamacpp\n  context: 4096\n### not a heading\nsampling:\n  seed: 7\n```") +
 		"### Source repository\n\nggml-org/llama.cpp\n\n### Source ref\n\nmaster\n\n### Max rounds\n\n5"
@@ -89,7 +114,7 @@ func TestFromIssueRejects(t *testing.T) {
 		"unknown model":       form("Model", "nope"),
 		"unknown gpu":         form("GPUs", "GPU 7 · H100"),
 		"model not on engine": form("Model", "Flash-Next IQ2_XS"),
-		"bad number":          form("Harness", "none", "Max tokens", "many"),
+		"bad number":          form("Harness", "direct", "Max tokens", "many"),
 		"unsupported setting": form("Model", "Flash-Next IQ2_XS", "Runtime", "strata", "MTP", "off"),
 		"unterminated quote":  form("Extra runtime args", "--x 'y"),
 		"unknown field":       form("Spec override", "```yaml\nfoo: 1\n```"),

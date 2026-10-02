@@ -24,9 +24,13 @@ func TestOpenCodeRunsASession(t *testing.T) {
 		case "POST /session/ses_1/prompt_async":
 			var body struct {
 				Parts []struct{ Text string } `json:"parts"`
+				Model struct{ ProviderID, ModelID string }
 			}
 			json.NewDecoder(r.Body).Decode(&body)
 			prompt = body.Parts[0].Text
+			if body.Model.ProviderID != "opencode-go" || body.Model.ModelID != "deepseek-v4-flash" {
+				prompt = "wrong model"
+			}
 			w.WriteHeader(http.StatusNoContent)
 		case "GET /session/status":
 			if polls.Add(1) < 3 {
@@ -42,7 +46,7 @@ func TestOpenCodeRunsASession(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	o := &OpenCode{URL: srv.URL, Username: "opencode", Password: "secret", Poll: time.Millisecond}
+	o := &OpenCode{URL: srv.URL, Username: "opencode", Password: "secret", Model: "opencode-go/deepseek-v4-flash", Poll: time.Millisecond}
 	var session string
 	reply, err := o.Run(context.Background(), "Optimize llama.cpp\nmore", func(id string) { session = id })
 	if err != nil || reply != "Opened the PR." || session != "ses_1" || prompt != "Optimize llama.cpp\nmore" || polls.Load() != 3 {

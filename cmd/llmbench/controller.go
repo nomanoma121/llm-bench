@@ -42,6 +42,7 @@ type config struct {
 	Agent *struct {
 		URL      string `yaml:"url"`
 		Username string `yaml:"username"`
+		Model    string `yaml:"model"`
 	} `yaml:"agent"`
 	PollIntervalSeconds int `yaml:"poll_interval_seconds"`
 	PauseTimeoutMinutes int `yaml:"pause_timeout_minutes"`
@@ -133,7 +134,7 @@ func buildController(cfg config, kubeconfig string) (*controller.Controller, err
 		Logf:         logger.Printf,
 	}
 	if a := cfg.Agent; a != nil && a.URL != "" {
-		c.Agent = &agent.OpenCode{URL: a.URL, Username: a.Username, Password: os.Getenv("OPENCODE_SERVER_PASSWORD"), Poll: 10 * time.Second}
+		c.Agent = &agent.OpenCode{URL: a.URL, Username: a.Username, Password: os.Getenv("OPENCODE_SERVER_PASSWORD"), Model: a.Model, Poll: 10 * time.Second}
 	}
 	return c, nil
 }

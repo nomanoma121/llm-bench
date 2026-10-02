@@ -1,0 +1,202 @@
+{"at_ms":23139,"source":"gpu","name":"pcie_rx_mbps","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":23139,"source":"gpu","name":"pcie_tx_mbps","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":23180,"source":"gpu","name":"pcie_rx_mbps","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":23180,"source":"gpu","name":"pcie_tx_mbps","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24115,"source":"gpu","name":"vram_used_mib","case":"visual","value":11433,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24115,"source":"gpu","name":"gpu_util_percent","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24115,"source":"gpu","name":"mem_util_percent","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24115,"source":"gpu","name":"power_w","case":"visual","value":43.8,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24115,"source":"gpu","name":"temperature_c","case":"visual","value":48,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24115,"source":"gpu","name":"sm_clock_mhz","case":"visual","value":1777,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24115,"source":"gpu","name":"throttled","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24115,"source":"gpu","name":"vram_used_mib","case":"visual","value":11483,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24115,"source":"gpu","name":"gpu_util_percent","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24115,"source":"gpu","name":"mem_util_percent","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24115,"source":"gpu","name":"power_w","case":"visual","value":46.08,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24115,"source":"gpu","name":"temperature_c","case":"visual","value":49,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24115,"source":"gpu","name":"sm_clock_mhz","case":"visual","value":1837,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24115,"source":"gpu","name":"throttled","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24116,"source":"runtime","name":"context_size","case":"visual","value":65536}
+{"at_ms":24116,"source":"host","name":"ram_used_mib","case":"visual","value":42271.03125}
+{"at_ms":24227,"source":"gpu","name":"pcie_rx_mbps","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24227,"source":"gpu","name":"pcie_tx_mbps","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24268,"source":"gpu","name":"pcie_rx_mbps","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":24268,"source":"gpu","name":"pcie_tx_mbps","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25107,"source":"gpu","name":"vram_used_mib","case":"visual","value":11433,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25107,"source":"gpu","name":"gpu_util_percent","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25107,"source":"gpu","name":"mem_util_percent","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25107,"source":"gpu","name":"power_w","case":"visual","value":42.5,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25107,"source":"gpu","name":"temperature_c","case":"visual","value":48,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25107,"source":"gpu","name":"sm_clock_mhz","case":"visual","value":1777,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25107,"source":"gpu","name":"throttled","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25107,"source":"gpu","name":"vram_used_mib","case":"visual","value":11483,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25107,"source":"gpu","name":"gpu_util_percent","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25107,"source":"gpu","name":"mem_util_percent","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25107,"source":"gpu","name":"power_w","case":"visual","value":45.91,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25107,"source":"gpu","name":"temperature_c","case":"visual","value":49,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25107,"source":"gpu","name":"sm_clock_mhz","case":"visual","value":1837,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25107,"source":"gpu","name":"throttled","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25107,"source":"runtime","name":"context_size","case":"visual","value":65536}
+{"at_ms":25107,"source":"host","name":"cpu_util_percent","case":"visual","value":3.4613761080624736}
+{"at_ms":25107,"source":"host","name":"cpu_max_core_percent","case":"visual","value":47}
+{"at_ms":25107,"source":"host","name":"ram_used_mib","case":"visual","value":42276.28125}
+{"at_ms":25316,"source":"gpu","name":"pcie_rx_mbps","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25316,"source":"gpu","name":"pcie_tx_mbps","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25357,"source":"gpu","name":"pcie_rx_mbps","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":25357,"source":"gpu","name":"pcie_tx_mbps","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26107,"source":"gpu","name":"vram_used_mib","case":"visual","value":11433,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26107,"source":"gpu","name":"gpu_util_percent","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26107,"source":"gpu","name":"mem_util_percent","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26107,"source":"gpu","name":"power_w","case":"visual","value":42.56,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26107,"source":"gpu","name":"temperature_c","case":"visual","value":48,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26107,"source":"gpu","name":"sm_clock_mhz","case":"visual","value":1777,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26107,"source":"gpu","name":"throttled","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26107,"source":"gpu","name":"vram_used_mib","case":"visual","value":11483,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26107,"source":"gpu","name":"gpu_util_percent","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26107,"source":"gpu","name":"mem_util_percent","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26107,"source":"gpu","name":"power_w","case":"visual","value":45.69,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26107,"source":"gpu","name":"temperature_c","case":"visual","value":49,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26107,"source":"gpu","name":"sm_clock_mhz","case":"visual","value":1837,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26107,"source":"gpu","name":"throttled","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26108,"source":"runtime","name":"context_size","case":"visual","value":65536}
+{"at_ms":26108,"source":"host","name":"cpu_util_percent","case":"visual","value":3.7546933667083855}
+{"at_ms":26108,"source":"host","name":"cpu_max_core_percent","case":"visual","value":55.55555555555556}
+{"at_ms":26108,"source":"host","name":"ram_used_mib","case":"visual","value":42276.16015625}
+{"at_ms":26404,"source":"gpu","name":"pcie_rx_mbps","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26404,"source":"gpu","name":"pcie_tx_mbps","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26446,"source":"gpu","name":"pcie_rx_mbps","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":26446,"source":"gpu","name":"pcie_tx_mbps","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27109,"source":"gpu","name":"vram_used_mib","case":"visual","value":11433,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27109,"source":"gpu","name":"gpu_util_percent","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27109,"source":"gpu","name":"mem_util_percent","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27109,"source":"gpu","name":"power_w","case":"visual","value":42.56,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27109,"source":"gpu","name":"temperature_c","case":"visual","value":48,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27109,"source":"gpu","name":"sm_clock_mhz","case":"visual","value":1777,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27109,"source":"gpu","name":"throttled","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27109,"source":"gpu","name":"vram_used_mib","case":"visual","value":11483,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27109,"source":"gpu","name":"gpu_util_percent","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27109,"source":"gpu","name":"mem_util_percent","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27109,"source":"gpu","name":"power_w","case":"visual","value":45.72,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27109,"source":"gpu","name":"temperature_c","case":"visual","value":49,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27109,"source":"gpu","name":"sm_clock_mhz","case":"visual","value":1837,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27109,"source":"gpu","name":"throttled","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27109,"source":"runtime","name":"context_size","case":"visual","value":65536}
+{"at_ms":27110,"source":"host","name":"cpu_util_percent","case":"visual","value":5.148597739640016}
+{"at_ms":27110,"source":"host","name":"cpu_max_core_percent","case":"visual","value":12}
+{"at_ms":27110,"source":"host","name":"ram_used_mib","case":"visual","value":42540.70703125}
+{"at_ms":27492,"source":"gpu","name":"pcie_rx_mbps","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27492,"source":"gpu","name":"pcie_tx_mbps","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27534,"source":"gpu","name":"pcie_rx_mbps","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":27534,"source":"gpu","name":"pcie_tx_mbps","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28108,"source":"gpu","name":"vram_used_mib","case":"visual","value":11433,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28108,"source":"gpu","name":"gpu_util_percent","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28108,"source":"gpu","name":"mem_util_percent","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28108,"source":"gpu","name":"power_w","case":"visual","value":42.59,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28108,"source":"gpu","name":"temperature_c","case":"visual","value":48,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28108,"source":"gpu","name":"sm_clock_mhz","case":"visual","value":1777,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28108,"source":"gpu","name":"throttled","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28108,"source":"gpu","name":"vram_used_mib","case":"visual","value":11483,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28108,"source":"gpu","name":"gpu_util_percent","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28108,"source":"gpu","name":"mem_util_percent","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28108,"source":"gpu","name":"power_w","case":"visual","value":45.8,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28108,"source":"gpu","name":"temperature_c","case":"visual","value":49,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28108,"source":"gpu","name":"sm_clock_mhz","case":"visual","value":1837,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28108,"source":"gpu","name":"throttled","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28109,"source":"runtime","name":"context_size","case":"visual","value":65536}
+{"at_ms":28109,"source":"host","name":"cpu_util_percent","case":"visual","value":7.208717518860016}
+{"at_ms":28109,"source":"host","name":"cpu_max_core_percent","case":"visual","value":31}
+{"at_ms":28109,"source":"host","name":"ram_used_mib","case":"visual","value":42753.421875}
+{"at_ms":28581,"source":"gpu","name":"pcie_rx_mbps","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28581,"source":"gpu","name":"pcie_tx_mbps","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28622,"source":"gpu","name":"pcie_rx_mbps","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":28622,"source":"gpu","name":"pcie_tx_mbps","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29107,"source":"gpu","name":"vram_used_mib","case":"visual","value":11433,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29107,"source":"gpu","name":"gpu_util_percent","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29107,"source":"gpu","name":"mem_util_percent","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29107,"source":"gpu","name":"power_w","case":"visual","value":42.65,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29107,"source":"gpu","name":"temperature_c","case":"visual","value":48,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29107,"source":"gpu","name":"sm_clock_mhz","case":"visual","value":1777,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29107,"source":"gpu","name":"throttled","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29107,"source":"gpu","name":"vram_used_mib","case":"visual","value":11483,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29107,"source":"gpu","name":"gpu_util_percent","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29107,"source":"gpu","name":"mem_util_percent","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29107,"source":"gpu","name":"power_w","case":"visual","value":45.87,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29107,"source":"gpu","name":"temperature_c","case":"visual","value":49,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29107,"source":"gpu","name":"sm_clock_mhz","case":"visual","value":1837,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29107,"source":"gpu","name":"throttled","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29107,"source":"runtime","name":"context_size","case":"visual","value":65536}
+{"at_ms":29107,"source":"host","name":"cpu_util_percent","case":"visual","value":6.770395290159798}
+{"at_ms":29107,"source":"host","name":"cpu_max_core_percent","case":"visual","value":31.31313131313131}
+{"at_ms":29107,"source":"host","name":"ram_used_mib","case":"visual","value":43126.65625}
+{"at_ms":29670,"source":"gpu","name":"pcie_rx_mbps","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29670,"source":"gpu","name":"pcie_tx_mbps","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29711,"source":"gpu","name":"pcie_rx_mbps","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":29711,"source":"gpu","name":"pcie_tx_mbps","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30107,"source":"gpu","name":"vram_used_mib","case":"visual","value":11433,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30107,"source":"gpu","name":"gpu_util_percent","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30107,"source":"gpu","name":"mem_util_percent","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30107,"source":"gpu","name":"power_w","case":"visual","value":42.65,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30107,"source":"gpu","name":"temperature_c","case":"visual","value":48,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30107,"source":"gpu","name":"sm_clock_mhz","case":"visual","value":1777,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30107,"source":"gpu","name":"throttled","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30107,"source":"gpu","name":"vram_used_mib","case":"visual","value":11483,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30107,"source":"gpu","name":"gpu_util_percent","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30107,"source":"gpu","name":"mem_util_percent","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30107,"source":"gpu","name":"power_w","case":"visual","value":46.01,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30107,"source":"gpu","name":"temperature_c","case":"visual","value":49,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30107,"source":"gpu","name":"sm_clock_mhz","case":"visual","value":1837,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30107,"source":"gpu","name":"throttled","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30108,"source":"runtime","name":"context_size","case":"visual","value":65536}
+{"at_ms":30108,"source":"host","name":"cpu_util_percent","case":"visual","value":2.470686767169179}
+{"at_ms":30108,"source":"host","name":"cpu_max_core_percent","case":"visual","value":13.131313131313131}
+{"at_ms":30108,"source":"host","name":"ram_used_mib","case":"visual","value":43117.578125}
+{"at_ms":30758,"source":"gpu","name":"pcie_rx_mbps","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30758,"source":"gpu","name":"pcie_tx_mbps","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30799,"source":"gpu","name":"pcie_rx_mbps","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":30799,"source":"gpu","name":"pcie_tx_mbps","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31106,"source":"gpu","name":"vram_used_mib","case":"visual","value":11433,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31106,"source":"gpu","name":"gpu_util_percent","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31106,"source":"gpu","name":"mem_util_percent","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31106,"source":"gpu","name":"power_w","case":"visual","value":42.65,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31106,"source":"gpu","name":"temperature_c","case":"visual","value":48,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31106,"source":"gpu","name":"sm_clock_mhz","case":"visual","value":1777,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31106,"source":"gpu","name":"throttled","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31106,"source":"gpu","name":"vram_used_mib","case":"visual","value":11483,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31106,"source":"gpu","name":"gpu_util_percent","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31106,"source":"gpu","name":"mem_util_percent","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31106,"source":"gpu","name":"power_w","case":"visual","value":46.19,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31106,"source":"gpu","name":"temperature_c","case":"visual","value":49,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31106,"source":"gpu","name":"sm_clock_mhz","case":"visual","value":1837,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31106,"source":"gpu","name":"throttled","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31107,"source":"runtime","name":"context_size","case":"visual","value":65536}
+{"at_ms":31107,"source":"host","name":"cpu_util_percent","case":"visual","value":2.648171500630517}
+{"at_ms":31107,"source":"host","name":"cpu_max_core_percent","case":"visual","value":19.791666666666668}
+{"at_ms":31107,"source":"host","name":"ram_used_mib","case":"visual","value":43092.5625}
+{"at_ms":31846,"source":"gpu","name":"pcie_rx_mbps","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31846,"source":"gpu","name":"pcie_tx_mbps","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31887,"source":"gpu","name":"pcie_rx_mbps","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":31887,"source":"gpu","name":"pcie_tx_mbps","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":32106,"source":"gpu","name":"vram_used_mib","case":"visual","value":11433,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":32106,"source":"gpu","name":"gpu_util_percent","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":32106,"source":"gpu","name":"mem_util_percent","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":32106,"source":"gpu","name":"power_w","case":"visual","value":42.69,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":32106,"source":"gpu","name":"temperature_c","case":"visual","value":49,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":32106,"source":"gpu","name":"sm_clock_mhz","case":"visual","value":1777,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":32106,"source":"gpu","name":"throttled","case":"visual","value":0,"labels":{"gpu":"0","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":32106,"source":"gpu","name":"vram_used_mib","case":"visual","value":11483,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":32106,"source":"gpu","name":"gpu_util_percent","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":32106,"source":"gpu","name":"mem_util_percent","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":32106,"source":"gpu","name":"power_w","case":"visual","value":46.23,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":32106,"source":"gpu","name":"temperature_c","case":"visual","value":50,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":32106,"source":"gpu","name":"sm_clock_mhz","case":"visual","value":1837,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":32106,"source":"gpu","name":"throttled","case":"visual","value":0,"labels":{"gpu":"1","model":"NVIDIA GeForce RTX 3060"}}
+{"at_ms":32107,"source":"runtime","name":"context_size","case":"visual","value":65536}
+{"at_ms":32107,"source":"host","name":"cpu_util_percent","case":"visual","value":1.9238812212463405}
+{"at_ms":32107,"source":"host","name":"cpu_max_core_percent","case":"visual","value":15.151515151515152}
+{"at_ms":32107,"source":"host","name":"ram_used_mib","case":"visual","value":43104.53515625}
+{"at_ms":32489,"source":"harness","name":"requests","case":"visual","repeat":1,"value":0}
+{"at_ms":32489,"source":"harness","name":"tokens_in","case":"visual","repeat":1,"value":0}
+{"at_ms":32489,"source":"harness","name":"cached_tokens","case":"visual","repeat":1,"value":0}
+{"at_ms":32489,"source":"harness","name":"tokens_out","case":"visual","repeat":1,"value":0}
+{"at_ms":32489,"source":"harness","name":"latency_ms","case":"visual","repeat":1,"value":12.98441}
+{"at_ms":32489,"source":"harness","name":"completed","case":"visual","repeat":1,"value":0}

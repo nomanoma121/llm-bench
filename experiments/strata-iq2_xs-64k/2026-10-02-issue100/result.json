@@ -1,0 +1,152 @@
+{
+  "job_id": "2026-10-02-issue100",
+  "kind": "benchmark",
+  "started_at": "2026-10-02T01:31:35.761627759Z",
+  "duration_seconds": 36.906052167,
+  "model": {
+    "id": "strata-iq2_xs-64k",
+    "path": "/models/strata/config/strata-iq2_xs-64k.json",
+    "digest": "sha256:1ea678480e199a86809477636f8952377d5e250b6f7684937b36a6447888bde3"
+  },
+  "runtime": {
+    "engine": "strata",
+    "binary": "/opt/strata/.venv/bin/python",
+    "version": "0.1.31",
+    "args": [
+      "--gpu",
+      "0,1"
+    ],
+    "info": {
+      "expert_slots": "5618",
+      "gpu_resident_experts": "9943",
+      "layer_split": "layers 0-21 (CUDA0), 22-47 (CUDA1), one hand-off per window",
+      "prefilled_expert_slots": "5618",
+      "version": "0.1.31",
+      "vram_free_mib": "478"
+    }
+  },
+  "gpus": [
+    "NVIDIA GeForce RTX 3060",
+    "NVIDIA GeForce RTX 3060"
+  ],
+  "driver": "595.91.07",
+  "measurement_valid": false,
+  "invalid_reasons": [
+    "case visual repeat 1: harness opencode made no requests: harness exited with 1"
+  ],
+  "metrics": [
+    {
+      "name": "latency_ms",
+      "case": "visual",
+      "unit": "ms",
+      "value": 12.98441,
+      "min": 12.98441,
+      "max": 12.98441,
+      "samples": 1
+    },
+    {
+      "name": "tokens_in",
+      "case": "visual",
+      "unit": "tokens",
+      "value": 0,
+      "min": 0,
+      "max": 0,
+      "samples": 1
+    },
+    {
+      "name": "tokens_out",
+      "case": "visual",
+      "unit": "tokens",
+      "value": 0,
+      "min": 0,
+      "max": 0,
+      "samples": 1
+    },
+    {
+      "name": "requests",
+      "case": "visual",
+      "unit": "requests",
+      "value": 0,
+      "min": 0,
+      "max": 0,
+      "samples": 1
+    },
+    {
+      "name": "completed",
+      "case": "visual",
+      "unit": "ratio",
+      "value": 0,
+      "min": 0,
+      "max": 0,
+      "samples": 1
+    },
+    {
+      "name": "cached_tokens",
+      "case": "visual",
+      "unit": "tokens",
+      "value": 0,
+      "min": 0,
+      "max": 0,
+      "samples": 1
+    },
+    {
+      "name": "vram_used_mib",
+      "unit": "MiB",
+      "value": 11483,
+      "min": 11433,
+      "max": 11483,
+      "samples": 18
+    },
+    {
+      "name": "gpu_util_percent",
+      "unit": "%",
+      "value": 0,
+      "min": 0,
+      "max": 0,
+      "samples": 18
+    },
+    {
+      "name": "power_w",
+      "unit": "W",
+      "value": 44.34166666666667,
+      "min": 42.5,
+      "max": 46.23,
+      "samples": 18
+    },
+    {
+      "name": "temperature_c",
+      "unit": "°C",
+      "value": 50,
+      "min": 48,
+      "max": 50,
+      "samples": 18
+    },
+    {
+      "name": "cpu_util_percent",
+      "unit": "%",
+      "value": 4.1733149390595905,
+      "min": 1.9238812212463405,
+      "max": 7.208717518860016,
+      "samples": 8
+    },
+    {
+      "name": "ram_used_mib",
+      "unit": "MiB",
+      "value": 43126.65625,
+      "min": 42271.03125,
+      "max": 43126.65625,
+      "samples": 9
+    }
+  ],
+  "harnesses": {
+    "opencode": "npm:opencode-ai@1.18.34"
+  },
+  "digests": {
+    "jobspec": "7b5725a0f3cecd586cf42164b817c5fcb7932ddb71e350d7be013df817b95bb7",
+    "series": "22cec3f7f063fff67439d0af4de3b7e122bdfb47ba7f0f729d25b162f9b99afc",
+    "workload": "c6ff3fa758861f26b60a0c04c67bf1217a42de7eadbaa27df83987f506235851",
+    "prompts": {
+      "visual": "fba7c5aa61589d0065d1f1aea8ada4f918495fe973d73d04fbf8794a254c691c"
+    }
+  }
+}

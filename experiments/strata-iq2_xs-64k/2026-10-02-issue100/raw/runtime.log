@@ -1,0 +1,45 @@
+loading the model (the first start takes a minute or two) ...
+[strata] layer split across GPUs [0, 1] (auto)
+[strata] starting the engine: reading the model's weights ...
+[strata] loading the experts into RAM (about 39 GB) and locking part of them for the GPU.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] experts loaded: 33.02 GiB at 7.45 GiB/s (19 s so far)
+[strata] filling the GPU's expert cache (5618 experts, 7.34 GiB of VRAM) ...
+[strata] almost ready ...
+ready: http://127.0.0.1:18080/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 65536 tokens)
+       open http://127.0.0.1:18080/ in a browser to chat; close this window to stop the model
+
+[strata] stopping (Ctrl+C again to end the engine at once) ...
+[strata] stopped
+er split: CUDA1 holds its weights; 8.53 GiB free (its session follows the split search)
+strata generate: profile /opt/strata/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: layer split auto: CUDA0 28 SMs at 1.78 GHz -> 1.46 ms per layer, 7.85 GiB free before its session carve
+strata generate: layer split auto: CUDA1 28 SMs at 1.84 GHz -> 1.41 ms per layer, 6.78 GiB free before its session carve
+strata generate: layer split auto: K=22 - predicted 73.7 ms per decode window; the caches hold 10191 of 24576 profiled pairs (~97.4% of the routed mass)
+strata generate: PLE on, table 320001536 rows of /models/strata/models/IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf
+strata generate: layer split: CUDA1 holds its weights, session [22, 48) and the head; 7.63 GiB free
+strata mtp: draft layer loaded, 876 MiB of VRAM (experts 675, dense 111), files read in 0.45 s (1750 MiB/s)
+strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (no hugetlb pool configured?); using 4 KB pages
+strata generate: loaded 33.02 GiB at 7.45 GiB/s
+strata generate: expert cache auto: 8.03 GiB free, 700 MiB reserved (+0 MiB for the draft head) -> 5221 slots
+strata generate: expert cache 5618 slots, 7.34 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: pre-filled 5618 of 5618 slots from the profile; slot 0 verified
+strata generate: layer split: CUDA1 runs layers 22-47, expert cache 4325 slots (5.92 GiB), 4325 of its 13312 profiled pairs; slot 0 verified
+strata generate: layer split: CUDA0 runs layers 0-21
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.31)
+strata generate: token graph hit path: 9943 resident experts, decided on the device
+strata serve: prompt chunk auto: 8192 tokens
+strata serve: the prompt path borrows 3435 CUDA0 cache slots (4.49 GiB)
+strata serve:   CUDA1 prompt path borrows 3285 of its 4325 slots (4.49 GiB)
+strata verify: window up to 6 tokens, 56.7 MiB of device buffers
+strata serve: layer split: layers 0-21 (CUDA0), 22-47 (CUDA1), one hand-off per window
+strata verify: window up to 6 tokens, 56.7 MiB of device buffers
+strata mtp: draft head over 106299 tokens (137.9 MiB)
+strata serve: 478 MiB of VRAM free with everything loaded

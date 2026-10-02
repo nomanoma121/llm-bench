@@ -41,7 +41,7 @@ func (a llamaCpp) Ready(ctx context.Context) error {
 }
 
 func (a llamaCpp) Complete(ctx context.Context, req Request) (Completion, error) {
-	return chatCompletion(ctx, a.client, a.opts.baseURL(), a.opts.ModelID, req, map[string]any{"cache_prompt": false})
+	return chatCompletion(ctx, a.client, a.opts.baseURL(), a.opts.ModelID, req, nil)
 }
 
 var llamaInfo = []struct {

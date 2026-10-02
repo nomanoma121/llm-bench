@@ -57,7 +57,6 @@ spec:
                       "--expert-profile", "/opt/strata/data/expert-profile.bin", "--expert-cache", "auto",
                       "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5",
                       "--mtp", "/models/strata/mtp/rt", "--max-context", "32768", "--kv", "int8",
-                      "--prompt-cache", "0",
                   ],
                   "cwd": "/opt/strata",
                   "tokenizer": "/models/strata/packs/ud-q4_k_xl/tokenizer",

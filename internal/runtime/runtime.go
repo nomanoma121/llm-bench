@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -18,7 +19,14 @@ type Options struct {
 	ModelID   string
 	ModelPath string
 	Port      int
-	Args      []string
+	Settings  Settings
+	// Args go after the arguments Settings become.
+	Args []string
+}
+
+// Preparer is an adapter that writes files into dir before its runtime starts.
+type Preparer interface {
+	Prepare(dir string) error
 }
 
 func (o Options) baseURL() string { return fmt.Sprintf("http://127.0.0.1:%d", o.Port) }
@@ -77,15 +85,33 @@ type Adapter interface {
 	Info(log string) map[string]string
 }
 
+var Engines = []string{"llamacpp", "strata", "freetoken"}
+
+// New fails when the engine is unknown or cannot apply o.Settings.
 func New(engine string, o Options) (Adapter, error) {
 	client := &http.Client{Transport: &http.Transport{Proxy: nil}}
+	var a interface {
+		Adapter
+		settingArgs() ([]string, error)
+	}
 	switch engine {
 	case "llamacpp":
-		return llamaCpp{o, client}, nil
+		a = llamaCpp{o, client}
 	case "freetoken":
-		return freeToken{o, client}, nil
+		a = freeToken{o, client}
 	case "strata":
-		return strata{o, client}, nil
+		a = &strata{opts: o, client: client}
+	default:
+		return nil, fmt.Errorf("runtime: unknown engine %q (%s)", engine, strings.Join(Engines, ", "))
 	}
-	return nil, fmt.Errorf("runtime: unknown engine %q (llamacpp, freetoken, strata)", engine)
+	if err := o.Settings.check(); err != nil {
+		return nil, fmt.Errorf("runtime: %w", err)
+	}
+	if _, err := a.settingArgs(); err != nil {
+		return nil, fmt.Errorf("runtime: %w", err)
+	}
+	return a, nil
 }
+
+func on(b *bool) bool  { return b != nil && *b }
+func off(b *bool) bool { return b != nil && !*b }

@@ -139,14 +139,6 @@ body:
       label: Max tokens
       description: Caps a direct request; unused with a harness.
       value: "28672"
-  - type: checkboxes
-    id: skip_metrics
-    attributes:
-      label: Leave out metrics
-      options:
-        - label: runtime
-        - label: gpu
-        - label: host
   - type: textarea
     id: override
     attributes:

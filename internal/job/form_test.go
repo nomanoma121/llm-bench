@@ -31,7 +31,7 @@ func form(fields ...string) string {
 	values := map[string]string{
 		"Model":              "Flash-Next UD-Q4_K_XL",
 		"Runtime":            "llamacpp",
-		"GPUs":               "GPU 0 · RTX 3060 12GB, GPU 1 · RTX 3060 12GB",
+		"GPUs":               "GPU 1 · RTX 3060 12GB, GPU 0 · RTX 3060 12GB",
 		"Context":            "64K",
 		"MTP":                "on",
 		"KV cache":           "q8_0",
@@ -42,7 +42,6 @@ func form(fields ...string) string {
 		"Extra harness args": "_No response_",
 		"Reasoning effort":   "low",
 		"Max tokens":         "28672",
-		"Leave out metrics":  "- [ ] runtime\n- [X] gpu\n- [ ] host",
 		"Spec override":      "_No response_",
 		"Notes":              "_No response_",
 	}
@@ -66,7 +65,7 @@ func TestFromIssue(t *testing.T) {
 		!reflect.DeepEqual(r.GPUs, []int{0, 1}) || r.Context != 65536 || !*r.MTP || r.KVCache != "q8_0" || r.ExpertsOnCPU != nil ||
 		!reflect.DeepEqual(r.Args, []string{"-ot", `per_layer_token_embd\.weight=CPU`, "--flag", "a b"}) ||
 		c.Name != "visual" || c.Prompt != "benchmarks/visual/prompt.md" || c.Harness.Name != "opencode" || c.MaxTokens != 0 ||
-		s.Sampling.ReasoningEffort != "low" || *s.Sampling.Seed != 1 || !reflect.DeepEqual(s.Metrics, []string{"runtime", "host"}) {
+		s.Sampling.ReasoningEffort != "low" || *s.Sampling.Seed != 1 {
 		t.Fatalf("unexpected spec %+v %+v", s, c)
 	}
 }
@@ -93,6 +92,13 @@ func TestFormsAvoidNone(t *testing.T) {
 				t.Errorf("%s: option %q", kind, v)
 			}
 		}
+	}
+}
+
+// An empty YAML field comes as an empty fenced block (issue #127).
+func TestFromIssueEmptyOverride(t *testing.T) {
+	if _, err := FromIssue(Benchmark, form("Spec override", "```yaml\n\n```")); err != nil {
+		t.Fatal(err)
 	}
 }
 

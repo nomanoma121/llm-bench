@@ -31,7 +31,6 @@ type Spec struct {
 	Runtime  Runtime   `yaml:"runtime" json:"runtime"`
 	Workload []Case    `yaml:"workload" json:"workload"`
 	Sampling *Sampling `yaml:"sampling,omitempty" json:"sampling,omitempty"`
-	Metrics  []string  `yaml:"metrics,omitempty" json:"metrics,omitempty"`
 	Source   *Source   `yaml:"source,omitempty" json:"source,omitempty"`
 	Budget   *Budget   `yaml:"budget,omitempty" json:"budget,omitempty"`
 }
@@ -82,12 +81,6 @@ type Budget struct {
 	MaxRounds int `yaml:"max_rounds" json:"max_rounds"`
 }
 
-const (
-	MetricRuntime = "runtime"
-	MetricGPU     = "gpu"
-	MetricHost    = "host"
-)
-
 func (c Case) RepeatCount() int {
 	if c.Repeats <= 0 {
 		return 1
@@ -123,15 +116,6 @@ var shardSuffix = regexp.MustCompile(`-\d{5}-of-\d{5}$`)
 func (s Spec) ModelName() string {
 	base := filepath.Base(s.Model)
 	return shardSuffix.ReplaceAllString(strings.TrimSuffix(base, filepath.Ext(base)), "")
-}
-
-func (s Spec) Wants(metric string) bool {
-	for _, m := range s.Metrics {
-		if m == metric {
-			return true
-		}
-	}
-	return false
 }
 
 func Parse(r io.Reader) (Spec, error) {
@@ -197,11 +181,6 @@ func (s Spec) Validate() error {
 			add("sampling.reasoning_effort %q must be none, low, medium or high", s.Sampling.ReasoningEffort)
 		}
 	}
-	for _, m := range s.Metrics {
-		if m != MetricRuntime && m != MetricGPU && m != MetricHost {
-			add("metrics: unknown %q (runtime, gpu, host)", m)
-		}
-	}
 	if s.Kind == Optimize && (s.Source == nil || s.Source.Repo == "") {
 		add("source.repo is required for optimize")
 	}
@@ -255,7 +234,6 @@ sampling:
   temperature: 0
   seed: 1
   reasoning_effort: low
-metrics: [runtime, gpu, host]
 `
 	if kind == Optimize {
 		s += `source:

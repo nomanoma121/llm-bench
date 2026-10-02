@@ -400,27 +400,13 @@ func (r *run) record(caseName string, repeat int, values map[string]float64) {
 	}
 }
 
-// sample polls each requested metric source every SampleInterval until the
-// returned function is called. A requested source that never produced a sample
-// makes the measurement invalid.
+// sample polls every metric source every SampleInterval until the returned
+// function is called. A source the machine cannot provide is left out.
 func (r *run) sample(ctx context.Context) func() {
-	type source struct {
+	sources := []struct {
 		name string
 		poll func(context.Context)
-	}
-	var sources []source
-	if r.cfg.Spec.Wants(job.MetricGPU) {
-		sources = append(sources, source{"gpu", r.sampleGPU})
-	}
-	if r.cfg.Spec.Wants(job.MetricRuntime) {
-		sources = append(sources, source{"runtime", r.sampleRuntime})
-	}
-	if r.cfg.Spec.Wants(job.MetricHost) {
-		sources = append(sources, source{"host", r.sampleHost})
-	}
-	if len(sources) == 0 {
-		return func() {}
-	}
+	}{{"gpu", r.sampleGPU}, {"runtime", r.sampleRuntime}, {"host", r.sampleHost}}
 	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -439,15 +425,11 @@ func (r *run) sample(ctx context.Context) func() {
 			}
 		}
 	}()
-	if r.cfg.Spec.Wants(job.MetricGPU) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			// PCIe throughput is optional: older drivers or a missing dmon
-			// must not invalidate the other GPU metrics.
-			_ = streamPCIe(ctx, r.cfg.SampleInterval, r.recordPCIe)
-		}()
-	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = streamPCIe(ctx, r.cfg.SampleInterval, r.recordPCIe)
+	}()
 	return func() {
 		cancel()
 		wg.Wait()
@@ -455,7 +437,7 @@ func (r *run) sample(ctx context.Context) func() {
 		defer r.mu.Unlock()
 		for _, s := range sources {
 			if !r.hasSourceLocked(s.name) {
-				r.invalid = append(r.invalid, s.name+" metrics were requested but never sampled")
+				r.cfg.Logf("no %s metrics on this machine", s.name)
 			}
 		}
 	}

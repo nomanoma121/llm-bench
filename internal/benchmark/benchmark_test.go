@@ -48,7 +48,6 @@ func TestRunAndCompare(t *testing.T) {
 		Model:    "m/weights.gguf",
 		Runtime:  job.Runtime{Engine: "llamacpp", Port: 18431, ReadyTimeoutSeconds: 20},
 		Workload: []job.Case{{Name: "short", PromptText: "hello", MaxTokens: 3, Repeats: 2}},
-		Metrics:  []string{job.MetricRuntime},
 	}
 	run := func(name string) string {
 		out := filepath.Join(dir, name)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -81,8 +82,15 @@ func (g *fakeGitHub) OpenPullRequest(_ context.Context, head, _, _ string) (int,
 type fakeSandbox struct {
 	*recorder
 	onExec   func(argv []string) sandbox.Output
+	mu       sync.Mutex
 	setupEnv map[string]string
 	deleted  bool
+}
+
+func (s *fakeSandbox) setupToken() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.setupEnv["LLMBENCH_GIT_TOKEN"]
 }
 
 func (s *fakeSandbox) Ensure(_ context.Context, _, engine string) error {
@@ -93,7 +101,9 @@ func (s *fakeSandbox) Delete(context.Context, string) error         { s.add("san
 func (s *fakeSandbox) Exists(context.Context, string) (bool, error) { return !s.deleted, nil }
 func (s *fakeSandbox) Exec(ctx context.Context, _ string, argv []string, env map[string]string) (sandbox.Output, error) {
 	if argv[0] == "sh" {
+		s.mu.Lock()
 		s.setupEnv = env
+		s.mu.Unlock()
 	} else if s.deleted {
 		<-ctx.Done() // an exec into a deleted sandbox never returns on its own
 		return sandbox.Output{}, ctx.Err()
@@ -230,6 +240,31 @@ func TestRecoverPublishesPushedBranch(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in:\n%s", want, got)
 		}
+	}
+}
+
+// A benchmark that outlasts the git token gets the renewed one before it pushes.
+func TestBenchmarkRenewsGitToken(t *testing.T) {
+	c, gh, sb, _, _ := setup(LabelBenchmark)
+	var calls atomic.Int32
+	c.GitToken = func(context.Context) (string, error) {
+		if calls.Add(1) > 2 {
+			return "renewed", nil
+		}
+		return "first", nil
+	}
+	sb.onExec = func([]string) sandbox.Output {
+		for deadline := time.Now().Add(time.Second); sb.setupToken() != "renewed"; time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Error("the renewed token never reached the sandbox")
+				break
+			}
+		}
+		gh.branches["llmbench/2026-09-27-issue1"] = true
+		return sandbox.Output{}
+	}
+	if err := c.Poll(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 

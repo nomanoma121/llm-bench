@@ -1,0 +1,549 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Castle Town in Spring</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #d8e3ec; }
+  canvas { display: block; }
+  #hud {
+    position: fixed; left: 16px; top: 14px; z-index: 10;
+    font: 13px/1.4 system-ui, sans-serif; color: #2b3440;
+    background: rgba(255,255,255,.72); padding: 10px 12px; border-radius: 10px;
+    box-shadow: 0 4px 14px rgba(0,0,0,.12);
+  }
+  #hud h1 { margin: 0 0 6px; font-size: 14px; }
+  #hud button {
+    font: inherit; padding: 6px 10px; border: 0; border-radius: 7px;
+    background: #2b3440; color: #fff; cursor: pointer;
+  }
+  #hud small { display: block; margin-top: 6px; color: #5b6672; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="hud">
+  <h1>Voxel castle town — spring</h1>
+  <button id="toggle">Toggle day / dusk</button>
+  <small>Drag to orbit, scroll to zoom, right-drag to pan. Press <b>D</b> for day/dusk.</small>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+/* ---------- seeded random ---------- */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 7 | t)) | 0;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(1337);
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+const chance = (p) => rand() < p;
+
+/* ---------- palette ---------- */
+const C = {
+  grass: [0x7fa86a, 0x88b071, 0x71985f, 0x83ad68],
+  path: [0xa8a49b, 0xb0aca2, 0x9d998f],
+  sand: [0xc2b8a4, 0xbab09c],
+  stone: [0x9aa0a6, 0x8e9499, 0xa4a9ae],
+  wall: [0xf2eee6, 0xe8e2d6, 0xdcd4c4, 0xefe6d8],
+  wood: [0x6b4a35, 0x5b3f2d, 0x7a5741],
+  roof: [0x414851, 0x4a5259, 0x39414a, 0x5c5145],
+  dark: [0x3a3f45, 0x33383d],
+  pink: [0xf3c2d2, 0xe9a9bd, 0xf7d0dd, 0xd98ba2],
+  green: [0x5f8f57, 0x6b9a62, 0x548249],
+  vermillion: 0xc0453c,
+  gold: 0xd9a441,
+  water: 0x5f8fa8,
+  waterDeep: 0x3f6a82
+};
+
+/* ---------- scene ---------- */
+const scene = new THREE.Scene();
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+
+const camera = new THREE.PerspectiveCamera(48, window.innerWidth / window.innerHeight, 0.1, 500);
+camera.position.set(38, 26, 46);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(4, 4, 14);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.minDistance = 8;
+controls.maxDistance = 160;
+
+const fog = new THREE.Fog(0xd8e3ec, 45, 175);
+scene.fog = fog;
+scene.background = new THREE.Color(0xd8e3ec);
+
+/* ---------- geometry helpers ---------- */
+const solidParts = [];
+const waterParts = [];
+const glowParts = [];
+
+function paint(g, color) {
+  const c = new THREE.Color(color);
+  const n = g.attributes.position.count;
+  const arr = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { arr[i * 3] = c.r; arr[i * 3 + 1] = c.g; arr[i * 3 + 2] = c.b; }
+  g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+  g.deleteAttribute('uv');
+}
+
+function box(w, h, d, x, y, z, color, ry = 0, parts = solidParts) {
+  const g = new THREE.BoxGeometry(w, h, d);
+  if (ry) g.rotateY(ry);
+  g.translate(x, y, z);
+  paint(g, color);
+  parts.push(g);
+}
+
+// gable roof: triangle cross-section in x, extruded along z, base at y
+function gable(w, d, h, x, y, z, color, ry = 0) {
+  const p = [
+    -w / 2, 0, -d / 2, w / 2, 0, -d / 2, 0, h, -d / 2,
+    -w / 2, 0, d / 2, w / 2, 0, d / 2, 0, h, d / 2
+  ];
+  const idx = [0, 2, 1, 3, 4, 5, 0, 3, 5, 0, 5, 2, 1, 2, 5, 1, 5, 4, 0, 1, 4, 0, 4, 3];
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  if (ry) g.rotateY(ry);
+  g.translate(x, y, z);
+  paint(g, color);
+  solidParts.push(g);
+}
+
+/* ---------- terrain ---------- */
+function hillH(x, z) {
+  const d = Math.hypot(x, z);
+  if (d > 10.5) return 0;
+  const t = 1 - d / 10.5;
+  return 4.6 * Math.pow(t, 1.1) + 0.4;
+}
+function baseH(x, z) {
+  return hillH(x, z) + 0.12 * Math.sin(x * 0.31) + 0.12 * Math.cos(z * 0.27) + 0.06 * Math.sin((x + z) * 0.5);
+}
+
+const roads = [
+  { x0: 15, x1: 18, z0: 12, z1: 46 },        // main road
+  { x0: 14, x1: 46, z0: 24, z1: 26.4 },      // cross road
+  { x0: 14, x1: 46, z0: 34, z1: 35.2 },      // narrow alley
+  { x0: 31, x1: 32.2, z0: 14, z1: 46 },      // narrow alley
+  { x0: 20, x1: 27, z0: 28, z1: 33 },        // market square
+  { x0: -24, x1: -16, z0: 18, z1: 26 }       // shrine grounds
+];
+const inRoad = (x, z) => roads.some(r => x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1);
+const isSquare = (x, z) => x >= 20 && x <= 27 && z >= 28 && z <= 33;
+
+for (let x = -30; x <= 48; x++) {
+  for (let z = -30; z <= 48; z++) {
+    const d = Math.hypot(x, z);
+    if (d > 10.5 && d < 14) {
+      // moat: bed + water
+      box(1, 0.4, 1, x + 0.5, -1.0, z + 0.5, C.waterDeep);
+      box(1, 0.62, 1, x + 0.5, -0.29, z + 0.5, pick([C.water, 0x6a99b2]), 0, waterParts);
+      continue;
+    }
+    const h = baseH(x, z);
+    let col;
+    if (d < 10.5) col = pick(C.stone);
+    else if (isSquare(x, z)) col = pick(C.sand);
+    else if (inRoad(x, z)) col = pick(C.path);
+    else col = pick(C.grass);
+    box(1, h + 0.4, 1, x + 0.5, (h - 0.4) / 2, z + 0.5, col);
+  }
+}
+
+/* ---------- castle keep ---------- */
+const keepBase = hillH(0, 0);
+const levels = [
+  { w: 8.5, d: 7.5, h: 3.2, rw: 10.4, rd: 9.4, rh: 1.8 },
+  { w: 6.8, d: 6.0, h: 2.6, rw: 8.4, rd: 7.4, rh: 1.6 },
+  { w: 5.4, d: 4.8, h: 2.2, rw: 6.8, rd: 6.0, rh: 1.4 },
+  { w: 4.0, d: 3.6, h: 1.8, rw: 5.2, rd: 4.6, rh: 1.2 },
+  { w: 2.8, d: 2.4, h: 1.5, rw: 3.8, rd: 3.2, rh: 1.0 }
+];
+let y = keepBase;
+for (const L of levels) {
+  const wallCol = pick(C.wall);
+  box(L.w, L.h, L.d, 0, y + L.h / 2, 0, wallCol);
+  box(L.w + 0.25, 0.35, L.d + 0.25, 0, y + 0.18, 0, pick(C.wood));       // stone/wood base band
+  box(L.w + 0.2, 0.22, L.d + 0.2, 0, y + L.h - 0.11, 0, pick(C.dark));  // top beam
+  // corner posts
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    box(0.28, L.h, 0.28, sx * (L.w / 2 - 0.14), y + L.h / 2, sz * (L.d / 2 - 0.14), pick(C.wood));
+  }
+  // windows
+  const nw = Math.max(2, Math.floor(L.w / 1.6));
+  for (let i = 0; i < nw; i++) {
+    const wx = -L.w / 2 + 0.7 + i * (L.w - 1.4) / Math.max(1, nw - 1);
+    box(0.55, 0.62, 0.08, wx, y + L.h * 0.55, L.d / 2 + 0.05, pick(C.dark));
+    box(0.55, 0.62, 0.08, wx, y + L.h * 0.55, -L.d / 2 - 0.05, pick(C.dark));
+  }
+  // layered roof with eave overhang and ridge
+  gable(L.rw, L.rd, L.rh, 0, y + L.h, 0, pick(C.roof));
+  box(L.rw + 0.5, 0.14, L.rd + 0.5, 0, y + L.h + 0.07, 0, pick(C.dark));
+  box(0.22, 0.22, L.rd * 0.9, 0, y + L.h + L.rh + 0.11, 0, pick(C.dark));
+  y += L.h + L.rh;
+}
+// top ornament (shachihoko)
+box(0.5, 0.5, 0.35, 0, y + 0.35, 0, C.gold);
+box(0.2, 0.35, 0.2, 0.35, y + 0.55, 0, C.gold);
+box(0.2, 0.35, 0.2, -0.35, y + 0.55, 0, C.gold);
+
+// stone courtyard details on the hill top
+for (let i = 0; i < 14; i++) {
+  const a = rand() * Math.PI * 2, r = 5.5 + rand() * 4;
+  const x = Math.cos(a) * r, z = Math.sin(a) * r;
+  if (Math.abs(x) < 5.5 && Math.abs(z) < 5) continue;
+  box(0.8, 0.35, 0.8, x, keepBase + 0.18, z, pick(C.stone));
+}
+
+/* ---------- walls, gate, bridges ---------- */
+for (let a = 0; a < Math.PI * 2; a += 0.055) {
+  const r = 10.2, x = Math.cos(a) * r, z = Math.sin(a) * r;
+  const h = hillH(x, z);
+  box(0.9, 2.2, 0.9, x, h + 1.1, z, pick(C.stone), a);
+  if (Math.floor(a / 0.055) % 3 === 0) box(0.5, 0.45, 0.5, x, h + 2.5, z, pick(C.stone), a);
+}
+
+// main gate (south)
+const gy = hillH(0, 10.2);
+for (const sx of [-1.6, 1.6]) box(1.3, 3.4, 1.3, sx, gy + 1.7, 10.2, pick(C.stone));
+box(4.4, 0.4, 1.4, 0, gy + 3.5, 10.2, pick(C.wood));
+gable(4.6, 1.8, 1.0, 0, gy + 3.9, 10.2, pick(C.roof));
+box(3.2, 2.6, 0.35, 0, gy + 1.4, 10.2, pick(C.wood));
+box(0.3, 2.6, 0.4, -0.8, gy + 1.4, 10.15, pick(C.dark));
+box(0.3, 2.6, 0.4, 0.8, gy + 1.4, 10.15, pick(C.dark));
+
+// bridges (south and east)
+function bridge(alongZ) {
+  for (let i = 0; i < 8; i++) {
+    const t = 10.6 + i * 0.5;
+    if (alongZ) {
+      box(2.6, 0.18, 0.5, 0, 0.28, t, pick(C.wood));
+      for (const sx of [-1.2, 1.2]) box(0.14, 0.55, 0.5, sx, 0.62, t, pick(C.wood));
+    } else {
+      box(0.5, 0.18, 2.6, t, 0.28, 0, pick(C.wood));
+      for (const sz of [-1.2, 1.2]) box(0.5, 0.55, 0.14, t, 0.62, sz, pick(C.wood));
+    }
+  }
+}
+bridge(true);
+bridge(false);
+
+/* ---------- town ---------- */
+const occupied = new Set();
+const key = (x, z) => Math.round(x) + ',' + Math.round(z);
+
+for (let gx = 14; gx <= 46; gx += 3.6) {
+  for (let gz = 14; gz <= 46; gz += 3.6) {
+    if (inRoad(gx, gz) || isSquare(gx, gz)) continue;
+    if (Math.hypot(gx, gz) < 15) continue;
+    if (!chance(0.72)) continue;
+    const warehouse = chance(0.14);
+    const w = warehouse ? 3.8 + rand() * 1.2 : 1.9 + rand() * 1.3;
+    const d = warehouse ? 3.0 + rand() * 1.0 : 1.9 + rand() * 1.3;
+    const h = warehouse ? 2.6 + rand() * 0.8 : 1.3 + rand() * 1.2;
+    const x = gx + rand() * 0.7, z = gz + rand() * 0.7;
+    const ry = chance(0.5) ? 0 : Math.PI / 2;
+    const wallCol = warehouse ? pick([0xc9bfa8, 0xbdb2a0, 0xa9a08c]) : pick(C.wall);
+    const roofCol = chance(0.25) ? pick([0x6a5a44, 0x7b6a4f]) : pick(C.roof);
+
+    box(w, h, d, x, h / 2, z, wallCol, ry);
+    box(w + 0.12, 0.22, d + 0.12, x, h - 0.11, z, pick(C.wood), ry);
+    gable(w + 0.5, d + 0.5, 0.7 + rand() * 0.6, x, h, z, roofCol, ry);
+
+    // door + a window
+    const dx = Math.sin(ry) * (d / 2 + 0.06) * (chance(0.5) ? 1 : -1);
+    const dz = Math.cos(ry) * (d / 2 + 0.06) * (chance(0.5) ? 1 : -1);
+    box(0.6, 0.9, 0.08, x + dx, 0.45, z + dz, pick(C.wood), ry);
+    box(0.45, 0.45, 0.07, x + (w / 2 + 0.05) * Math.cos(ry), h * 0.6, z - (w / 2 + 0.05) * Math.sin(ry), pick(C.dark), ry);
+
+    if (chance(0.3)) box(1.2, 0.12, 0.6, x, 0.06, z + d / 2 + 0.4, pick(C.stone), ry);
+    for (let ox = -2; ox <= 2; ox++) for (let oz = -2; oz <= 2; oz++) occupied.add(key(x + ox, z + oz));
+  }
+}
+
+// market square stalls
+const stallColors = [0xc0453c, 0x4a7fb0, 0xe0a2b6, 0xd9a441, 0x6b9a62];
+for (let i = 0; i < 9; i++) {
+  const x = 20.6 + rand() * 6, z = 28.4 + rand() * 4.4;
+  box(1.4, 0.9, 1.0, x, 0.45, z, pick(C.wood));
+  box(1.7, 0.12, 1.3, x, 1.55, z, pick(stallColors));
+  for (const sx of [-0.7, 0.7]) box(0.1, 0.65, 0.1, x + sx, 1.22, z, pick(C.wood));
+  box(0.7, 0.25, 0.5, x, 1.05, z, pick(stallColors));
+}
+
+/* ---------- shrine ---------- */
+const sx0 = -20, sz0 = 22;
+box(5, 0.3, 5, sx0, 0.15, sz0, pick(C.stone));
+box(3, 2.2, 3, sx0, 1.4, sz0, C.vermillion);
+box(3.2, 0.2, 3.2, sx0, 2.5, sz0, pick(C.dark));
+gable(3.8, 3.8, 1.1, sx0, 2.6, sz0, pick(C.roof));
+box(0.2, 0.35, 0.2, sx0, 3.85, sz0, C.gold);
+box(1.2, 0.15, 1.0, sx0, 0.22, sz0 + 2.6, pick(C.stone)); // steps
+box(0.9, 1.2, 0.1, sx0, 1.2, sz0 + 1.55, C.gold);          // offering box
+
+// torii
+const tx = sx0, tz = sz0 + 6.5;
+for (const px of [-1.5, 1.5]) box(0.35, 3.4, 0.35, tx + px, 1.7, tz, C.vermillion);
+box(4.0, 0.32, 0.45, tx, 3.5, tz, C.vermillion);
+box(3.2, 0.24, 0.35, tx, 2.9, tz, C.vermillion);
+box(0.3, 0.5, 0.3, tx, 3.75, tz, C.dark);
+
+// fence around shrine grounds
+for (let i = 0; i <= 8; i++) {
+  for (const side of [0, 1]) {
+    const fx = side ? sx0 - 6 + i * 1.5 : sx0 - 6;
+    const fz = side ? sz0 - 4 : sz0 - 4 + i * 1.5;
+    if (side && i === 4) continue; // gate opening
+    box(0.16, 1.0, 0.16, fx, 0.5, fz, pick(C.wood));
+  }
+}
+for (let i = 0; i < 7; i++) {
+  box(1.5, 0.12, 0.12, sx0 - 5.25 + i * 1.5, 0.75, sz0 - 4, pick(C.wood));
+  box(0.12, 0.12, 1.5, sx0 - 6, 0.75, sz0 - 3.25 + i * 1.5, pick(C.wood));
+}
+
+/* ---------- lanterns ---------- */
+const lanternSpots = [
+  [sx0 - 3.5, sz0 - 2.5], [sx0 + 3.5, sz0 - 2.5], [sx0 - 3.5, sz0 + 5], [sx0 + 3.5, sz0 + 5],
+  [14.2, 16], [19.2, 18], [14.2, 22], [19.2, 30], [14.2, 38], [33.5, 26.8]
+];
+const lanternLights = [];
+for (let i = 0; i < lanternSpots.length; i++) {
+  const [lx, lz] = lanternSpots[i];
+  const ly = baseH(lx, lz);
+  box(0.55, 0.22, 0.55, lx, ly + 0.11, lz, pick(C.stone));
+  box(0.24, 0.7, 0.24, lx, ly + 0.57, lz, pick(C.stone));
+  box(0.5, 0.42, 0.5, lx, ly + 1.13, lz, 0xf6e3b8, 0, glowParts);
+  gable(0.7, 0.7, 0.3, lx, ly + 1.34, lz, pick(C.stone));
+  box(0.12, 0.18, 0.12, lx, ly + 1.68, lz, pick(C.stone));
+  if (i < 4) {
+    const pl = new THREE.PointLight(0xffb060, 0, 12, 2);
+    pl.position.set(lx, ly + 1.2, lz);
+    scene.add(pl);
+    lanternLights.push(pl);
+  }
+}
+
+/* ---------- trees (instanced) ---------- */
+const trees = [];
+for (let a = 0; a < Math.PI * 2; a += 0.15) {
+  if (!chance(0.6)) continue;
+  const r = 15 + rand() * 2.6, x = Math.cos(a) * r, z = Math.sin(a) * r;
+  if (Math.abs(x) < 2.4 && z > 10) continue;
+  if (Math.abs(z) < 2.4 && x > 10) continue;
+  if (occupied.has(key(x, z))) continue;
+  trees.push({ x, z, cherry: true });
+}
+for (let z = 15; z < 46; z += 3.1) {
+  for (const side of [-1, 1]) {
+    if (!chance(0.45)) continue;
+    const x = side < 0 ? 13.3 + rand() * 0.5 : 19.3 + rand() * 0.5;
+    if (occupied.has(key(x, z))) continue;
+    trees.push({ x, z: z + rand() * 1.2, cherry: true });
+  }
+}
+for (let i = 0; i < 45; i++) {
+  const x = -28 + rand() * 76, z = -28 + rand() * 76;
+  if (Math.hypot(x, z) < 15 || inRoad(x, z) || occupied.has(key(x, z))) continue;
+  if (!chance(0.55)) continue;
+  trees.push({ x, z, cherry: chance(0.35) });
+}
+
+const trunkGeo = new THREE.BoxGeometry(0.26, 2.2, 0.26);
+const foliageGeo = new THREE.IcosahedronGeometry(1, 0);
+const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b4a35, flatShading: true, roughness: 0.9 });
+const foliageMat = new THREE.MeshStandardMaterial({ flatShading: true, roughness: 0.85 });
+
+const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, trees.length);
+trunkMesh.castShadow = true;
+trunkMesh.receiveShadow = true;
+
+let blobCount = 0;
+const blobs = [];
+for (const t of trees) {
+  const ty = baseH(t.x, t.z);
+  const th = 1.8 + rand() * 1.2;
+  t.y = ty; t.th = th;
+  const n = t.cherry ? 3 + Math.floor(rand() * 3) : 2 + Math.floor(rand() * 2);
+  for (let i = 0; i < n; i++) {
+    const r = (t.cherry ? 0.75 : 0.85) + rand() * 0.55;
+    blobs.push({
+      x: t.x + (rand() - 0.5) * 1.4,
+      y: ty + th + 0.5 + rand() * 1.1,
+      z: t.z + (rand() - 0.5) * 1.4,
+      r,
+      cherry: t.cherry
+    });
+  }
+  blobCount += n;
+}
+const foliageMesh = new THREE.InstancedMesh(foliageGeo, foliageMat, blobCount);
+foliageMesh.castShadow = true;
+foliageMesh.receiveShadow = true;
+
+const m = new THREE.Matrix4();
+trees.forEach((t, i) => {
+  m.makeScale(1, t.th / 2.2, 1);
+  m.setPosition(t.x, t.y + t.th / 2, t.z);
+  trunkMesh.setMatrixAt(i, m);
+});
+blobs.forEach((b, i) => {
+  m.makeScale(b.r, b.r * 0.85, b.r);
+  m.setPosition(b.x, b.y, b.z);
+  foliageMesh.setMatrixAt(i, m);
+  foliageMesh.setColorAt(i, new THREE.Color(b.cherry ? pick(C.pink) : pick(C.green)));
+});
+trunkMesh.instanceMatrix.needsUpdate = true;
+foliageMesh.instanceMatrix.needsUpdate = true;
+if (foliageMesh.instanceColor) foliageMesh.instanceColor.needsUpdate = true;
+scene.add(trunkMesh, foliageMesh);
+
+/* ---------- drifting petals ---------- */
+const cherryTrees = trees.filter(t => t.cherry);
+const petalCount = 420;
+const petalPos = new Float32Array(petalCount * 3);
+const petalVel = new Float32Array(petalCount * 3);
+for (let i = 0; i < petalCount; i++) {
+  const t = cherryTrees[Math.floor(rand() * cherryTrees.length)];
+  petalPos[i * 3] = t.x + (rand() - 0.5) * 2.2;
+  petalPos[i * 3 + 1] = t.y + t.th + 0.5 + rand() * 2.2;
+  petalPos[i * 3 + 2] = t.z + (rand() - 0.5) * 2.2;
+  petalVel[i * 3] = (rand() - 0.5) * 0.25;
+  petalVel[i * 3 + 1] = -(0.15 + rand() * 0.25);
+  petalVel[i * 3 + 2] = (rand() - 0.5) * 0.25;
+}
+const petalGeo = new THREE.BufferGeometry();
+petalGeo.setAttribute('position', new THREE.BufferAttribute(petalPos, 3));
+const petalMat = new THREE.PointsMaterial({ color: 0xf7c8d8, size: 0.16, sizeAttenuation: true, transparent: true, opacity: 0.9 });
+const petals = new THREE.Points(petalGeo, petalMat);
+scene.add(petals);
+
+/* ---------- merged meshes ---------- */
+const solidMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.85, metalness: 0.05 });
+const solidMesh = new THREE.Mesh(mergeGeometries(solidParts), solidMat);
+solidMesh.castShadow = true;
+solidMesh.receiveShadow = true;
+scene.add(solidMesh);
+
+const waterMat = new THREE.MeshStandardMaterial({
+  vertexColors: true, flatShading: true, transparent: true, opacity: 0.72, roughness: 0.12, metalness: 0.25
+});
+const waterMesh = new THREE.Mesh(mergeGeometries(waterParts), waterMat);
+waterMesh.receiveShadow = true;
+scene.add(waterMesh);
+
+const glowMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, emissive: 0xffb060, emissiveIntensity: 0.25, roughness: 0.6 });
+const glowMesh = new THREE.Mesh(mergeGeometries(glowParts), glowMat);
+scene.add(glowMesh);
+
+/* ---------- lighting ---------- */
+const sun = new THREE.DirectionalLight(0xfff1dd, 1.7);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -60; sun.shadow.camera.right = 60;
+sun.shadow.camera.top = 60; sun.shadow.camera.bottom = -60;
+sun.shadow.camera.far = 220;
+sun.shadow.bias = -0.0006;
+scene.add(sun, sun.target);
+
+const hemi = new THREE.HemisphereLight(0xc3d9ea, 0x7c8a6d, 0.75);
+scene.add(hemi);
+const ambient = new THREE.AmbientLight(0xffffff, 0.12);
+scene.add(ambient);
+
+let dusk = false;
+function setLighting() {
+  if (!dusk) {
+    sun.position.set(42, 62, 30);
+    sun.color.set(0xfff1dd);
+    sun.intensity = 1.7;
+    hemi.color.set(0xc3d9ea);
+    hemi.groundColor.set(0x7c8a6d);
+    hemi.intensity = 0.75;
+    ambient.intensity = 0.12;
+    fog.color.set(0xd8e3ec);
+    fog.near = 45; fog.far = 175;
+    scene.background.set(0xd8e3ec);
+    glowMat.emissiveIntensity = 0.25;
+    lanternLights.forEach(l => { l.intensity = 0; });
+    petalMat.opacity = 0.9;
+  } else {
+    sun.position.set(-48, 16, 24);
+    sun.color.set(0xff9a5a);
+    sun.intensity = 1.15;
+    hemi.color.set(0x5a6f93);
+    hemi.groundColor.set(0x3f4a44);
+    hemi.intensity = 0.38;
+    ambient.intensity = 0.18;
+    fog.color.set(0x6f7390);
+    fog.near = 35; fog.far = 150;
+    scene.background.set(0x70758f);
+    glowMat.emissiveIntensity = 1.1;
+    lanternLights.forEach(l => { l.intensity = 1.6; });
+    petalMat.opacity = 0.7;
+  }
+}
+setLighting();
+
+const toggle = document.getElementById('toggle');
+toggle.addEventListener('click', () => { dusk = !dusk; setLighting(); });
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'd' || e.key === 'D') { dusk = !dusk; setLighting(); }
+});
+
+/* ---------- resize + loop ---------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+const clock = new THREE.Clock();
+function animate() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  for (let i = 0; i < petalCount; i++) {
+    petalPos[i * 3] += petalVel[i * 3] * dt;
+    petalPos[i * 3 + 1] += petalVel[i * 3 + 1] * dt;
+    petalPos[i * 3 + 2] += petalVel[i * 3 + 2] * dt;
+    if (petalPos[i * 3 + 1] < 0.15) {
+      const t = cherryTrees[Math.floor(rand() * cherryTrees.length)];
+      petalPos[i * 3] = t.x + (rand() - 0.5) * 2.2;
+      petalPos[i * 3 + 1] = t.y + t.th + 1.5 + rand() * 1.5;
+      petalPos[i * 3 + 2] = t.z + (rand() - 0.5) * 2.2;
+    }
+  }
+  petalGeo.attributes.position.needsUpdate = true;
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+animate();
+</script>
+</body>
+</html>
+```

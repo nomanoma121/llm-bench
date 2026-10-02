@@ -19,6 +19,9 @@ type OpenCode struct {
 	URL      string
 	Username string
 	Password string
+	// Model is provider/model, e.g. opencode-go/deepseek-v4-flash; empty uses
+	// the server's default.
+	Model string
 	// Poll is how often a running session is checked.
 	Poll   time.Duration
 	Client *http.Client
@@ -39,6 +42,9 @@ func (o *OpenCode) Run(ctx context.Context, task string, onSession func(string))
 	}
 	onSession(session.ID)
 	prompt := map[string]any{"parts": []map[string]string{{"type": "text", "text": task}}}
+	if provider, model, ok := strings.Cut(o.Model, "/"); ok {
+		prompt["model"] = map[string]string{"providerID": provider, "modelID": model}
+	}
 	if err := o.call(ctx, http.MethodPost, "/session/"+session.ID+"/prompt_async", prompt, nil); err != nil {
 		return "", err
 	}

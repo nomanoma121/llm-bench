@@ -48,6 +48,8 @@ config:
   agent:
     url: ""
     username: opencode
+    # provider/model for optimize sessions; empty uses the server's default
+    model: ""
   poll_interval_seconds: 15
   pause_timeout_minutes: 30
 

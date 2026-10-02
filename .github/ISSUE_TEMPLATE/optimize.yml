@@ -120,19 +120,6 @@ body:
     attributes:
       label: Extra harness args
       description: Passed to the harness before the task.
-  - type: dropdown
-    id: effort
-    attributes:
-      label: Reasoning effort
-      options:
-        - default
-        - no thinking
-        - low
-        - medium
-        - high
-      default: 2
-    validations:
-      required: true
   - type: input
     id: max_tokens
     attributes:

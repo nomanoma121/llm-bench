@@ -233,7 +233,6 @@ workload:
 sampling:
   temperature: 0
   seed: 1
-  reasoning_effort: low
 `
 	if kind == Optimize {
 		s += `source:

@@ -72,6 +72,7 @@ type fieldAttributes struct {
 	Label       string `yaml:"label"`
 	Description string `yaml:"description,omitempty"`
 	Options     []any  `yaml:"options,omitempty"`
+	Multiple    bool   `yaml:"multiple,omitempty"`
 	Default     *int   `yaml:"default,omitempty"`
 	Value       string `yaml:"value,omitempty"`
 	Render      string `yaml:"render,omitempty"`
@@ -112,6 +113,10 @@ func Form(kind Kind, benchmarks []string) ([]byte, error) {
 		}
 		return f
 	}
+	multiple := func(f formField) formField {
+		f.Attributes.Multiple = true
+		return f
+	}
 	input := func(id, label, description, value string) formField {
 		return formField{Type: "input", ID: id, Attributes: fieldAttributes{Label: label, Description: description, Value: value}}
 	}
@@ -120,8 +125,8 @@ func Form(kind Kind, benchmarks []string) ([]byte, error) {
 		models = append(models, m.Name)
 	}
 	var gpus []string
-	for n := 1; n <= runtime.MaxGPUs; n++ {
-		gpus = append(gpus, strconv.Itoa(n))
+	for _, g := range runtime.NodeGPUs {
+		gpus = append(gpus, g.String())
 	}
 	// Form checkboxes start unchecked, so they name what to leave out.
 	skip := formField{Type: "checkboxes", ID: "skip_metrics", Attributes: fieldAttributes{Label: fieldSkip}}
@@ -132,7 +137,7 @@ func Form(kind Kind, benchmarks []string) ([]byte, error) {
 	body := []formField{
 		dropdown("model", fieldModel, "", models, ""),
 		dropdown("runtime", fieldRuntime, "", runtime.Engines, ""),
-		dropdown("gpus", fieldGPUs, "", gpus, ""),
+		multiple(dropdown("gpus", fieldGPUs, "", gpus, "")),
 		dropdown("context", fieldContext, "", contexts, "32K"),
 		dropdown("mtp", fieldMTP, "Speculative decoding with the model's multi-token prediction head.", toggles, ""),
 		dropdown("kv_cache", fieldKVCache, "", append([]string{optDefault}, runtime.KVCacheTypes...), ""),
@@ -211,7 +216,17 @@ func FromIssue(kind Kind, body string) (Spec, error) {
 	} else if s.Model, ok = m.Files[s.Runtime.Engine]; !ok {
 		fail(fieldModel, "%s has no files for %s", m.Name, s.Runtime.Engine)
 	}
-	s.Runtime.GPUs = number(fieldGPUs)
+	for _, name := range strings.Split(f[fieldGPUs], ", ") {
+		if name == "" {
+			continue
+		}
+		i := slices.IndexFunc(runtime.NodeGPUs, func(g runtime.GPU) bool { return g.String() == name })
+		if i < 0 {
+			fail(fieldGPUs, "unknown %q", name)
+			continue
+		}
+		s.Runtime.GPUs = append(s.Runtime.GPUs, runtime.NodeGPUs[i].Index)
+	}
 	if c := f[fieldContext]; c != "" && c != optDefault {
 		k, err := strconv.Atoi(strings.TrimSuffix(c, "K"))
 		if err != nil {

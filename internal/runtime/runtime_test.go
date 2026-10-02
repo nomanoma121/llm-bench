@@ -143,15 +143,15 @@ strata serve: 478 MiB of VRAM free with everything loaded
 
 func TestSettings(t *testing.T) {
 	yes, no := true, false
-	all := Settings{GPUs: 2, Context: 65536, MTP: &yes, KVCache: "q8_0", ExpertsOnCPU: &yes}
+	all := Settings{GPUs: []int{0, 1}, Context: 65536, MTP: &yes, KVCache: "q8_0", ExpertsOnCPU: &yes}
 	for _, tc := range []struct {
 		engine string
 		s      Settings
 		want   string
 	}{
 		{"llamacpp", all, "--device CUDA0,CUDA1 --ctx-size 65536 --cache-type-k q8_0 --cache-type-v q8_0 --spec-type draft-mtp --cpu-moe --x"},
-		{"freetoken", Settings{GPUs: 2, Context: 8192, ExpertsOnCPU: &no}, "--tp-size 2 --gpu 0,1 --max-seq-len-override 8192 --moe-strategy fused --x"},
-		{"strata", Settings{GPUs: 1, MTP: &yes}, "--gpu 0 --x"},
+		{"freetoken", Settings{GPUs: []int{1, 0}, Context: 8192, ExpertsOnCPU: &no}, "--tp-size 2 --gpu 1,0 --max-seq-len-override 8192 --moe-strategy fused --x"},
+		{"strata", Settings{GPUs: []int{1}, MTP: &yes}, "--gpu 1 --x"},
 	} {
 		a, err := New(tc.engine, Options{Settings: tc.s, Args: []string{"--x"}})
 		if err != nil {
@@ -162,17 +162,31 @@ func TestSettings(t *testing.T) {
 			t.Errorf("%s: %s", tc.engine, got)
 		}
 	}
-	for engine, s := range map[string]Settings{
-		"freetoken": {MTP: &yes},
-		"strata":    {MTP: &no},
-		"llamacpp":  {GPUs: 3},
+	for _, tc := range []struct {
+		engine string
+		s      Settings
+	}{
+		{"freetoken", Settings{MTP: &yes}},
+		{"strata", Settings{MTP: &no}},
+		{"strata", Settings{KVCache: "q4_0"}},
+		{"llamacpp", Settings{GPUs: []int{2}}},
+		{"llamacpp", Settings{GPUs: []int{0, 0}}},
 	} {
-		if _, err := New(engine, Options{Settings: s}); err == nil {
-			t.Errorf("%s accepted %+v", engine, s)
+		if _, err := New(tc.engine, Options{Settings: tc.s}); err == nil {
+			t.Errorf("%s accepted %+v", tc.engine, tc.s)
 		}
 	}
-	if _, err := New("strata", Options{Settings: Settings{KVCache: "q4_0"}}); err == nil {
-		t.Error("strata accepted kv_cache q4_0")
+}
+
+// Every listed engine can be made, and nothing else.
+func TestEngines(t *testing.T) {
+	for _, e := range Engines {
+		if _, err := New(e, Options{}); err != nil {
+			t.Error(err)
+		}
+	}
+	if _, err := New("nope", Options{}); err == nil {
+		t.Error("an unknown engine was accepted")
 	}
 }
 

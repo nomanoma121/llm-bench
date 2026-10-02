@@ -33,8 +33,9 @@ body:
     attributes:
       label: GPUs
       options:
-        - "1"
-        - "2"
+        - GPU 0 · RTX 3060 12GB
+        - GPU 1 · RTX 3060 12GB
+      multiple: true
       default: 0
     validations:
       required: true

@@ -57,7 +57,7 @@ func (a strata) settingArgs() ([]string, error) {
 	if _, ok := strataKV[s.KVCache]; s.KVCache != "" && !ok {
 		return nil, unsupported("strata", "kv_cache "+s.KVCache)
 	}
-	if s.GPUs > 0 {
+	if len(s.GPUs) > 0 {
 		return []string{"--gpu", devices(s.GPUs, "")}, nil
 	}
 	return nil, nil

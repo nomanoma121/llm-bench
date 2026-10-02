@@ -32,7 +32,7 @@ func (a llamaCpp) Argv() []string {
 func (a llamaCpp) settingArgs() ([]string, error) {
 	s := a.opts.Settings
 	var args []string
-	if s.GPUs > 0 {
+	if len(s.GPUs) > 0 {
 		args = append(args, "--device", devices(s.GPUs, "CUDA"))
 	}
 	if s.Context > 0 {

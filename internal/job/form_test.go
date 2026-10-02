@@ -31,7 +31,7 @@ func form(fields ...string) string {
 	values := map[string]string{
 		"Model":              "Flash-Next UD-Q4_K_XL",
 		"Runtime":            "llamacpp",
-		"GPUs":               "2",
+		"GPUs":               "GPU 0 · RTX 3060 12GB, GPU 1 · RTX 3060 12GB",
 		"Context":            "64K",
 		"MTP":                "on",
 		"KV cache":           "q8_0",
@@ -63,7 +63,7 @@ func TestFromIssue(t *testing.T) {
 	}
 	r, c := s.Runtime, s.Workload[0]
 	if s.Model != "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf" || r.Engine != "llamacpp" ||
-		r.GPUs != 2 || r.Context != 65536 || !*r.MTP || r.KVCache != "q8_0" || r.ExpertsOnCPU != nil ||
+		!reflect.DeepEqual(r.GPUs, []int{0, 1}) || r.Context != 65536 || !*r.MTP || r.KVCache != "q8_0" || r.ExpertsOnCPU != nil ||
 		!reflect.DeepEqual(r.Args, []string{"-ot", `per_layer_token_embd\.weight=CPU`, "--flag", "a b"}) ||
 		c.Name != "visual" || c.Prompt != "benchmarks/visual/prompt.md" || c.Harness.Name != "opencode" || c.MaxTokens != 0 ||
 		s.Sampling.ReasoningEffort != "low" || *s.Sampling.Seed != 1 || !reflect.DeepEqual(s.Metrics, []string{"runtime", "host"}) {
@@ -78,7 +78,7 @@ func TestFromIssueOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Runtime.Context != 4096 || s.Runtime.GPUs != 2 || *s.Sampling.Seed != 7 || s.Sampling.ReasoningEffort != "low" ||
+	if s.Runtime.Context != 4096 || len(s.Runtime.GPUs) != 2 || *s.Sampling.Seed != 7 || s.Sampling.ReasoningEffort != "low" ||
 		s.Source.Repo != "ggml-org/llama.cpp" || s.Budget.MaxRounds != 5 {
 		t.Fatalf("unexpected spec %+v %+v", s, s.Sampling)
 	}
@@ -87,6 +87,7 @@ func TestFromIssueOverride(t *testing.T) {
 func TestFromIssueRejects(t *testing.T) {
 	for name, body := range map[string]string{
 		"unknown model":       form("Model", "nope"),
+		"unknown gpu":         form("GPUs", "GPU 7 · H100"),
 		"model not on engine": form("Model", "Flash-Next IQ2_XS"),
 		"bad number":          form("Harness", "none", "Max tokens", "many"),
 		"unsupported setting": form("Model", "Flash-Next IQ2_XS", "Runtime", "strata", "MTP", "off"),

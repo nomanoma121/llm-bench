@@ -28,10 +28,10 @@ func (a freeToken) Argv() []string {
 func (a freeToken) settingArgs() ([]string, error) {
 	s := a.opts.Settings
 	var args []string
-	if s.GPUs > 1 {
-		args = append(args, "--tp-size", strconv.Itoa(s.GPUs))
+	if len(s.GPUs) > 1 {
+		args = append(args, "--tp-size", strconv.Itoa(len(s.GPUs)))
 	}
-	if s.GPUs > 0 {
+	if len(s.GPUs) > 0 {
 		args = append(args, "--gpu", devices(s.GPUs, ""))
 	}
 	if s.Context > 0 {

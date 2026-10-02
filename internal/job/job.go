@@ -237,7 +237,7 @@ func Template(kind Kind) string {
 model: Qwen3.8-27B/Qwen3.8-27B-Q4_0.gguf
 runtime:
   engine: llamacpp      # or strata, freetoken
-  gpus: 1
+  gpus: [0]             # indices of the node's GPUs, as nvidia-smi numbers them
   context: 32768
   # mtp: true
   # kv_cache: q8_0      # f16, q8_0, q4_0

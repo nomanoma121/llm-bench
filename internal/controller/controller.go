@@ -148,7 +148,11 @@ func (c *Controller) recover(ctx context.Context) error {
 }
 
 func (c *Controller) newJob(issue github.Issue) (Job, error) {
-	spec, err := job.FromIssueBody(issue.Body)
+	kind := job.Benchmark
+	if issue.Has(LabelOptimize) {
+		kind = job.Optimize
+	}
+	spec, err := job.FromIssue(kind, issue.Body)
 	if err != nil {
 		return Job{}, err
 	}

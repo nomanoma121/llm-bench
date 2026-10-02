@@ -1,0 +1,246 @@
+package job
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/nomanoma121/llm-bench/internal/harness"
+)
+
+// The issue body GitHub writes for a form has a "### <label>" section per
+// field, so these labels are what FromIssue reads.
+const (
+	fieldPreset    = "Preset"
+	fieldBenchmark = "Benchmark"
+	fieldHarness   = "Harness"
+	fieldEffort    = "Reasoning effort"
+	fieldMaxTokens = "Max tokens"
+	fieldRepeats   = "Repeats"
+	fieldSkip      = "Leave out metrics"
+	fieldArgs      = "Extra runtime args"
+	fieldRepo      = "Source repository"
+	fieldRef       = "Source ref"
+	fieldMaxRounds = "Max rounds"
+	fieldOverride  = "Spec override"
+	fieldNotes     = "Notes"
+
+	noHarness     = "none"
+	defaultEffort = "default"
+	noResponse    = "_No response_"
+)
+
+var allMetrics = []string{MetricRuntime, MetricGPU, MetricHost}
+
+var efforts = []string{defaultEffort, "none", "low", "medium", "high"}
+
+type issueForm struct {
+	Name        string      `yaml:"name"`
+	Description string      `yaml:"description"`
+	Title       string      `yaml:"title"`
+	Labels      []string    `yaml:"labels"`
+	Body        []formField `yaml:"body"`
+}
+
+type formField struct {
+	Type        string          `yaml:"type"`
+	ID          string          `yaml:"id"`
+	Attributes  fieldAttributes `yaml:"attributes"`
+	Validations *validations    `yaml:"validations,omitempty"`
+}
+
+type fieldAttributes struct {
+	Label       string `yaml:"label"`
+	Description string `yaml:"description,omitempty"`
+	Options     []any  `yaml:"options,omitempty"`
+	Default     *int   `yaml:"default,omitempty"`
+	Value       string `yaml:"value,omitempty"`
+	Render      string `yaml:"render,omitempty"`
+}
+
+type validations struct {
+	Required bool `yaml:"required"`
+}
+
+type checkbox struct {
+	Label string `yaml:"label"`
+}
+
+// Benchmarks lists the directories under dir that hold a prompt.md.
+func Benchmarks(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, e := range entries {
+		if _, err := os.Stat(filepath.Join(dir, e.Name(), "prompt.md")); e.IsDir() && err == nil {
+			names = append(names, e.Name())
+		}
+	}
+	return names, nil
+}
+
+// Form is the GitHub issue form for kind.
+func Form(kind Kind, benchmarks []string) ([]byte, error) {
+	required := &validations{Required: true}
+	dropdown := func(id, label, description string, options []string, def int) formField {
+		f := formField{Type: "dropdown", ID: id, Validations: required,
+			Attributes: fieldAttributes{Label: label, Description: description, Default: &def}}
+		for _, o := range options {
+			f.Attributes.Options = append(f.Attributes.Options, o)
+		}
+		return f
+	}
+	input := func(id, label, description, value string) formField {
+		return formField{Type: "input", ID: id, Attributes: fieldAttributes{Label: label, Description: description, Value: value}}
+	}
+	var presets []string
+	for _, p := range Presets {
+		presets = append(presets, p.Name)
+	}
+	// Form checkboxes start unchecked, so they name what to leave out.
+	metrics := formField{Type: "checkboxes", ID: "skip_metrics", Attributes: fieldAttributes{Label: fieldSkip}}
+	for _, m := range allMetrics {
+		metrics.Attributes.Options = append(metrics.Attributes.Options, checkbox{m})
+	}
+
+	body := []formField{
+		dropdown("preset", fieldPreset, "Model, runtime and arguments known to run on the GPU node.", presets, 0),
+		dropdown("benchmark", fieldBenchmark, "A directory under benchmarks/.", benchmarks, max(slices.Index(benchmarks, "visual"), 0)),
+		dropdown("harness", fieldHarness, "Run the prompt through a coding agent instead of a direct request.", append([]string{noHarness}, harness.Names...), 0),
+		dropdown("effort", fieldEffort, "", efforts, slices.Index(efforts, "low")),
+		input("max_tokens", fieldMaxTokens, "Caps a direct request; unused with a harness.", "28672"),
+		input("repeats", fieldRepeats, "", "1"),
+		metrics,
+		input("args", fieldArgs, "Appended to the preset's runtime arguments, split on spaces.", ""),
+	}
+	f := issueForm{Name: "Benchmark", Description: "Measure a model and runtime once and open a PR with the result",
+		Title: "[benchmark] ", Labels: []string{"llmbench:benchmark"}}
+	if kind == Optimize {
+		f = issueForm{Name: "Optimize", Description: "Let the agent optimize a runtime on the GPU sandbox and open a PR",
+			Title: "[optimize] ", Labels: []string{"llmbench:optimize"}}
+		body = append(body,
+			input("repo", fieldRepo, "", "ggml-org/llama.cpp"),
+			input("ref", fieldRef, "", "master"),
+			input("max_rounds", fieldMaxRounds, "", "20"))
+	}
+	f.Body = append(body,
+		formField{Type: "textarea", ID: "override", Attributes: fieldAttributes{Label: fieldOverride, Render: "yaml",
+			Description: "Job spec YAML laid over what the fields above build. Check it locally with `llmbench job validate`."}},
+		formField{Type: "textarea", ID: "notes", Attributes: fieldAttributes{Label: fieldNotes}})
+
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "# Generated by `llmbench job form %s > .github/ISSUE_TEMPLATE/%s.yml`.\n", kind, kind)
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(f); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), enc.Close()
+}
+
+// FromIssue builds a spec from the body GitHub writes for an issue form.
+func FromIssue(kind Kind, body string) (Spec, error) {
+	f := sections(body)
+	var errs []error
+	number := func(field string) int {
+		if f[field] == "" {
+			return 0
+		}
+		n, err := strconv.Atoi(f[field])
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %q is not a number", field, f[field]))
+		}
+		return n
+	}
+
+	s := Spec{Kind: kind, Sampling: &Sampling{Temperature: new(float64), Seed: new(int64)}}
+	*s.Sampling.Seed = 1
+	p, ok := presetNamed(f[fieldPreset])
+	if !ok {
+		errs = append(errs, fmt.Errorf("%s: unknown %q", fieldPreset, f[fieldPreset]))
+	}
+	s.Model = p.Model
+	s.Runtime = Runtime{Engine: p.Engine, Args: append(slices.Clone(p.Args), strings.Fields(f[fieldArgs])...)}
+
+	c := Case{Name: f[fieldBenchmark], Prompt: "benchmarks/" + f[fieldBenchmark] + "/prompt.md", Repeats: number(fieldRepeats)}
+	if h := f[fieldHarness]; h != "" && h != noHarness {
+		c.Harness = &Harness{Name: h}
+	} else {
+		c.MaxTokens = number(fieldMaxTokens)
+	}
+	s.Workload = []Case{c}
+	if e := f[fieldEffort]; e != defaultEffort {
+		s.Sampling.ReasoningEffort = e
+	}
+	skipped := map[string]bool{}
+	for _, line := range strings.Split(f[fieldSkip], "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "- [x] ") || strings.HasPrefix(line, "- [X] ") {
+			skipped[line[len("- [x] "):]] = true
+		}
+	}
+	for _, m := range allMetrics {
+		if !skipped[m] {
+			s.Metrics = append(s.Metrics, m)
+		}
+	}
+	if kind == Optimize {
+		s.Source = &Source{Repo: f[fieldRepo], Ref: f[fieldRef]}
+		s.Budget = &Budget{MaxRounds: number(fieldMaxRounds)}
+	}
+	if len(errs) > 0 {
+		return Spec{}, fmt.Errorf("%w: %w", ErrInvalid, errors.Join(errs...))
+	}
+
+	if o := f[fieldOverride]; o != "" {
+		if block, ok := yamlBlock(o); ok {
+			o = block
+		}
+		dec := yaml.NewDecoder(strings.NewReader(o))
+		dec.KnownFields(true)
+		if err := dec.Decode(&s); err != nil {
+			return Spec{}, fmt.Errorf("%w: %s: %w", ErrInvalid, fieldOverride, err)
+		}
+	}
+	return s, s.Validate()
+}
+
+// sections maps each "### <label>" heading outside code blocks to the text
+// under it.
+func sections(body string) map[string]string {
+	out := map[string]string{}
+	var label string
+	var lines []string
+	flush := func() {
+		if label != "" {
+			v := strings.TrimSpace(strings.Join(lines, "\n"))
+			if v == noResponse {
+				v = ""
+			}
+			out[label] = v
+		}
+	}
+	fenced := false
+	for _, line := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			fenced = !fenced
+		}
+		if h, ok := strings.CutPrefix(line, "### "); ok && !fenced {
+			flush()
+			label, lines = strings.TrimSpace(h), nil
+			continue
+		}
+		lines = append(lines, line)
+	}
+	flush()
+	return out
+}

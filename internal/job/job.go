@@ -149,14 +149,6 @@ func Load(path string) (Spec, error) {
 	return Parse(f)
 }
 
-func FromIssueBody(body string) (Spec, error) {
-	block, ok := yamlBlock(body)
-	if !ok {
-		return Spec{}, fmt.Errorf("%w: no ```yaml block in the issue body", ErrInvalid)
-	}
-	return Parse(strings.NewReader(block))
-}
-
 func (s Spec) Validate() error {
 	var errs []error
 	add := func(format string, args ...any) { errs = append(errs, fmt.Errorf(format, args...)) }

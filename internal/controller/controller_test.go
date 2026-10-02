@@ -119,7 +119,7 @@ func (g *fakeGitOps) Restore(context.Context, string) (bool, error) {
 	return true, nil
 }
 
-const benchmarkIssue = "```yaml\nkind: benchmark\nmodel: m\nruntime: {engine: llamacpp}\nworkload: [{name: a, prompt_text: hi, max_tokens: 8}]\n```"
+const benchmarkIssue = "### Preset\n\nllama.cpp · Qwen3.8-27B Q4_0\n\n### Benchmark\n\nvisual\n\n### Max tokens\n\n8"
 
 func setup(labels ...string) (*Controller, *fakeGitHub, *fakeSandbox, *fakeGitOps, *recorder) {
 	rec := &recorder{}
@@ -235,7 +235,7 @@ func TestRecoverPublishesPushedBranch(t *testing.T) {
 
 func TestRejectsInvalidSpec(t *testing.T) {
 	c, gh, _, _, rec := setup(LabelBenchmark)
-	gh.issues[1].Body = strings.Replace(benchmarkIssue, "model: m", "model: ../m", 1)
+	gh.issues[1].Body = strings.Replace(benchmarkIssue, "### Max tokens\n\n8", "### Max tokens\n\nmany", 1)
 	if err := c.Poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +254,7 @@ func (h fakeAgent) Run(_ context.Context, task string, onSession func(string)) (
 
 func TestOptimizeHandsSandboxToAgent(t *testing.T) {
 	c, gh, _, _, rec := setup(LabelOptimize)
-	gh.issues[1].Body = strings.Replace(benchmarkIssue, "kind: benchmark", "kind: optimize\nsource: {repo: ggml-org/llama.cpp, ref: master}", 1)
+	gh.issues[1].Body = benchmarkIssue + "\n\n### Source repository\n\nggml-org/llama.cpp\n\n### Source ref\n\nmaster"
 	c.Agent = fakeAgent{done: func() { gh.branches["llmbench/2026-09-27-issue1"] = true }}
 	if err := c.Poll(context.Background()); err != nil {
 		t.Fatal(err)

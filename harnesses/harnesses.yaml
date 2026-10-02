@@ -9,7 +9,7 @@
 # an empty working directory; whatever it leaves there is the output.
 
 opencode:
-  tool: npm:opencode-ai
+  tool: github:anomalyco/opencode
   command: [opencode, run, --auto, --model, "llmbench/{{.Model}}", "{{.Prompt}}"]
   env:
     OPENCODE_DISABLE_AUTOUPDATE: "1"

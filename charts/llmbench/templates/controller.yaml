@@ -47,11 +47,6 @@ metadata:
 {{- include "llmbench.role" (dict "name" (printf "%s-inference" $name) "namespace" $cfg.gitops.deployment.namespace "subject" $controller "rules" (list
   (dict "apiGroups" (list "apps") "resources" (list "deployments") "verbs" (list "get"))
   (dict "apiGroups" (list "") "resources" (list "pods") "verbs" (list "list")))) }}
-{{- if $cfg.harness.pod_selector }}
-{{- include "llmbench.role" (dict "name" (printf "%s-harness" $name) "namespace" $cfg.harness.namespace "subject" $controller "rules" (list
-  (dict "apiGroups" (list "") "resources" (list "pods") "verbs" (list "list"))
-  (dict "apiGroups" (list "") "resources" (list "pods/exec") "verbs" (list "create" "get")))) }}
-{{- end }}
 {{- with .Values.agentServiceAccount }}
 {{- if .name }}
 {{- include "llmbench.role" (dict "name" (printf "%s-agent" $name) "namespace" $cfg.sandbox.namespace "subject" . "rules" (list
@@ -90,6 +85,14 @@ spec:
           image: "{{ required "image.repository is required" .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: [controller, --config, /etc/llmbench/config.yaml]
+          {{- with .Values.agentSecret }}
+          env:
+            - name: OPENCODE_SERVER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: OPENCODE_SERVER_PASSWORD
+          {{- end }}
           volumeMounts:
             - name: config
               mountPath: /etc/llmbench

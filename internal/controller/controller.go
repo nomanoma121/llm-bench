@@ -44,7 +44,7 @@ type GitOps interface {
 	Restore(ctx context.Context, jobID string) (bool, error)
 }
 
-type Harness interface {
+type Agent interface {
 	Run(ctx context.Context, task string, onSession func(id string)) (string, error)
 }
 
@@ -52,7 +52,7 @@ type Controller struct {
 	GitHub  GitHub
 	Sandbox Sandbox
 	GitOps  GitOps
-	Harness Harness
+	Agent   Agent
 
 	Repository   string
 	Workdir      string
@@ -252,15 +252,15 @@ func (c *Controller) benchmark(ctx context.Context, j Job) error {
 }
 
 func (c *Controller) optimize(ctx context.Context, j Job) (string, error) {
-	if c.Harness == nil {
-		return "", errors.New("no harness is configured")
+	if c.Agent == nil {
+		return "", errors.New("no agent is configured")
 	}
 	agentCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	go c.keepSandbox(agentCtx, j)
-	return c.Harness.Run(agentCtx, c.task(j), func(session string) {
-		c.Logf("job %s: harness session %s", j.ID, session)
-		_ = c.GitHub.Comment(ctx, j.Issue.Number, fmt.Sprintf("Harness session: `%s`", session))
+	return c.Agent.Run(agentCtx, c.task(j), func(session string) {
+		c.Logf("job %s: agent session %s", j.ID, session)
+		_ = c.GitHub.Comment(ctx, j.Issue.Number, fmt.Sprintf("Agent session: `%s`", session))
 	})
 }
 

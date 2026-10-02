@@ -10,9 +10,14 @@ imagePullSecrets: []
 
 githubAppSecret: ""
 
+# The ServiceAccount the optimize agent (opencode) runs as; it may use the
+# sandboxes.
 agentServiceAccount:
   namespace: ""
   name: ""
+
+# Secret with OPENCODE_SERVER_PASSWORD, the agent server's basic auth.
+agentSecret: ""
 
 config:
   repository: ""
@@ -40,11 +45,9 @@ config:
       namespace: ""
       name: ""
       replicas: 1
-  harness:
-    namespace: ""
-    pod_selector: ""
-    command: [dsh, --profile, acp]
-    cwd: /workspace
+  agent:
+    url: ""
+    username: opencode
   poll_interval_seconds: 15
   pause_timeout_minutes: 30
 

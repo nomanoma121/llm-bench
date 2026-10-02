@@ -13,10 +13,10 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/nomanoma121/llm-bench/internal/agent"
 	"github.com/nomanoma121/llm-bench/internal/controller"
 	"github.com/nomanoma121/llm-bench/internal/github"
 	"github.com/nomanoma121/llm-bench/internal/gitops"
-	"github.com/nomanoma121/llm-bench/internal/harness"
 	"github.com/nomanoma121/llm-bench/internal/sandbox"
 )
 
@@ -134,7 +134,7 @@ func buildController(cfg config, kubeconfig string) (*controller.Controller, err
 		Logf:         logger.Printf,
 	}
 	if h := cfg.Harness; h != nil {
-		c.Harness = &harness.Harness{
+		c.Harness = &agent.Harness{
 			Client: kube, REST: rest, Namespace: h.Namespace, Selector: h.PodSelector,
 			Container: h.Container, Command: h.Command, CWD: h.CWD, Stderr: os.Stderr,
 		}

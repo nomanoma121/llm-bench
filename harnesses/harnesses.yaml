@@ -1,0 +1,30 @@
+# How to run each harness once, non-interactively, against the runtime.
+# Command, env and files are Go templates over:
+#   .Prompt   the task
+#   .BaseURL  the runtime's OpenAI-compatible endpoint, ending in /v1
+#   .Model    the model name the runtime serves
+#   .Context  the runtime's context length in tokens (0 when unknown)
+#   .Home     the harness's own home directory
+# files are written under .Home before the harness starts. The harness runs in
+# an empty working directory; whatever it leaves there is the output.
+
+opencode:
+  tool: npm:opencode-ai
+  command: [opencode, run, --auto, --model, "llmbench/{{.Model}}", "{{.Prompt}}"]
+  env:
+    OPENCODE_DISABLE_AUTOUPDATE: "1"
+    OPENCODE_CONFIG_CONTENT: >-
+      {"autoupdate": false, "share": "disabled", "permission": "allow",
+      "model": "llmbench/{{.Model}}", "small_model": "llmbench/{{.Model}}",
+      "provider": {"llmbench": {"npm": "@ai-sdk/openai-compatible", "name": "llmbench",
+      "options": {"baseURL": "{{.BaseURL}}", "apiKey": "llmbench"},
+      "models": {"{{.Model}}": {"name": "{{.Model}}", "tool_call": true{{if .Context}},
+      "limit": {"context": {{.Context}}, "output": 32768}{{end}}}}}}}
+
+pi:
+  tool: npm:@mariozechner/pi-coding-agent
+  command: [pi, --print, --provider, llmbench, --model, "{{.Model}}", "{{.Prompt}}"]
+  files:
+    .pi/agent/models.json: >-
+      {"providers": {"llmbench": {"baseUrl": "{{.BaseURL}}", "api": "openai-completions",
+      "apiKey": "llmbench", "models": [{"id": "{{.Model}}"{{if .Context}}, "contextWindow": {{.Context}}{{end}}}]}}}

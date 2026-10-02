@@ -25,7 +25,9 @@ type Result struct {
 	MeasurementValid bool      `json:"measurement_valid"`
 	InvalidReasons   []string  `json:"invalid_reasons,omitempty"`
 	Metrics          []Metric  `json:"metrics"`
-	Digests          Digests   `json:"digests"`
+	// Harnesses are the harnesses the workload ran through, with versions.
+	Harnesses map[string]string `json:"harnesses,omitempty"`
+	Digests   Digests           `json:"digests"`
 }
 
 type Model struct {

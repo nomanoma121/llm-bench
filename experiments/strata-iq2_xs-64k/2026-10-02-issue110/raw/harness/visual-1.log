@@ -1,0 +1,360 @@
+[0m
+> build · strata-iq2_xs-64k
+[0m
+Brief plan: seeded RNG → instanced box groups per material → castle keep (stepped stone base, 5 shrinking levels, layered roofs), wall ring + moat + bridge + gate → town grid with roads, market, ~70 buildings → cherry/green trees, shrine with torii, lanterns, fences → day/dusk toggle + OrbitControls + resize.
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Castle Town in Spring</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#dfe8ef;font-family:system-ui,sans-serif}
+  #ui{position:fixed;top:12px;left:12px;z-index:10;display:flex;gap:8px;align-items:center}
+  #ui button{padding:8px 14px;border:0;border-radius:8px;background:#2f3a4a;color:#fff;cursor:pointer;font-size:14px}
+  #ui span{color:#2f3a4a;font-size:13px;background:rgba(255,255,255,.6);padding:6px 10px;border-radius:8px}
+</style>
+</head>
+<body>
+<div id="ui">
+  <button id="toggle">Toggle day / dusk</button>
+  <span>press D &middot; drag to orbit, scroll to zoom</span>
+</div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ---------- seeded rng ---------- */
+function mulberry32(seed){
+  return function(){
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(1337);
+const r = () => rng();
+const ri = (a, b) => a + Math.floor(r() * (b - a + 1));
+
+/* ---------- renderer / scene / camera ---------- */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xdfe8ef);
+scene.fog = new THREE.Fog(0xdfe8ef, 70, 240);
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 500);
+camera.position.set(62, 46, 84);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 8, 18);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI / 2.03;
+controls.maxDistance = 220;
+
+/* ---------- lighting ---------- */
+const hemi = new THREE.HemisphereLight(0xbfd4e6, 0x6b7a5e, 0.9);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xfff2e0, 1.6);
+sun.position.set(60, 85, 45);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+const sc = 120;
+sun.shadow.camera.left = -sc; sun.shadow.camera.right = sc;
+sun.shadow.camera.top = sc; sun.shadow.camera.bottom = -sc;
+sun.shadow.camera.far = 260;
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+
+let dusk = false;
+function setLighting(){
+  if (dusk){
+    sun.color.set(0xffb066); sun.intensity = 1.15;
+    hemi.color.set(0x6a7a9a); hemi.groundColor.set(0x3a4436); hemi.intensity = 0.55;
+    scene.fog.color.set(0x33384e); scene.background.set(0x33384e);
+  } else {
+    sun.color.set(0xfff2e0); sun.intensity = 1.6;
+    hemi.color.set(0xbfd4e6); hemi.groundColor.set(0x6b7a5e); hemi.intensity = 0.9;
+    scene.fog.color.set(0xdfe8ef); scene.background.set(0xdfe8ef);
+  }
+}
+document.getElementById('toggle').addEventListener('click', () => { dusk = !dusk; setLighting(); });
+addEventListener('keydown', e => { if (e.key.toLowerCase() === 'd'){ dusk = !dusk; setLighting(); } });
+
+/* ---------- materials ---------- */
+const M = {};
+function mat(name, color, extra = {}){
+  M[name] = new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.9, metalness: 0, ...extra });
+}
+mat('grass', 0x7fa06a);
+mat('stone', 0x9a978c);
+mat('stoneDark', 0x6f6d65);
+mat('wallWhite', 0xf2eee6);
+mat('plaster', 0xd9cfc0);
+mat('woodDark', 0x4a3a2c);
+mat('woodLight', 0x8a6f52);
+mat('roofDark', 0x3a4150);
+mat('roofBlue', 0x46536b);
+mat('pink', 0xf2b7c8);
+mat('pinkLight', 0xf8d3dd);
+mat('green', 0x5f8f5a);
+mat('trunk', 0x6b5138);
+mat('toriiRed', 0xc23a3a);
+mat('road', 0xb9b3a6);
+mat('water', 0x5f86a8, { transparent: true, opacity: 0.75, roughness: 0.3 });
+mat('window', 0x2c2620);
+mat('lanternGlow', 0xf5d9a0, { emissive: 0x8a6a30, emissiveIntensity: 0.4 });
+
+/* ---------- instanced box groups ---------- */
+const groups = {};
+const V = new THREE.Vector3(), Q = new THREE.Quaternion(), E = new THREE.Euler(), S = new THREE.Vector3();
+function add(name, x, y, z, sx, sy, sz, rx = 0, ry = 0, rz = 0){
+  const m = new THREE.Matrix4().compose(
+    V.set(x, y, z),
+    Q.setFromEuler(E.set(rx, ry, rz)),
+    S.set(sx, sy, sz)
+  );
+  (groups[name] ||= []).push(m.clone());
+}
+function flush(){
+  const geo = new THREE.BoxGeometry(1, 1, 1);
+  for (const [name, list] of Object.entries(groups)){
+    if (!list.length) continue;
+    const im = new THREE.InstancedMesh(geo, M[name], list.length);
+    for (let i = 0; i < list.length; i++) im.setMatrixAt(i, list[i]);
+    im.instanceMatrix.needsUpdate = true;
+    im.castShadow = name !== 'water';
+    im.receiveShadow = true;
+    scene.add(im);
+  }
+}
+
+/* ---------- helpers ---------- */
+function gabledRoof(cx, cy, cz, w, d, name){
+  const tilt = 0.38;
+  add(name, cx - w / 4, cy + 0.12, cz, w / 2, 0.3, d, 0, 0, tilt);
+  add(name, cx + w / 4, cy + 0.12, cz, w / 2, 0.3, d, 0, 0, -tilt);
+  add(name, cx, cy + 0.32, cz, w * 0.35, 0.25, d * 0.9);
+}
+function lantern(x, z){
+  add('stone', x, 0.25, z, 0.9, 0.5, 0.9);
+  add('stoneDark', x, 1.0, z, 0.35, 1.2, 0.35);
+  add('stone', x, 1.8, z, 0.8, 0.55, 0.8);
+  add('lanternGlow', x, 1.8, z, 0.5, 0.4, 0.5);
+  add('stoneDark', x, 2.2, z, 0.55, 0.3, 0.55);
+}
+function tree(x, z, cherry){
+  const th = ri(2, 3);
+  add('trunk', x, th / 2, z, 0.45, th, 0.45);
+  const n = cherry ? 5 : 4;
+  for (let i = 0; i < n; i++){
+    const s = 1.2 + r() * 1.3;
+    const nm = cherry ? (r() < 0.5 ? 'pink' : 'pinkLight') : 'green';
+    add(nm, x + (r() - 0.5) * 2.2, th + 1 + r() * 1.3, z + (r() - 0.5) * 2.2, s, s * 0.8, s);
+  }
+}
+
+/* ---------- ground ---------- */
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(240, 240), M.grass);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// gentle terrain bumps
+for (let i = 0; i < 40; i++){
+  const x = (r() - 0.5) * 160, z = (r() - 0.5) * 160;
+  if (Math.max(Math.abs(x), Math.abs(z)) < 36) continue;
+  add('grass', x, 0.25, z, 4 + r() * 4, 0.5, 4 + r() * 4);
+}
+
+/* ---------- castle stone base (stepped hill) ---------- */
+for (let i = 0; i < 4; i++){
+  const s = 30 - i * 4;
+  add('stone', 0, 1.2 + i * 1.4, 0, s, 1.4, s);
+}
+const baseTop = 6.8;
+
+/* ---------- castle keep: five levels ---------- */
+let y = baseTop;
+for (let i = 0; i < 5; i++){
+  const w = 14 - i * 2.4, h = 3.2;
+  add('wallWhite', 0, y + h / 2, 0, w, h, w);
+  add('woodDark', 0, y + 0.15, 0, w + 0.3, 0.3, w + 0.3);          // base trim
+  add('woodDark', 0, y + h, 0, w + 0.3, 0.25, w + 0.3);            // top trim
+  for (const sx of [-1, 1]) for (const sz of [-1, 1])              // corner posts
+    add('woodDark', sx * w / 2, y + h / 2, sz * w / 2, 0.35, h, 0.35);
+  for (let k = 0; k < 3; k++){                                     // layered curved roof
+    const rs = w + 1.6 - k * 1.3;
+    add('roofDark', 0, y + h + 0.35 + k * 0.55, 0, rs, 0.4, rs + 0.7);
+  }
+  if (i === 4) add('roofBlue', 0, y + h + 2.1, 0, 1.2, 0.5, 3.2);  // ridge
+  for (let f = 0; f < 4; f++){                                     // windows
+    const a = f * Math.PI / 2;
+    add('window', Math.sin(a) * (w / 2 + 0.02), y + h / 2, Math.cos(a) * (w / 2 + 0.02), 0.06, 1.2, 1.6);
+  }
+  y += h + 1.6;
+}
+
+/* ---------- walls ring (square, gate gap at south) ---------- */
+const R = 34;
+for (let t = -R; t <= R; t += 2){
+  for (const side of [0, 1, 2, 3]){
+    let x, z;
+    if (side === 0){ x = t; z = R; if (Math.abs(t) < 4) continue; }        // south (gate gap)
+    else if (side === 1){ x = t; z = -R; }
+    else if (side === 2){ x = R; z = t; }
+    else { x = -R; z = t; }
+    add('stone', x, 1.5, z, 2, 3, 2);
+    add('stoneDark', x, 3.2, z, 2, 0.4, 2);
+  }
+}
+
+/* ---------- moat ---------- */
+for (let x = -30; x <= 30; x += 3){
+  for (let z = -30; z <= 30; z += 3){
+    const m = Math.max(Math.abs(x), Math.abs(z));
+    if (m < 24 || m > 31) continue;
+    if (Math.abs(x) < 3 && z > 24) continue;   // bridge crossing
+    add('water', x, 0.12, z, 3, 0.25, 3);
+  }
+}
+
+/* ---------- bridge ---------- */
+for (let z = 24; z <= 34; z += 2){
+  add('woodLight', 0, 0.55, z, 4.5, 0.3, 2);
+  for (const sx of [-2.2, 2.2]){
+    add('woodDark', sx, 1.0, z, 0.25, 1.0, 0.25);
+    add('woodDark', sx, 1.4, z + 1, 0.25, 0.25, 2);
+  }
+}
+
+/* ---------- main gate ---------- */
+for (const sx of [-3, 3]){
+  add('stone', sx, 2, R, 1.6, 4, 2.2);
+  add('woodDark', sx, 4.2, R, 1.8, 0.4, 2.4);
+}
+add('woodDark', 0, 2.2, R, 6, 3.4, 0.5);           // gate doors
+add('woodDark', 0, 4.6, R, 7.5, 0.4, 2.6);         // lintel
+gabledRoof(0, 5.2, R, 8, 3.2, 'roofDark');
+
+/* ---------- town: roads, market, buildings ---------- */
+function isRoad(x, z){ return (Math.abs(x) <= 4 && z >= 36 && z <= 70) || (z >= 46 && z <= 50 && x >= -40 && x <= 40); }
+function isMarket(x, z){ return x >= 12 && x <= 24 && z >= 52 && z <= 62; }
+function isShrine(x, z){ return x >= -30 && x <= -18 && z >= 40 && z <= 52; }
+
+for (let x = -40; x <= 40; x += 4){
+  for (let z = 36; z <= 70; z += 4){
+    if (isRoad(x, z)) add('road', x, 0.06, z, 4, 0.12, 4);
+  }
+}
+
+let count = 0;
+function building(cx, cz){
+  const big = r() < 0.12;
+  const w = big ? ri(7, 9) : ri(4, 6), d = big ? ri(6, 8) : ri(4, 6), h = big ? 4 : ri(2, 3);
+  add(r() < 0.6 ? 'wallWhite' : 'plaster', cx, h / 2, cz, w, h, d);
+  add('woodDark', cx, 0.15, cz, w + 0.2, 0.3, d + 0.2);
+  gabledRoof(cx, h + 0.3, cz, w + 0.6, d + 0.4, big ? 'roofBlue' : 'roofDark');
+  if (!big && r() < 0.35) add('woodDark', cx, h + 0.9, cz, w * 0.6, 0.7, d * 0.6);
+  if (r() < 0.5) add('window', cx, h / 2, cz + d / 2 + 0.02, w * 0.5, 0.9, 0.06);
+  if (r() < 0.3) add('woodLight', cx, 0.2, cz + d / 2 + 0.8, w, 0.15, 1.4);   // veranda
+  count++;
+}
+for (let gx = -40; gx <= 40; gx += 6){
+  for (let gz = 38; gz <= 68; gz += 6){
+    if (isRoad(gx, gz) || isMarket(gx, gz) || isShrine(gx, gz)) continue;
+    if (r() < 0.14) continue;
+    building(gx, gz);
+  }
+}
+
+/* market stalls */
+for (let i = 0; i < 12; i++){
+  const x = 13 + ri(0, 10) * 1.2, z = 53 + ri(0, 8) * 1.2;
+  add('woodLight', x, 0.7, z, 1.6, 1.4, 1.6);
+  add(r() < 0.5 ? 'toriiRed' : 'roofBlue', x, 1.7, z, 2, 0.2, 2, 0, 0, 0.2);
+}
+
+/* ---------- shrine ---------- */
+const sx0 = -24, sz0 = 46;
+add('stone', sx0, 0.3, sz0, 6, 0.6, 6);
+add('woodDark', sx0, 1.8, sz0, 3.5, 3, 3.5);
+gabledRoof(sx0, 3.5, sz0, 4.2, 4.2, 'roofDark');
+// torii
+for (const px of [-1.6, 1.6]){
+  add('toriiRed', sx0 + px, 2.2, sz0 + 4.5, 0.4, 4.4, 0.4);
+}
+add('toriiRed', sx0, 4.6, sz0 + 4.5, 4.6, 0.4, 0.5);
+add('toriiRed', sx0, 3.6, sz0 + 4.5, 3.6, 0.3, 0.4);
+lantern(sx0 - 2.5, sz0 + 3.5);
+lantern(sx0 + 2.5, sz0 + 3.5);
+// fence around shrine
+for (let i = 0; i <= 12; i++){
+  const t = -6 + i;
+  for (const side of [0, 1, 2]){
+    let fx, fz;
+    if (side === 0){ fx = sx0 + t; fz = sz0 - 4; }
+    else if (side === 1){ fx = sx0 - 5; fz = sz0 + t; }
+    else { fx = sx0 + 5; fz = sz0 + t; }
+    if (side === 2 && Math.abs(t) < 2) continue;
+    add('woodDark', fx, 0.6, fz, 0.2, 1.2, 0.2);
+    add('woodDark', fx, 1.0, fz, 0.2, 0.15, 1.2);
+  }
+}
+
+/* stone lanterns along main road */
+for (let z = 40; z <= 66; z += 6){
+  lantern(5.5, z); lantern(-5.5, z);
+}
+
+/* ---------- trees ---------- */
+for (let i = 0; i < 34; i++){                       // cherry along moat
+  const a = r() * Math.PI * 2, rad = r() < 0.5 ? 21 + r() * 2 : 32 + r() * 2;
+  const x = Math.cos(a) * rad, z = Math.sin(a) * rad;
+  if (Math.abs(x) < 4 && z > 24) continue;
+  tree(x, z, true);
+}
+for (let z = 40; z <= 68; z += 4){                  // cherry along main road
+  if (r() < 0.4) continue;
+  tree(7 + r(), z, true);
+  if (r() < 0.6) tree(-7 - r(), z, true);
+}
+for (let i = 0; i < 16; i++){                       // green trees in town
+  const x = (r() - 0.5) * 80, z = 40 + r() * 28;
+  if (isRoad(x, z) || isMarket(x, z) || isShrine(x, z)) continue;
+  tree(x, z, false);
+}
+
+flush();
+
+/* ---------- resize + loop ---------- */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
+```

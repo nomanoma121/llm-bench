@@ -1,0 +1,386 @@
+[0m
+> build · strata-iq2_xs-64k
+[0m
+Brief plan: seeded RNG → instanced voxel terrain (grass/stone/moat water) → five-level keep on stone base with layered roofs → ring wall, gate, bridge → town grid with roads, market square, houses/warehouses → cherry/green trees → shrine with torii, lanterns, fences → day/dusk toggle + OrbitControls.
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Castle Town in Spring</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #cfe3ef; font-family: system-ui, sans-serif; }
+  #ui { position: fixed; top: 12px; left: 12px; z-index: 10; color: #233; background: rgba(255,255,255,.75);
+        padding: 10px 14px; border-radius: 10px; box-shadow: 0 4px 14px rgba(0,0,0,.15); }
+  #ui h1 { margin: 0 0 6px; font-size: 15px; }
+  #ui p { margin: 0 0 8px; font-size: 12px; color: #445; }
+  #ui button { font: inherit; font-size: 12px; padding: 6px 12px; border: 0; border-radius: 6px;
+               background: #2f6f4f; color: #fff; cursor: pointer; }
+  #ui button:hover { background: #378159; }
+</style>
+</head>
+<body>
+<div id="ui">
+  <h1>Castle Town in Spring</h1>
+  <p>Drag to orbit, scroll to zoom, right-drag to pan. Press <b>D</b> for day / dusk.</p>
+  <button id="toggle">Toggle day / dusk</button>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(1337);
+const rint = (a, b) => a + Math.floor(rand() * (b - a + 1));
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 400);
+camera.position.set(58, 42, 74);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(10, 6, 26);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.minDistance = 12;
+controls.maxDistance = 180;
+
+const geos = {
+  box: new THREE.BoxGeometry(1, 1, 1),
+  sphere: new THREE.IcosahedronGeometry(0.5, 1),
+  cyl: new THREE.CylinderGeometry(0.5, 0.5, 1, 6)
+};
+
+function mat(color, opts = {}) {
+  return new THREE.MeshStandardMaterial({ color, roughness: opts.roughness ?? 0.95,
+    metalness: 0, flatShading: true, transparent: !!opts.transparent,
+    opacity: opts.opacity ?? 1, emissive: opts.emissive ?? 0x000000,
+    emissiveIntensity: opts.emissiveIntensity ?? 0 });
+}
+
+const materials = {
+  grass: mat(0x7fa06a),
+  grassDark: mat(0x6c8f5c),
+  stone: mat(0x9a9385),
+  stoneDark: mat(0x7d7668),
+  wall: mat(0xf2eee4),
+  wallWarm: mat(0xe8dcc8),
+  wood: mat(0x4a3a2c),
+  woodRed: mat(0x7a3b30),
+  roof: mat(0x3a3f47),
+  roofRed: mat(0x8a4438),
+  torii: mat(0xc23a2e),
+  pink: mat(0xf2b7c8),
+  pinkLight: mat(0xf7c9d6),
+  green: mat(0x5f8f52),
+  trunk: mat(0x6b5544),
+  water: mat(0x4f8f9c, { roughness: 0.25, opacity: 0.85, transparent: true }),
+  lantern: mat(0xb9b2a4, { emissive: 0xffc866, emissiveIntensity: 0.4 }),
+  road: mat(0xb4ac9c),
+  redAccent: mat(0xb04134)
+};
+
+const groups = {};
+const dummy = new THREE.Object3D();
+function add(geoKey, matKey, x, y, z, sx, sy, sz, ry = 0) {
+  const key = geoKey + '|' + matKey;
+  if (!groups[key]) groups[key] = [];
+  dummy.position.set(x, y, z);
+  dummy.scale.set(sx, sy, sz);
+  dummy.rotation.set(0, ry, 0);
+  dummy.updateMatrix();
+  groups[key].push(dummy.matrix.clone());
+}
+function box(matKey, x, y, z, sx, sy, sz, ry = 0) { add('box', matKey, x, y, z, sx, sy, sz, ry); }
+
+function flush() {
+  for (const key in groups) {
+    const arr = groups[key];
+    if (!arr.length) continue;
+    const [g, m] = key.split('|');
+    const mesh = new THREE.InstancedMesh(geos[g], materials[m], arr.length);
+    for (let i = 0; i < arr.length; i++) mesh.setMatrixAt(i, arr[i]);
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+  }
+}
+
+function terrainHeight(x, z) {
+  const d = Math.hypot(x, z);
+  if (d < 13) return 5.5 + 1.2 * (1 - d / 13);
+  if (d < 20) return 0.4;
+  const t = Math.min(1, (d - 20) / 12);
+  return 1 + 0.8 * (1 - t) * rand() * 0.6 + 0.4 * (1 - t);
+}
+
+function isRoad(x, z) {
+  if (x > -3.5 && x < 3.5 && z > 21 && z < 60) return true;
+  if (x > 3.5 && z > 21 && z < 60) {
+    for (const r of [30, 40, 50]) if (Math.abs(z - r) < 2.2) return true;
+  }
+  if (x > 3.5 && x < 60 && z > 21 && z < 60 && Math.abs(x - 26) < 2.2) return true;
+  return false;
+}
+function isSquare(x, z) { return x > 12 && x < 24 && z > 26 && z < 38; }
+function isShrine(x, z) { return x > 30 && x < 42 && z > 40 && z < 52; }
+
+for (let x = -60; x <= 60; x += 2) {
+  for (let z = -60; z <= 60; z += 2) {
+    const d = Math.hypot(x, z);
+    const h = terrainHeight(x, z);
+    if (d < 13) box('stone', x, h / 2, z, 2, h, 2);
+    else if (d < 20) {
+      box('stoneDark', x, h / 2, z, 2, h, 2);
+      add('box', 'water', x, 0.75, z, 2, 0.5, 2);
+    } else {
+      const m = rand() < 0.25 ? 'grassDark' : 'grass';
+      box(m, x, h / 2, z, 2, h, 2);
+      if (isRoad(x, z)) box('road', x, h + 0.06, z, 2, 0.12, 2);
+    }
+  }
+}
+
+function layeredRoof(cx, y, w, d, layers, matKey) {
+  for (let i = 0; i < layers; i++) {
+    const f = 1 - i / layers;
+    const rw = w * (0.5 + 0.5 * f);
+    const rd = d * (0.5 + 0.5 * f);
+    box(matKey, cx, y + i * 0.55, z0(cx, d), rw, 0.5, rd);
+  }
+}
+function z0(cx, d) { return arguments.callee ? 0 : 0; }
+
+function roof(cx, y, w, d, layers, matKey, zc) {
+  for (let i = 0; i < layers; i++) {
+    const f = 1 - i / layers;
+    box(matKey, cx, y + i * 0.55, zc, w * (0.5 + 0.5 * f), 0.5, d * (0.5 + 0.5 * f));
+  }
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    box(matKey, cx + sx * w / 2, y + 0.35, zc + sz * d / 2, 0.5, 0.4, 0.5);
+  }
+  box(matKey, cx, y + layers * 0.55, zc, w * 0.35, 0.35, 0.6);
+}
+
+const baseY = 6.7;
+const levels = [15, 12.5, 10, 7.5, 5];
+let y = baseY;
+for (let i = 0; i < levels.length; i++) {
+  const w = levels[i], d = levels[i] * 0.9;
+  box('wall', 0, y + 1.5, 0, w, 3, d);
+  box('wood', 0, y + 3.1, 0, w + 0.4, 0.5, d + 0.4);
+  for (let k = 0; k < 4; k++) {
+    const wx = (rand() - 0.5) * (w - 2), wz = (rand() - 0.5) * (d - 2);
+    box('wood', wx, y + 1.6, wz, 0.8, 1.2, 0.15);
+  }
+  roof(0, y + 3.4, w + 2.5, d + 2.5, i === 0 ? 3 : 3, 'roof', 0);
+  y += 3.6;
+}
+box('stone', 0, baseY - 0.6, 0, 18, 1.2, 16);
+box('woodRed', 0, baseY + 0.6, -8.2, 3, 1.6, 0.4);
+
+for (let a = 0; a < 360; a += 6) {
+  const rad = (a * Math.PI) / 180;
+  const x = Math.cos(rad) * 20.5, z = Math.sin(rad) * 20.5;
+  if (Math.abs(a - 90) < 14) continue;
+  box('stone', x, 1.6, z, 2.2, 3.2, 2.2);
+  if (a % 30 === 0) box('stoneDark', x, 3.4, z, 2.4, 0.6, 2.4);
+}
+box('stone', 0, 1.6, 20.5, 2.2, 3.2, 2.2);
+
+const gx = 0, gz = 20.5;
+box('wood', gx - 2.2, 2.2, gz, 1, 4.4, 1.2);
+box('wood', gx + 2.2, 2.2, gz, 1, 4.4, 1.2);
+box('wood', gx, 4.6, gz, 5.6, 0.6, 1.4);
+roof(gx, 5.2, 6, 2.5, 2, 'roofRed', gz);
+box('redAccent', gx, 3.4, gz, 4.4, 0.5, 0.6);
+
+for (let z = 18; z <= 26; z += 1) {
+  box('wood', 0, 1.5, z, 3, 0.3, 1);
+  if (z % 2 === 0) {
+    box('wood', -1.5, 2.1, z, 0.25, 1.2, 0.25);
+    box('wood', 1.5, 2.1, z, 0.25, 1.2, 0.25);
+  }
+}
+box('wood', -1.5, 2.7, 22, 0.2, 0.2, 8);
+box('wood', 1.5, 2.7, 22, 0.2, 0.2, 8);
+
+function building(x, z, w, d, h, big) {
+  const g = terrainHeight(x, z);
+  const wallMat = big ? 'wallWarm' : (rand() < 0.5 ? 'wall' : 'wallWarm');
+  box(wallMat, x, g + h / 2, z, w, h, d);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    box('wood', x + sx * (w / 2 - 0.15), g + h / 2, z + sz * (d / 2 - 0.15), 0.3, h, 0.3);
+  }
+  box('wood', x, g + h - 0.15, z, w + 0.2, 0.3, d + 0.2);
+  roof(x, g + h + 0.2, w + 1.2, d + 1.2, big ? 3 : 2, rand() < 0.3 ? 'roofRed' : 'roof', z);
+  box('wood', x, g + 0.9, z - d / 2 - 0.1, 1, 1.8, 0.2);
+  if (rand() < 0.4) box('wood', x + w / 4, g + h + 1.2, z + d / 4, 0.4, 1.2, 0.4);
+}
+
+let count = 0;
+for (let x = 5; x <= 56; x += 4) {
+  for (let z = 24; z <= 56; z += 4) {
+    if (isRoad(x, z) || isSquare(x, z) || isShrine(x, z)) continue;
+    if (rand() < 0.62) {
+      const big = rand() < 0.18;
+      const w = big ? rint(5, 7) : rint(3, 4);
+      const d = big ? rint(4, 6) : rint(3, 4);
+      const h = big ? rint(3, 4) : rint(2, 3);
+      building(x + (rand() - 0.5), z + (rand() - 0.5), w, d, h, big);
+      count++;
+    }
+  }
+}
+
+for (let i = 0; i < 8; i++) {
+  const x = 14 + rand() * 8, z = 28 + rand() * 8;
+  const g = terrainHeight(x, z);
+  box('wood', x, g + 1.2, z, 2.4, 0.15, 2);
+  for (const sx of [-1, 1]) box('wood', x + sx * 1.1, g + 0.6, z, 0.15, 1.2, 0.15);
+  box('redAccent', x, g + 2.1, z, 2.6, 0.3, 2.2);
+}
+
+function tree(x, z, cherry) {
+  const g = terrainHeight(x, z);
+  const th = cherry ? rint(3, 5) : rint(3, 6);
+  add('cyl', 'trunk', x, g + th / 2, z, 0.5, th, 0.5);
+  const blobs = cherry ? 4 : 3;
+  for (let i = 0; i < blobs; i++) {
+    const r = cherry ? 1.2 + rand() * 0.8 : 1 + rand() * 0.8;
+    add('sphere', cherry ? (rand() < 0.5 ? 'pink' : 'pinkLight') : 'green',
+      x + (rand() - 0.5) * 1.6, g + th + rand() * 1.2, z + (rand() - 0.5) * 1.6, r, r, r);
+  }
+}
+
+for (let i = 0; i < 30; i++) {
+  const a = rand() * Math.PI * 2;
+  const r = 21.5 + rand() * 2.5;
+  tree(Math.cos(a) * r, Math.sin(a) * r, true);
+}
+for (let i = 0; i < 20; i++) {
+  const z = 24 + i * 1.8 + rand();
+  const side = i % 2 ? 4.5 : -4.5;
+  tree(side, z, true);
+}
+for (let i = 0; i < 16; i++) {
+  const x = 6 + rand() * 50, z = 24 + rand() * 32;
+  if (!isRoad(x, z) && !isSquare(x, z)) tree(x, z, rand() < 0.35);
+}
+
+const sx0 = 36, sz0 = 46;
+const sg = terrainHeight(sx0, sz0);
+box('wallWarm', sx0, sg + 1.6, sz0, 5, 3.2, 4);
+box('wood', sx0, sg + 3.3, sz0, 5.4, 0.4, 4.4);
+roof(sx0, sg + 3.7, 6.4, 5.4, 3, 'roofRed', sz0);
+box('woodRed', sx0, sg + 1.2, sz0 - 2.1, 1.4, 2.4, 0.2);
+box('stone', sx0, sg + 0.2, sz0 - 4, 6, 0.4, 4);
+
+for (const px of [-2, 2]) {
+  add('cyl', 'torii', sx0 + px, sg + 2.6, sz0 - 6, 0.5, 5.2, 0.5);
+  box('stoneDark', sx0 + px, sg + 0.3, sz0 - 6, 1, 0.6, 1);
+}
+box('torii', sx0, sg + 5.3, sz0 - 6, 5.6, 0.4, 0.6);
+box('torii', sx0, sg + 4.4, sz0 - 6, 4.6, 0.35, 0.5);
+box('redAccent', sx0, sg + 5.7, sz0 - 6, 0.6, 0.5, 0.6);
+
+function lantern(x, z) {
+  const g = terrainHeight(x, z);
+  box('stoneDark', x, g + 0.2, z, 0.8, 0.4, 0.8);
+  add('cyl', 'stone', x, g + 1, z, 0.35, 1.2, 0.35);
+  box('lantern', x, g + 1.9, z, 0.9, 0.8, 0.9);
+  add('sphere', 'stoneDark', x, g + 2.5, z, 1.1, 0.6, 1.1);
+}
+lantern(sx0 - 3, sz0 - 4);
+lantern(sx0 + 3, sz0 - 4);
+lantern(4, 34);
+lantern(-4, 44);
+
+for (let i = 0; i < 20; i++) {
+  const a = (i / 20) * Math.PI * 2;
+  const x = sx0 + Math.cos(a) * 7, z = sz0 + Math.sin(a) * 7;
+  if (Math.abs(a - Math.PI * 1.5) < 0.4) continue;
+  const g = terrainHeight(x, z);
+  box('wood', x, g + 0.7, z, 0.2, 1.4, 0.2);
+  box('wood', x + Math.cos(a + 0.3) * 2.2, g + 1.1, z + Math.sin(a + 0.3) * 2.2, 2.2, 0.15, 0.15);
+}
+
+const hemi = new THREE.HemisphereLight(0xbcd9e8, 0x77876a, 1.1);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xfff2d6, 1.7);
+sun.position.set(40, 60, 25);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -80;
+sun.shadow.camera.right = 80;
+sun.shadow.camera.top = 80;
+sun.shadow.camera.bottom = -80;
+sun.shadow.camera.far = 200;
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+
+const fog = new THREE.Fog(0xcfe3ef, 70, 170);
+scene.fog = fog;
+scene.background = new THREE.Color(0xcfe3ef);
+
+let dusk = false;
+function applyLighting() {
+  if (!dusk) {
+    hemi.color.set(0xbcd9e8); hemi.groundColor.set(0x77876a); hemi.intensity = 1.1;
+    sun.color.set(0xfff2d6); sun.intensity = 1.7;
+    fog.color.set(0xcfe3ef); scene.background.set(0xcfe3ef);
+    materials.lantern.emissiveIntensity = 0.4;
+  } else {
+    hemi.color.set(0x3d4d6e); hemi.groundColor.set(0x2c3138); hemi.intensity = 0.55;
+    sun.color.set(0xffab5e); sun.intensity = 0.9;
+    fog.color.set(0x39415a); scene.background.set(0x39415a);
+    materials.lantern.emissiveIntensity = 1.6;
+  }
+}
+function toggle() { dusk = !dusk; applyLighting(); }
+document.getElementById('toggle').addEventListener('click', toggle);
+window.addEventListener('keydown', (e) => { if (e.key.toLowerCase() === 'd') toggle(); });
+
+flush();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
+```

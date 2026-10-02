@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -25,66 +26,78 @@ func TestFormsAreGenerated(t *testing.T) {
 	}
 }
 
-// A body as GitHub writes it for a submitted form.
-const formBody = "### Preset\n\nstrata · Flash-Next IQ2_XS · 2GPU\n\n" +
-	"### Benchmark\n\nvisual\n\n" +
-	"### Harness\n\nopencode\n\n" +
-	"### Reasoning effort\n\nlow\n\n" +
-	"### Max tokens\n\n28672\n\n" +
-	"### Repeats\n\n2\n\n" +
-	"### Leave out metrics\n\n- [ ] runtime\n- [X] gpu\n- [ ] host\n\n" +
-	"### Extra runtime args\n\n--port 9000\n\n" +
-	"### Spec override\n\n_No response_\n\n" +
-	"### Notes\n\n_No response_"
+// form is a body as GitHub writes it for a submitted form.
+func form(fields ...string) string {
+	values := map[string]string{
+		"Model":              "Flash-Next UD-Q4_K_XL",
+		"Runtime":            "llamacpp",
+		"GPUs":               "2",
+		"Context":            "64K",
+		"MTP":                "on",
+		"KV cache":           "q8_0",
+		"Experts on CPU":     "default",
+		"Extra runtime args": `-ot 'per_layer_token_embd\.weight=CPU' --flag "a b"`,
+		"Benchmark":          "visual",
+		"Harness":            "opencode",
+		"Extra harness args": "_No response_",
+		"Reasoning effort":   "low",
+		"Max tokens":         "28672",
+		"Leave out metrics":  "- [ ] runtime\n- [X] gpu\n- [ ] host",
+		"Spec override":      "_No response_",
+		"Notes":              "_No response_",
+	}
+	for i := 0; i+1 < len(fields); i += 2 {
+		values[fields[i]] = fields[i+1]
+	}
+	var b strings.Builder
+	for label, v := range values {
+		b.WriteString("### " + label + "\n\n" + v + "\n\n")
+	}
+	return b.String()
+}
 
 func TestFromIssue(t *testing.T) {
-	s, err := FromIssue(Benchmark, formBody)
+	s, err := FromIssue(Benchmark, form())
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := s.Workload[0]
-	if s.Model != "strata/config/strata-iq2_xs.json" || s.Runtime.Engine != "strata" ||
-		!reflect.DeepEqual(s.Runtime.Args, []string{"--gpu", "0,1", "--port", "9000"}) ||
-		c.Name != "visual" || c.Prompt != "benchmarks/visual/prompt.md" || c.Harness.Name != "opencode" || c.MaxTokens != 0 || c.Repeats != 2 ||
+	r, c := s.Runtime, s.Workload[0]
+	if s.Model != "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf" || r.Engine != "llamacpp" ||
+		r.GPUs != 2 || r.Context != 65536 || !*r.MTP || r.KVCache != "q8_0" || r.ExpertsOnCPU != nil ||
+		!reflect.DeepEqual(r.Args, []string{"-ot", `per_layer_token_embd\.weight=CPU`, "--flag", "a b"}) ||
+		c.Name != "visual" || c.Prompt != "benchmarks/visual/prompt.md" || c.Harness.Name != "opencode" || c.MaxTokens != 0 ||
 		s.Sampling.ReasoningEffort != "low" || *s.Sampling.Seed != 1 || !reflect.DeepEqual(s.Metrics, []string{"runtime", "host"}) {
 		t.Fatalf("unexpected spec %+v %+v", s, c)
-	}
-	if !reflect.DeepEqual(presetNamedArgs("strata · Flash-Next IQ2_XS · 2GPU"), []string{"--gpu", "0,1"}) {
-		t.Fatal("the preset's arguments were changed")
 	}
 }
 
 func TestFromIssueOverride(t *testing.T) {
-	body := formBody[:len(formBody)-len("### Spec override\n\n_No response_\n\n### Notes\n\n_No response_")] +
-		"### Spec override\n\n```yaml\nruntime:\n  engine: llamacpp\n### not a heading\nsampling:\n  seed: 7\n```\n\n### Notes\n\nhi"
-	s, err := FromIssue(Optimize, body+"\n\n### Source repository\n\nggml-org/llama.cpp\n\n### Source ref\n\nmaster\n\n### Max rounds\n\n5")
+	body := form("Spec override", "```yaml\nruntime:\n  engine: llamacpp\n  context: 4096\n### not a heading\nsampling:\n  seed: 7\n```") +
+		"### Source repository\n\nggml-org/llama.cpp\n\n### Source ref\n\nmaster\n\n### Max rounds\n\n5"
+	s, err := FromIssue(Optimize, body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Runtime.Engine != "llamacpp" || *s.Sampling.Seed != 7 || s.Sampling.ReasoningEffort != "low" ||
-		s.Model != "strata/config/strata-iq2_xs.json" || s.Source.Repo != "ggml-org/llama.cpp" || s.Budget.MaxRounds != 5 {
+	if s.Runtime.Context != 4096 || s.Runtime.GPUs != 2 || *s.Sampling.Seed != 7 || s.Sampling.ReasoningEffort != "low" ||
+		s.Source.Repo != "ggml-org/llama.cpp" || s.Budget.MaxRounds != 5 {
 		t.Fatalf("unexpected spec %+v %+v", s, s.Sampling)
 	}
 }
 
 func TestFromIssueRejects(t *testing.T) {
 	for name, body := range map[string]string{
-		"unknown preset": "### Preset\n\nnope\n\n### Benchmark\n\nvisual\n\n### Max tokens\n\n10",
-		"bad number":     "### Preset\n\nllama.cpp · Qwen3.8-27B Q4_0\n\n### Benchmark\n\nvisual\n\n### Max tokens\n\nmany",
-		"unknown field":  "### Preset\n\nllama.cpp · Qwen3.8-27B Q4_0\n\n### Benchmark\n\nvisual\n\n### Max tokens\n\n10\n\n### Spec override\n\n```yaml\nfoo: 1\n```",
-		"no source":      "### Preset\n\nllama.cpp · Qwen3.8-27B Q4_0\n\n### Benchmark\n\nvisual\n\n### Max tokens\n\n10",
+		"unknown model":       form("Model", "nope"),
+		"model not on engine": form("Model", "Flash-Next IQ2_XS"),
+		"bad number":          form("Harness", "none", "Max tokens", "many"),
+		"unsupported setting": form("Model", "Flash-Next IQ2_XS", "Runtime", "strata", "MTP", "off"),
+		"unterminated quote":  form("Extra runtime args", "--x 'y"),
+		"unknown field":       form("Spec override", "```yaml\nfoo: 1\n```"),
 	} {
-		kind := Benchmark
-		if name == "no source" {
-			kind = Optimize
-		}
-		if _, err := FromIssue(kind, body); !errors.Is(err, ErrInvalid) {
+		if _, err := FromIssue(Benchmark, body); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%s: got %v, want ErrInvalid", name, err)
 		}
 	}
-}
-
-func presetNamedArgs(name string) []string {
-	p, _ := presetNamed(name)
-	return p.Args
+	if _, err := FromIssue(Optimize, form()); !errors.Is(err, ErrInvalid) {
+		t.Errorf("optimize without a source: got %v", err)
+	}
 }

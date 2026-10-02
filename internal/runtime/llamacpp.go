@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -24,7 +25,29 @@ func (a llamaCpp) Argv() []string {
 		"--metrics",
 		"-lv", "4",
 	}
-	return append(argv, o.Args...)
+	settings, _ := a.settingArgs()
+	return append(append(argv, settings...), o.Args...)
+}
+
+func (a llamaCpp) settingArgs() ([]string, error) {
+	s := a.opts.Settings
+	var args []string
+	if s.GPUs > 0 {
+		args = append(args, "--device", devices(s.GPUs, "CUDA"))
+	}
+	if s.Context > 0 {
+		args = append(args, "--ctx-size", strconv.Itoa(s.Context))
+	}
+	if s.KVCache != "" {
+		args = append(args, "--cache-type-k", s.KVCache, "--cache-type-v", s.KVCache)
+	}
+	if on(s.MTP) {
+		args = append(args, "--spec-type", "draft-mtp")
+	}
+	if on(s.ExpertsOnCPU) {
+		args = append(args, "--cpu-moe")
+	}
+	return args, nil
 }
 
 func (a llamaCpp) Ready(ctx context.Context) error {

@@ -3,7 +3,6 @@ package job
 import (
 	"errors"
 	"fmt"
-	"github.com/nomanoma121/llm-bench/internal/harness"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +11,9 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/nomanoma121/llm-bench/internal/harness"
+	"github.com/nomanoma121/llm-bench/internal/runtime"
 )
 
 type Kind string
@@ -35,7 +37,9 @@ type Spec struct {
 }
 
 type Runtime struct {
-	Engine              string   `yaml:"engine" json:"engine"`
+	Engine           string `yaml:"engine" json:"engine"`
+	runtime.Settings `yaml:",inline"`
+	// Args go to the engine as they are, after what Settings become.
 	Args                []string `yaml:"args,omitempty" json:"args,omitempty"`
 	Port                int      `yaml:"port,omitempty" json:"port,omitempty"`
 	ReadyTimeoutSeconds int      `yaml:"ready_timeout_seconds,omitempty" json:"ready_timeout_seconds,omitempty"`
@@ -159,8 +163,8 @@ func (s Spec) Validate() error {
 	if s.Model == "" || !filepath.IsLocal(s.Model) {
 		add("model %q must be a path under the models directory", s.Model)
 	}
-	if s.Runtime.Engine == "" {
-		add("runtime.engine is required")
+	if _, err := runtime.New(s.Runtime.Engine, runtime.Options{Settings: s.Runtime.Settings}); err != nil {
+		add("%v", err)
 	}
 	if len(s.Workload) == 0 {
 		add("workload must have at least one case")
@@ -232,13 +236,17 @@ func Template(kind Kind) string {
 	s := `kind: ` + string(kind) + `
 model: Qwen3.8-27B/Qwen3.8-27B-Q4_0.gguf
 runtime:
-  engine: llamacpp
-  args: ["--ctx-size", "32768"]
+  engine: llamacpp      # or strata, freetoken
+  gpus: 1
+  context: 32768
+  # mtp: true
+  # kv_cache: q8_0      # f16, q8_0, q4_0
+  # experts_on_cpu: true
+  # args: []            # passed to the engine as they are
 workload:
   - name: visual
     prompt: benchmarks/visual/prompt.md
     max_tokens: 28672
-    repeats: 1
     # harness:              # run through a coding agent instead (max_tokens then unused)
     #   name: opencode      # or pi, dsh, hermes
     #   args: []            # extra arguments for the harness

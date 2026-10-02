@@ -119,7 +119,7 @@ func (g *fakeGitOps) Restore(context.Context, string) (bool, error) {
 	return true, nil
 }
 
-const benchmarkIssue = "### Preset\n\nllama.cpp · Qwen3.8-27B Q4_0\n\n### Benchmark\n\nvisual\n\n### Max tokens\n\n8"
+const benchmarkIssue = "### Model\n\nQwen3.8-27B Q4_0\n\n### Runtime\n\nllamacpp\n\n### Benchmark\n\nvisual\n\n### Max tokens\n\n8"
 
 func setup(labels ...string) (*Controller, *fakeGitHub, *fakeSandbox, *fakeGitOps, *recorder) {
 	rec := &recorder{}
@@ -150,7 +150,7 @@ func TestBenchmarkOpensPRThenRestores(t *testing.T) {
 	if err := c.Poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"label +llmbench:running", "pause", "sandbox ensure llamacpp", "pr llmbench/2026-09-27-issue1",
+	want := []string{"label +llmbench:running", "comment Running this job spec:", "pause", "sandbox ensure llamacpp", "pr llmbench/2026-09-27-issue1",
 		"comment Completed: PR #7", "sandbox delete", "restore", "label +llmbench:done", "label -llmbench:running"}
 	if got := rec.String(); got != strings.Join(want, "\n") {
 		t.Fatalf("events:\n%s", got)

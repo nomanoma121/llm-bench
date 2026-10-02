@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 )
 
 type freeToken struct {
@@ -20,7 +21,34 @@ func (a freeToken) Argv() []string {
 		"--host", "127.0.0.1",
 		"--port", fmt.Sprint(o.Port),
 	}
-	return append(argv, o.Args...)
+	settings, _ := a.settingArgs()
+	return append(append(argv, settings...), o.Args...)
+}
+
+func (a freeToken) settingArgs() ([]string, error) {
+	s := a.opts.Settings
+	var args []string
+	if s.GPUs > 1 {
+		args = append(args, "--tp-size", strconv.Itoa(s.GPUs))
+	}
+	if s.GPUs > 0 {
+		args = append(args, "--gpu", devices(s.GPUs, ""))
+	}
+	if s.Context > 0 {
+		args = append(args, "--max-seq-len-override", strconv.Itoa(s.Context))
+	}
+	if s.KVCache != "" {
+		return nil, unsupported("freetoken", "kv_cache")
+	}
+	if on(s.MTP) {
+		return nil, unsupported("freetoken", "mtp")
+	}
+	if on(s.ExpertsOnCPU) {
+		args = append(args, "--moe-strategy", "offload")
+	} else if off(s.ExpertsOnCPU) {
+		args = append(args, "--moe-strategy", "fused")
+	}
+	return args, nil
 }
 
 func (a freeToken) Ready(ctx context.Context) error {

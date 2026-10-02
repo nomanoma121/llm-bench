@@ -6,30 +6,97 @@ labels:
   - llmbench:optimize
 body:
   - type: dropdown
-    id: preset
+    id: model
     attributes:
-      label: Preset
-      description: Model, runtime and arguments known to run on the GPU node.
+      label: Model
       options:
-        - llama.cpp · Qwen3.8-27B Q4_0
-        - llama.cpp · Flash-Next UD-Q4_K_XL · 1GPU
-        - llama.cpp · Flash-Next UD-Q4_K_XL · 2GPU
-        - strata · Flash-Next IQ2_XS · 1GPU
-        - strata · Flash-Next IQ2_XS · 2GPU
-        - strata · Flash-Next IQ2_XS 64K · 2GPU
-        - strata · Flash-Next UD-Q4_K_XL · 1GPU
-        - freetoken · Flash-Next NVFP4 · 1GPU
+        - Qwen3.8-27B Q4_0
+        - Flash-Next UD-Q4_K_XL
+        - Flash-Next IQ2_XS
+        - Flash-Next NVFP4
       default: 0
     validations:
       required: true
   - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options:
+        - llamacpp
+        - strata
+        - freetoken
+      default: 0
+    validations:
+      required: true
+  - type: dropdown
+    id: gpus
+    attributes:
+      label: GPUs
+      options:
+        - "1"
+        - "2"
+      default: 0
+    validations:
+      required: true
+  - type: dropdown
+    id: context
+    attributes:
+      label: Context
+      options:
+        - default
+        - 32K
+        - 64K
+        - 128K
+      default: 1
+    validations:
+      required: true
+  - type: dropdown
+    id: mtp
+    attributes:
+      label: MTP
+      description: Speculative decoding with the model's multi-token prediction head.
+      options:
+        - default
+        - "on"
+        - "off"
+      default: 0
+    validations:
+      required: true
+  - type: dropdown
+    id: kv_cache
+    attributes:
+      label: KV cache
+      options:
+        - default
+        - f16
+        - q8_0
+        - q4_0
+      default: 0
+    validations:
+      required: true
+  - type: dropdown
+    id: experts_on_cpu
+    attributes:
+      label: Experts on CPU
+      description: Keep the MoE experts in host memory.
+      options:
+        - default
+        - "on"
+        - "off"
+      default: 0
+    validations:
+      required: true
+  - type: input
+    id: runtime_args
+    attributes:
+      label: Extra runtime args
+      description: Passed to the engine as they are, split like a shell does.
+  - type: dropdown
     id: benchmark
     attributes:
       label: Benchmark
-      description: A directory under benchmarks/.
       options:
         - visual
-        - visual-agent
       default: 0
     validations:
       required: true
@@ -47,6 +114,11 @@ body:
       default: 0
     validations:
       required: true
+  - type: input
+    id: harness_args
+    attributes:
+      label: Extra harness args
+      description: Passed to the harness before the task.
   - type: dropdown
     id: effort
     attributes:
@@ -66,11 +138,6 @@ body:
       label: Max tokens
       description: Caps a direct request; unused with a harness.
       value: "28672"
-  - type: input
-    id: repeats
-    attributes:
-      label: Repeats
-      value: "1"
   - type: checkboxes
     id: skip_metrics
     attributes:
@@ -79,11 +146,6 @@ body:
         - label: runtime
         - label: gpu
         - label: host
-  - type: input
-    id: args
-    attributes:
-      label: Extra runtime args
-      description: Appended to the preset's runtime arguments, split on spaces.
   - type: input
     id: repo
     attributes:
@@ -103,7 +165,7 @@ body:
     id: override
     attributes:
       label: Spec override
-      description: Job spec YAML laid over what the fields above build. Check it locally with `llmbench job validate`.
+      description: Job spec YAML laid over what the fields above build.
       render: yaml
   - type: textarea
     id: notes

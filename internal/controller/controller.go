@@ -121,6 +121,9 @@ func (c *Controller) Poll(ctx context.Context) error {
 	if err := c.GitHub.AddLabel(ctx, issue.Number, LabelRunning); err != nil {
 		return err
 	}
+	if spec, err := yaml.Marshal(j.Spec); err == nil {
+		_ = c.GitHub.Comment(ctx, issue.Number, "Running this job spec:\n\n```yaml\n"+string(spec)+"```")
+	}
 	c.Logf("job %s: started", j.ID)
 	c.finish(ctx, j, c.execute(ctx, j))
 	return nil

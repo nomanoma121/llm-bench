@@ -1,0 +1,218 @@
+{
+  "job_id": "2026-10-02-issue109",
+  "kind": "benchmark",
+  "started_at": "2026-10-02T02:23:29.285073256Z",
+  "duration_seconds": 540.271287103,
+  "model": {
+    "id": "strata-iq2_xs",
+    "path": "/models/strata/config/strata-iq2_xs.json",
+    "digest": "sha256:0a6f1b25385e42eb853a3da069c0fb3e0fa93e834297183311ff8c8055bc64ad"
+  },
+  "runtime": {
+    "engine": "strata",
+    "binary": "/opt/strata/.venv/bin/python",
+    "args": [
+      "--gpu",
+      "0,1"
+    ]
+  },
+  "gpus": [
+    "NVIDIA GeForce RTX 3060",
+    "NVIDIA GeForce RTX 3060"
+  ],
+  "driver": "595.91.07",
+  "measurement_valid": true,
+  "metrics": [
+    {
+      "name": "ttft_ms",
+      "case": "visual",
+      "unit": "ms",
+      "value": 2053.926938,
+      "min": 2053.926938,
+      "max": 2053.926938,
+      "samples": 1
+    },
+    {
+      "name": "latency_ms",
+      "case": "visual",
+      "unit": "ms",
+      "value": 513773.317821,
+      "min": 513773.317821,
+      "max": 513773.317821,
+      "samples": 1
+    },
+    {
+      "name": "decode_tok_per_s",
+      "case": "visual",
+      "unit": "tok/s",
+      "value": 56.02875425636423,
+      "min": 56.02875425636423,
+      "max": 56.02875425636423,
+      "samples": 1
+    },
+    {
+      "name": "prefill_tok_per_s",
+      "case": "visual",
+      "unit": "tok/s",
+      "value": 289.68898016371406,
+      "min": 289.68898016371406,
+      "max": 289.68898016371406,
+      "samples": 1
+    },
+    {
+      "name": "tokens_in",
+      "case": "visual",
+      "unit": "tokens",
+      "value": 595,
+      "min": 595,
+      "max": 595,
+      "samples": 1
+    },
+    {
+      "name": "tokens_out",
+      "case": "visual",
+      "unit": "tokens",
+      "value": 28672,
+      "min": 28672,
+      "max": 28672,
+      "samples": 1
+    },
+    {
+      "name": "draft_acceptance",
+      "case": "visual",
+      "unit": "ratio",
+      "value": 0.7688492063492064,
+      "min": 0.7688492063492064,
+      "max": 0.7688492063492064,
+      "samples": 1
+    },
+    {
+      "name": "mtp_accept_len",
+      "case": "visual",
+      "unit": "tokens",
+      "value": 2.467045258991568,
+      "min": 2.467045258991568,
+      "max": 2.467045258991568,
+      "samples": 1
+    },
+    {
+      "name": "requests",
+      "case": "visual",
+      "unit": "requests",
+      "value": 1,
+      "min": 1,
+      "max": 1,
+      "samples": 1
+    },
+    {
+      "name": "expert_hit_rate",
+      "case": "visual",
+      "unit": "ratio",
+      "value": 0.93,
+      "min": 0.93,
+      "max": 0.93,
+      "samples": 1
+    },
+    {
+      "name": "cached_tokens",
+      "case": "visual",
+      "unit": "tokens",
+      "value": 0,
+      "min": 0,
+      "max": 0,
+      "samples": 1
+    },
+    {
+      "name": "itl_ms_p50",
+      "case": "visual",
+      "unit": "ms",
+      "value": 0.029565,
+      "min": 0.029565,
+      "max": 0.029565,
+      "samples": 1
+    },
+    {
+      "name": "itl_ms_p95",
+      "case": "visual",
+      "unit": "ms",
+      "value": 55.623041,
+      "min": 55.623041,
+      "max": 55.623041,
+      "samples": 1
+    },
+    {
+      "name": "itl_ms_p99",
+      "case": "visual",
+      "unit": "ms",
+      "value": 60.076705,
+      "min": 60.076705,
+      "max": 60.076705,
+      "samples": 1
+    },
+    {
+      "name": "energy_j_per_token",
+      "case": "visual",
+      "unit": "J/token",
+      "value": 4.054106115722658,
+      "min": 4.054106115722658,
+      "max": 4.054106115722658,
+      "samples": 1
+    },
+    {
+      "name": "vram_used_mib",
+      "unit": "MiB",
+      "value": 11589,
+      "min": 11473,
+      "max": 11589,
+      "samples": 1026
+    },
+    {
+      "name": "gpu_util_percent",
+      "unit": "%",
+      "value": 50.627680311890835,
+      "min": 0,
+      "max": 100,
+      "samples": 1026
+    },
+    {
+      "name": "power_w",
+      "unit": "W",
+      "value": 113.42248538011698,
+      "min": 46.12,
+      "max": 131.73,
+      "samples": 1026
+    },
+    {
+      "name": "temperature_c",
+      "unit": "°C",
+      "value": 69,
+      "min": 46,
+      "max": 69,
+      "samples": 1026
+    },
+    {
+      "name": "cpu_util_percent",
+      "unit": "%",
+      "value": 50.75170779130722,
+      "min": 8.61781848459617,
+      "max": 51.485977396400166,
+      "samples": 512
+    },
+    {
+      "name": "ram_used_mib",
+      "unit": "MiB",
+      "value": 42747.87109375,
+      "min": 42577.5234375,
+      "max": 42747.87109375,
+      "samples": 513
+    }
+  ],
+  "digests": {
+    "jobspec": "2a19cae8ba91071285d302abc15efe951526f8cae6eff407046f5776f8d24f78",
+    "series": "aa64c06d5ba178c057c77dfb660d689558bf128a2e3c98bd23c4ceb3505db130",
+    "workload": "1db4ba170eb927d1105b48c001aecb8248c07f6ebe05ac7b4c7fbac5af88e16e",
+    "prompts": {
+      "visual": "fba7c5aa61589d0065d1f1aea8ada4f918495fe973d73d04fbf8794a254c691c"
+    }
+  }
+}

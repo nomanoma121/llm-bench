@@ -42,13 +42,15 @@ const (
 	optDefault = "default"
 	optOn      = "on"
 	optOff     = "off"
-	noHarness  = "none"
-	noResponse = "_No response_"
+	// GitHub rejects "None" as a dropdown option.
+	noHarness   = "direct"
+	noReasoning = "no thinking"
+	noResponse  = "_No response_"
 )
 
 var (
 	allMetrics = []string{MetricRuntime, MetricGPU, MetricHost}
-	efforts    = []string{optDefault, "none", "low", "medium", "high"}
+	efforts    = []string{optDefault, noReasoning, "low", "medium", "high"}
 	toggles    = []string{optDefault, optOn, optOff}
 	contexts   = []string{optDefault, "32K", "64K", "128K"}
 )
@@ -248,7 +250,11 @@ func FromIssue(kind Kind, body string) (Spec, error) {
 		c.MaxTokens = number(fieldMaxTokens)
 	}
 	s.Workload = []Case{c}
-	if e := f[fieldEffort]; e != optDefault {
+	switch e := f[fieldEffort]; e {
+	case optDefault:
+	case noReasoning:
+		s.Sampling.ReasoningEffort = "none"
+	default:
 		s.Sampling.ReasoningEffort = e
 	}
 	skipped := map[string]bool{}

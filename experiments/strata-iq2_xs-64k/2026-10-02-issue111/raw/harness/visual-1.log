@@ -1,0 +1,332 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Castle Town in Spring — Voxel Scene</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #dfe8e6; font-family: system-ui, sans-serif; }
+  #app { position: fixed; inset: 0; }
+  #ui {
+    position: fixed; left: 14px; top: 14px; z-index: 10;
+    background: rgba(255,255,255,0.82); border: 1px solid rgba(0,0,0,0.12);
+    border-radius: 10px; padding: 10px 12px; box-shadow: 0 4px 14px rgba(0,0,0,0.12);
+    font-size: 13px; color: #223; max-width: 260px;
+  }
+  #ui h1 { margin: 0 0 6px; font-size: 14px; }
+  #ui p { margin: 0 0 8px; color: #556; line-height: 1.4; }
+  #ui button {
+    border: 0; border-radius: 6px; padding: 7px 12px; cursor: pointer;
+    background: #2f6b5f; color: #fff; font-size: 13px;
+  }
+  #ui button:hover { background: #38836f; }
+  #ui kbd { background: #e8e8e8; border-radius: 4px; padding: 1px 5px; font-family: ui-monospace, monospace; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app"></div>
+<div id="ui">
+  <h1>Castle Town in Spring</h1>
+  <p>Drag to orbit, scroll to zoom, right-drag to pan.</p>
+  <button id="toggle">Toggle day / dusk</button>
+  <p style="margin-top:8px">or press <kbd>D</kbd></p>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ---------- seeded random ---------- */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(1337);
+const rr = (a, b) => a + rand() * (b - a);
+const ri = (a, b) => Math.floor(rr(a, b + 1));
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+/* ---------- renderer / scene / camera ---------- */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.getElementById('app').appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(46, window.innerWidth / window.innerHeight, 0.5, 400);
+camera.position.set(54, 36, 62);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(14, 4, 22);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.minDistance = 12;
+controls.maxDistance = 160;
+controls.update();
+
+/* ---------- lighting ---------- */
+const hemi = new THREE.HemisphereLight(0xdfe8e6, 0x7d8a72, 0.85);
+scene.add(hemi);
+
+const sun = new THREE.DirectionalLight(0xfff2e0, 1.6);
+sun.position.set(42, 62, 30);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -70;
+sun.shadow.camera.right = 70;
+sun.shadow.camera.top = 70;
+sun.shadow.camera.bottom = -70;
+sun.shadow.camera.near = 1;
+sun.shadow.camera.far = 200;
+sun.shadow.bias = -0.0006;
+scene.add(sun);
+
+const lanternLights = [];
+for (const p of [[-14, 3.2, 22], [0, 3.4, 12], [9, 3.2, 32]]) {
+  const l = new THREE.PointLight(0xffb060, 0, 16, 2);
+  l.position.set(p[0], p[1], p[2]);
+  scene.add(l);
+  lanternLights.push(l);
+}
+
+let dusk = false;
+function applyLighting() {
+  if (!dusk) {
+    scene.background = new THREE.Color(0xdfe8e6);
+    scene.fog = new THREE.Fog(0xdfe8e6, 55, 170);
+    sun.color.set(0xfff2e0); sun.intensity = 1.6; sun.position.set(42, 62, 30);
+    hemi.color.set(0xdfe8e6); hemi.groundColor.set(0x7d8a72); hemi.intensity = 0.85;
+    lanternLights.forEach((l) => (l.intensity = 0));
+    renderer.toneMappingExposure = 1.05;
+  } else {
+    scene.background = new THREE.Color(0x2b3147);
+    scene.fog = new THREE.Fog(0x3a4158, 45, 150);
+    sun.color.set(0xff9a55); sun.intensity = 0.9; sun.position.set(-48, 22, 40);
+    hemi.color.set(0x5a6480); hemi.groundColor.set(0x33384a); hemi.intensity = 0.45;
+    lanternLights.forEach((l) => (l.intensity = 2.2));
+    renderer.toneMappingExposure = 1.2;
+  }
+}
+applyLighting();
+
+/* ---------- materials (shared) ---------- */
+const M = {
+  grass:   new THREE.MeshStandardMaterial({ color: 0x7fa06a, roughness: 0.95 }),
+  gravel:  new THREE.MeshStandardMaterial({ color: 0xb2a894, roughness: 0.9 }),
+  stone:   new THREE.MeshStandardMaterial({ color: 0x8d8d86, roughness: 0.85 }),
+  stoneDk: new THREE.MeshStandardMaterial({ color: 0x6f7069, roughness: 0.85 }),
+  water:   new THREE.MeshStandardMaterial({ color: 0x4a7f8c, roughness: 0.15, metalness: 0.25, transparent: true, opacity: 0.85 }),
+  white:   new THREE.MeshStandardMaterial({ color: 0xf3efe6, roughness: 0.8 }),
+  wood:    new THREE.MeshStandardMaterial({ color: 0x4b3a2c, roughness: 0.85 }),
+  woodLt:  new THREE.MeshStandardMaterial({ color: 0x8a6a48, roughness: 0.85 }),
+  roof:    new THREE.MeshStandardMaterial({ color: 0x39414f, roughness: 0.7, side: THREE.DoubleSide }),
+  roofWarm:new THREE.MeshStandardMaterial({ color: 0x6a4a3c, roughness: 0.75, side: THREE.DoubleSide }),
+  plank:   new THREE.MeshStandardMaterial({ color: 0x7d5f42, roughness: 0.9 }),
+  red:     new THREE.MeshStandardMaterial({ color: 0xb23a34, roughness: 0.7 }),
+  verm:    new THREE.MeshStandardMaterial({ color: 0xc25a44, roughness: 0.8 }),
+  gold:    new THREE.MeshStandardMaterial({ color: 0xd9a441, roughness: 0.4, metalness: 0.5 }),
+  pink:    new THREE.MeshStandardMaterial({ color: 0xf2b6c6, roughness: 0.9 }),
+  pinkLt:  new THREE.MeshStandardMaterial({ color: 0xf8cbd8, roughness: 0.9 }),
+  green:   new THREE.MeshStandardMaterial({ color: 0x5c8a58, roughness: 0.9 }),
+  greenLt: new THREE.MeshStandardMaterial({ color: 0x74a468, roughness: 0.9 }),
+  trunk:   new THREE.MeshStandardMaterial({ color: 0x6b4a35, roughness: 0.95 }),
+  window:  new THREE.MeshStandardMaterial({ color: 0x2c2a26, roughness: 0.6 }),
+  lantern: new THREE.MeshStandardMaterial({ color: 0x9b9b93, roughness: 0.8 }),
+  glow:    new THREE.MeshStandardMaterial({ color: 0xffd9a0, emissive: 0xffb050, emissiveIntensity: 0.9, roughness: 0.5 }),
+  awning:  [
+    new THREE.MeshStandardMaterial({ color: 0x3f6f8f, roughness: 0.85 }),
+    new THREE.MeshStandardMaterial({ color: 0x9a4a4a, roughness: 0.85 }),
+    new THREE.MeshStandardMaterial({ color: 0x4a8a6a, roughness: 0.85 }),
+    new THREE.MeshStandardMaterial({ color: 0xc2a24a, roughness: 0.85 })
+  ]
+};
+
+/* ---------- batched instancing ---------- */
+const batches = new Map();
+const dummy = new THREE.Object3D();
+function add(geo, mat, x, y, z, sx = 1, sy = 1, sz = 1, ry = 0) {
+  const key = geo.uuid + '|' + mat.uuid;
+  let b = batches.get(key);
+  if (!b) { b = { geo, mat, items: [] }; batches.set(key, b); }
+  b.items.push({ p: [x, y, z], s: [sx, sy, sz], ry });
+}
+function finalize() {
+  for (const b of batches.values()) {
+    const mesh = new THREE.InstancedMesh(b.geo, b.mat, b.items.length);
+    for (let i = 0; i < b.items.length; i++) {
+      const it = b.items[i];
+      dummy.position.set(it.p[0], it.p[1], it.p[2]);
+      dummy.scale.set(it.s[0], it.s[1], it.s[2]);
+      dummy.rotation.set(0, it.ry, 0);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.castShadow = b.mat !== M.water;
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+    if (b.mat === M.water) waterMesh = mesh;
+  }
+}
+let waterMesh = null;
+
+/* ---------- shared geometries ---------- */
+const box = new THREE.BoxGeometry(1, 1, 1);
+const cyl = new THREE.CylinderGeometry(0.5, 0.5, 1, 6);
+
+// gabled roof prism, ridge along Z, unit footprint, origin at base
+function makeRoofGeo() {
+  const h = 0.6;
+  const v = [
+    -0.5, 0, -0.5,  0.5, 0, -0.5,  0, h,  0,
+    -0.5, 0, -0.5,  0, h,  0,      -0.5, h, 0,
+     0.5, 0,  0.5, -0.5, 0,  0.5,  -0.5, h, 0,
+     0.5, 0,  0.5, -0.5, h,  0,     0, h,  0,
+    -0.5, 0, -0.5, -0.5, h,  0,    -0.5, 0,  0.5,
+     0.5, 0,  0.5,  0, h,  0,       0.5, 0, -0.5
+  ];
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+  g.computeVertexNormals();
+  return g;
+}
+const roofGeo = makeRoofGeo();
+
+/* ---------- world helpers ---------- */
+const CASTLE = [0, 0];
+function dist(x, z) { return Math.hypot(x - CASTLE[0], z - CASTLE[1]); }
+
+function terrainH(x, z) {
+  const d = dist(x, z);
+  if (d < 13) return 6;                 // stone base plateau
+  if (d < 18) return -1.6;              // moat
+  if (d < 20) return 0.7;               // far bank
+  return 0.35 + 0.28 * Math.sin(x * 0.14) + 0.24 * Math.cos(z * 0.13);
+}
+
+function isRoad(x, z) {
+  if (x >= 0 && x <= 6 && z >= 2 && z <= 34) return true;          // main road
+  if (z >= 0 && z <= 4 && x >= 12 && x <= 44) return true;         // east road
+  if (z >= 16 && z <= 20 && x >= 6 && x <= 44) return true;        // cross street
+  if (x >= 20 && x <= 22 && z >= 20 && z <= 44) return true;       // narrow alley
+  if (z >= 32 && z <= 34 && x >= 26 && x <= 44) return true;       // second alley
+  if (x >= 4 && x <= 14 && z >= 28 && z <= 36) return true;        // market square
+  return false;
+}
+
+/* ---------- terrain ---------- */
+for (let x = -30; x <= 46; x += 2) {
+  for (let z = -30; z <= 46; z += 2) {
+    const h = terrainH(x, z);
+    const d = dist(x, z);
+    let mat = M.grass;
+    if (d < 13) mat = M.stone;
+    else if (h < 0) mat = M.stoneDk;
+    else if (isRoad(x, z)) mat = M.gravel;
+    add(box, mat, x, h / 2, z, 2, Math.max(Math.abs(h), 0.2), 2);
+    if (h < 0) add(box, M.water, x, -0.55, z, 2, 0.45, 2);
+  }
+}
+
+// stone parapet around the castle base
+for (let a = 0; a < 24; a++) {
+  const ang = (a / 24) * Math.PI * 2;
+  if (Math.abs(Math.sin(ang)) < 0.15 && Math.cos(ang) > 0) continue; // gap for gate axis
+  add(box, M.stoneDk, 13 * Math.cos(ang), 6.55, 13 * Math.sin(ang), 2.1, 1.1, 2.1);
+}
+
+/* ---------- castle keep ---------- */
+function layeredRoof(cx, cy, cz, w, d, layers) {
+  let y = cy;
+  for (let k = 0; k < layers; k++) {
+    const rw = w + 1.2 - k * 1.5, rd = d + 1.2 - k * 1.5;
+    if (rw <= 0.6 || rd <= 0.6) break;
+    add(box, M.roof, cx, y + 0.35, cz, rw, 0.7, rd);
+    y += 0.7;
+  }
+  add(box, M.roof, cx, y + 0.25, cz, Math.max(w - layers * 1.5, 1.2), 0.5, Math.max(d - layers * 1.5, 1.2));
+  return y + 0.5;
+}
+
+const levels = [[13, 11, 3.2], [10.5, 8.5, 3.0], [8, 6.5, 2.8], [5.8, 4.6, 2.6], [3.8, 3.0, 2.4]];
+let y = 7;
+for (const [w, d, hgt] of levels) {
+  add(box, M.white, 0, y + hgt / 2, 0, w, hgt, d);
+  add(box, M.wood, 0, y + 0.16, 0, w + 0.25, 0.32, d + 0.25);          // trim band
+  add(box, M.wood, 0, y + hgt - 0.16, 0, w + 0.2, 0.3, d + 0.2);       // upper trim
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    add(box, M.wood, sx * (w / 2 - 0.18), y + hgt / 2, sz * (d / 2 - 0.18), 0.4, hgt, 0.4); // corner posts
+  }
+  for (let k = 0; k < 3; k++) {                                          // windows
+    const wx = (rand() - 0.5) * (w - 2);
+    add(box, M.window, wx, y + hgt * 0.55, d / 2 + 0.03, 0.7, 0.9, 0.08);
+    add(box, M.window, -wx, y + hgt * 0.55, -d / 2 - 0.03, 0.7, 0.9, 0.08);
+  }
+  y = layeredRoof(0, y + hgt, 0, w, d, 3);
+}
+add(box, M.gold, 0, y + 0.6, 0, 0.5, 1.2, 0.5);                        // shachihoko
+add(box, M.gold, 0.6, y + 0.4, 0, 0.35, 0.6, 0.35);
+add(box, M.gold, -0.6, y + 0.4, 0, 0.35, 0.6, 0.35);
+
+// stone stairs up the main axis
+for (let s = 0; s < 6; s++) add(box, M.stone, 0, 6 - s * 1.0, 12 - s * 1.2, 3.2, 1.0, 1.2);
+
+/* ---------- main gate ---------- */
+const gy = 7;
+for (const sx of [-1, 1]) {
+  add(box, M.stoneDk, sx * 2.2, gy + 0.4, 12.2, 1.6, 0.8, 2.2);
+  add(box, M.wood, sx * 2.2, gy + 2.4, 12.2, 0.8, 4.0, 1.2);
+}
+add(box, M.wood, 0, gy + 2.2, 12.2, 4.6, 0.5, 1.0);
+add(roofGeo, M.roof, 0, gy + 4.4, 12.2, 6.2, 1.0, 2.6);
+add(box, M.window, 0, gy + 1.6, 12.2, 4.0, 1.6, 0.1);
+
+/* ---------- bridges ---------- */
+function bridge(x0, z0, x1, z1) {
+  const len = Math.hypot(x1 - x0, z1 - z0);
+  const ang = Math.atan2(x1 - x0, z1 - z0);
+  const mx = (x0 + x1) / 2, mz = (z0 + z1) / 2;
+  add(box, M.plank, mx, 0.35, mz, 3.2, 0.25, len);
+  for (let t = 0; t < len; t += 1.6) {
+    const px = x0 + (x1 - x0) * (t / len), pz = z0 + (z1 - z0) * (t / len);
+    for (const side of [-1.7, 1.7]) {
+      const ox = Math.cos(ang) * side, oz = -Math.sin(ang) * side;
+      add(box, M.wood, px + ox, 0.9, pz + oz, 0.25, 1.1, 0.25);
+    }
+  }
+  for (let t = 0; t < len - 1.6; t += 1.6) {
+    const px = x0 + (x1 - x0) * ((t + 0.8) / len), pz = z0 + (z1 - z0) * ((t + 0.8) / len);
+    for (const side of [-1.7, 1.7]) {
+      const ox = Math.cos(ang) * side, oz = -Math.sin(ang) * side;
+      add(box, M.wood, px + ox, 1.35, pz + oz, 1.6, 0.18, 0.18);
+    }
+  }
+}
+bridge(0, 13, 0, 19);      // main bridge at the gate
+bridge(13, 2, 18, 2);       // east bridge
+
+/* ---------- town buildings ---------- */
+function building(cx, cz, type) {
+  const base = terrainH(cx, cz);
+  let w, d, hgt;
+  if (type === 'warehouse') { w = rr(3.2, 3.8); d = rr(3.0, 3.8); hgt = rr(3.2, 4.2); }
+  else if (type === 'shop') { w = rr(2.4, 3.2);

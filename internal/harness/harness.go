@@ -74,10 +74,15 @@ type Mise struct {
 }
 
 func (m Mise) cmd(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "mise", append([]string{"-C", filepath.Join(m.Root, Dir)}, args...)...)
+	// Absolute, because a harness runs in its own working directory.
+	root, _ := filepath.Abs(m.Root)
+	cmd := exec.CommandContext(ctx, "mise", append([]string{"-C", filepath.Join(root, Dir)}, args...)...)
 	cmd.Env = append(os.Environ(),
 		"MISE_DATA_DIR="+m.DataDir,
-		"MISE_TRUSTED_CONFIG_PATHS="+filepath.Join(m.Root, Dir),
+		// mise also reads the configs above harnesses/; the repository's own
+		// mise.toml holds the development tools, not the harnesses.
+		"MISE_IGNORED_CONFIG_PATHS="+filepath.Join(root, "mise.toml"),
+		"MISE_TRUSTED_CONFIG_PATHS="+filepath.Join(root, Dir),
 		"MISE_YES=1",
 	)
 	return cmd

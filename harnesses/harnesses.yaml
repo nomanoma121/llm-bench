@@ -22,7 +22,7 @@ opencode:
       "limit": {"context": {{.Context}}, "output": 32768}{{end}}}}}}}
 
 pi:
-  tool: npm:@mariozechner/pi-coding-agent
+  tool: npm:@earendil-works/pi-coding-agent
   command: [pi, --print, --provider, llmbench, --model, "{{.Model}}", "{{.Prompt}}"]
   files:
     .pi/agent/models.json: >-

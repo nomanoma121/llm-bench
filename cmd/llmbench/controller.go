@@ -36,14 +36,13 @@ type config struct {
 		Workdir         string            `yaml:"workdir"`
 		LLMBench        []string          `yaml:"llmbench"`
 	} `yaml:"sandbox"`
-	GitOps  gitops.Target `yaml:"gitops"`
-	Harness *struct {
-		Namespace   string   `yaml:"namespace"`
-		PodSelector string   `yaml:"pod_selector"`
-		Container   string   `yaml:"container"`
-		Command     []string `yaml:"command"`
-		CWD         string   `yaml:"cwd"`
-	} `yaml:"harness"`
+	GitOps gitops.Target `yaml:"gitops"`
+	// Agent is the opencode server optimize jobs are handed to. Its password
+	// comes from OPENCODE_SERVER_PASSWORD.
+	Agent *struct {
+		URL      string `yaml:"url"`
+		Username string `yaml:"username"`
+	} `yaml:"agent"`
 	PollIntervalSeconds int `yaml:"poll_interval_seconds"`
 	PauseTimeoutMinutes int `yaml:"pause_timeout_minutes"`
 }
@@ -133,11 +132,8 @@ func buildController(cfg config, kubeconfig string) (*controller.Controller, err
 		SandboxCheck: time.Minute,
 		Logf:         logger.Printf,
 	}
-	if h := cfg.Harness; h != nil {
-		c.Harness = &agent.Harness{
-			Client: kube, REST: rest, Namespace: h.Namespace, Selector: h.PodSelector,
-			Container: h.Container, Command: h.Command, CWD: h.CWD, Stderr: os.Stderr,
-		}
+	if a := cfg.Agent; a != nil && a.URL != "" {
+		c.Agent = &agent.OpenCode{URL: a.URL, Username: a.Username, Password: os.Getenv("OPENCODE_SERVER_PASSWORD"), Poll: 10 * time.Second}
 	}
 	return c, nil
 }

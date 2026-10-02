@@ -244,23 +244,23 @@ func TestRejectsInvalidSpec(t *testing.T) {
 	}
 }
 
-type fakeHarness struct{ done func() }
+type fakeAgent struct{ done func() }
 
-func (h fakeHarness) Run(_ context.Context, task string, onSession func(string)) (string, error) {
+func (h fakeAgent) Run(_ context.Context, task string, onSession func(string)) (string, error) {
 	onSession("s1")
 	h.done()
 	return "kept the faster build", nil
 }
 
-func TestOptimizeHandsSandboxToHarness(t *testing.T) {
+func TestOptimizeHandsSandboxToAgent(t *testing.T) {
 	c, gh, _, _, rec := setup(LabelOptimize)
 	gh.issues[1].Body = strings.Replace(benchmarkIssue, "kind: benchmark", "kind: optimize\nsource: {repo: ggml-org/llama.cpp, ref: master}", 1)
-	c.Harness = fakeHarness{done: func() { gh.branches["llmbench/2026-09-27-issue1"] = true }}
+	c.Agent = fakeAgent{done: func() { gh.branches["llmbench/2026-09-27-issue1"] = true }}
 	if err := c.Poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	got := rec.String()
-	for _, want := range []string{"comment Harness session: `s1`", "pr llmbench/2026-09-27-issue1", "restore", "label +llmbench:done"} {
+	for _, want := range []string{"comment Agent session: `s1`", "pr llmbench/2026-09-27-issue1", "restore", "label +llmbench:done"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in:\n%s", want, got)
 		}

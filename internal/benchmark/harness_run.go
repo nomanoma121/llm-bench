@@ -98,6 +98,15 @@ func (r *run) runHarness(ctx context.Context, c job.Case, repeat int, prompt str
 		values["completed"] = 1
 	}
 	r.record(c.Name, repeat, values)
+	// A harness may answer with the page instead of writing it, as a direct
+	// request does; then the page in its reply is the output.
+	if _, err := os.Stat(filepath.Join(work, "index.html")); errors.Is(err, fs.ErrNotExist) {
+		if reply, err := os.ReadFile(log.Name()); err == nil {
+			if html := extractHTML(string(reply)); html != "" {
+				_ = os.WriteFile(filepath.Join(work, "index.html"), []byte(html), 0o644)
+			}
+		}
+	}
 	if err := copyTree(work, filepath.Join(r.cfg.OutDir, "output", name)); err != nil {
 		return fmt.Errorf("output could not be saved: %w", err)
 	}

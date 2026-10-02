@@ -1,0 +1,95 @@
+{
+  "job_id": "2026-10-02-issue95",
+  "kind": "benchmark",
+  "started_at": "2026-10-02T01:03:18.716197484Z",
+  "duration_seconds": 60.206042402,
+  "model": {
+    "id": "strata-iq2_xs-64k",
+    "path": "/models/strata/config/strata-iq2_xs-64k.json",
+    "digest": "sha256:1ea678480e199a86809477636f8952377d5e250b6f7684937b36a6447888bde3"
+  },
+  "runtime": {
+    "engine": "strata",
+    "binary": "/opt/strata/.venv/bin/python",
+    "version": "0.1.31",
+    "args": [
+      "--gpu",
+      "0,1"
+    ],
+    "info": {
+      "expert_slots": "5618",
+      "gpu_resident_experts": "9943",
+      "layer_split": "layers 0-21 (CUDA0), 22-47 (CUDA1), one hand-off per window",
+      "prefilled_expert_slots": "5618",
+      "version": "0.1.31",
+      "vram_free_mib": "478"
+    }
+  },
+  "gpus": [
+    "NVIDIA GeForce RTX 3060",
+    "NVIDIA GeForce RTX 3060"
+  ],
+  "driver": "595.91.07",
+  "measurement_valid": false,
+  "invalid_reasons": [
+    "case visual repeat 1: mise install: exit status 1\n.1  waiting for node@22\nmise node@22.23.3 v22.23.3\nmise node@22.23.3 10.9.9\nmise ✓ node@22.23.3                              4.5s  node-v22.23.3-linux-x64.tar.gz\nmise ████████░░░░░░░░ 2/4 · 6.0s\n  npm:opencode-ai@1.18.34                   checking package  1.1s\n  npm:@mariozechner/pi-coding-agent@0.73.1  checking package  1.1s\nmise WARN  deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\nmise WARN  4 transitive packages have deprecation warnings.\nmise ✓ npm:@mariozechner/pi-coding-agent@0.73.1  3.7s\nmise ████████████░░░░ 3/4 · 9.0s\n  npm:opencode-ai@1.18.34                   resolving  4.1s  1/1 pkgs · 3.0 KiB\nmise ████████████░░░░ 3/4 · 12.0s\n  npm:opencode-ai@1.18.34                   resolving  7.1s  1/1 pkgs · 3.0 KiB\nmise ████████████░░░░ 3/4 · 15.0s\n  npm:opencode-ai@1.18.34                   resolving  10.1s  1/1 pkgs · 3.0 KiB\nmise ████████████░░░░ 3/4 · 18.0s\n  npm:opencode-ai@1.18.34                   resolving  13.1s  1/1 pkgs · 3.0 KiB\nmise ███████████████░ 3/4 · 21.0s\n  npm:opencode-ai@1.18.34                   fetching  16.1s  2/13 pkgs · 57.5 MiB\nmise ✓ npm:opencode-ai@1.18.34                   17.0s\nmise ████████████████ 4/4 · installed 3 tools · 1 failed in 21.9s\nmise ERROR Failed to install pipx:huggingface_hub@latest: pipx is required to install pipx:huggingface_hub but was not found.\n\nTo use pipx packages with mise, you need to install pipx first:\n  mise use pipx@latest\n\nAlternatively, you can use uv/uvx by installing uv:\n  mise use uv@latest\n\nIf pipx is already installed, verify it with `mise which pipx` and `pipx --version`.\nmise ERROR Version: 2026.9.18 linux-x64 (2026-09-30)\nmise ERROR Run with --verbose or MISE_VERBOSE=1 for more information"
+  ],
+  "metrics": [
+    {
+      "name": "vram_used_mib",
+      "unit": "MiB",
+      "value": 11483,
+      "min": 11433,
+      "max": 11483,
+      "samples": 42
+    },
+    {
+      "name": "gpu_util_percent",
+      "unit": "%",
+      "value": 0,
+      "min": 0,
+      "max": 0,
+      "samples": 42
+    },
+    {
+      "name": "power_w",
+      "unit": "W",
+      "value": 40.28214285714288,
+      "min": 19.07,
+      "max": 46.98,
+      "samples": 42
+    },
+    {
+      "name": "temperature_c",
+      "unit": "°C",
+      "value": 52,
+      "min": 44,
+      "max": 52,
+      "samples": 42
+    },
+    {
+      "name": "cpu_util_percent",
+      "unit": "%",
+      "value": 2.30687600461805,
+      "min": 0.4168403501458941,
+      "max": 9.320961619569802,
+      "samples": 21
+    },
+    {
+      "name": "ram_used_mib",
+      "unit": "MiB",
+      "value": 43399.71875,
+      "min": 42330.17578125,
+      "max": 43399.71875,
+      "samples": 22
+    }
+  ],
+  "digests": {
+    "jobspec": "878d23072ce4224614cf81a18c2a212fb69fb2b90a91cfc35228c2c7903021db",
+    "series": "72299e090ee9be42ebd79619aec8367367317bdf9472aaadbea00dee6e917df4",
+    "workload": "c373103afdd49e4239d4a0c7d919d41b914307773d840a83c0dc9078db7d7f10",
+    "prompts": {
+      "visual": "fba7c5aa61589d0065d1f1aea8ada4f918495fe973d73d04fbf8794a254c691c"
+    }
+  }
+}

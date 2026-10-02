@@ -316,8 +316,10 @@ func (r *run) recordCompletion(caseName string, repeat int, got runtime.Completi
 	if got.CompletionTokens > 1 && got.Total > got.TTFT {
 		values["decode_tok_per_s"] = float64(got.CompletionTokens-1) / (got.Total - got.TTFT).Seconds()
 	}
-	if got.PromptTokens > 0 && got.TTFT > 0 {
-		values["prefill_tok_per_s"] = float64(got.PromptTokens) / got.TTFT.Seconds()
+	// Prompt caching stays on as runtimes are used; only the tokens the cache
+	// did not hold were read before the first token.
+	if read := got.PromptTokens - got.CachedTokens; read > 0 && got.TTFT > 0 {
+		values["prefill_tok_per_s"] = float64(read) / got.TTFT.Seconds()
 	}
 	if got.DraftTokens > 0 {
 		values["draft_acceptance"] = float64(got.DraftAccepted) / float64(got.DraftTokens)

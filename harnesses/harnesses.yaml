@@ -27,4 +27,5 @@ pi:
   files:
     .pi/agent/models.json: >-
       {"providers": {"llmbench": {"baseUrl": "{{.BaseURL}}", "api": "openai-completions",
-      "apiKey": "llmbench", "models": [{"id": "{{.Model}}"{{if .Context}}, "contextWindow": {{.Context}}{{end}}}]}}}
+      "apiKey": "llmbench", "models": [{"id": "{{.Model}}", "maxTokens": 32768{{if .Context}},
+      "contextWindow": {{.Context}}{{end}}}]}}}

@@ -28,12 +28,26 @@ COPY patches/ /patches/
 # something that merely compiles.
 RUN git apply --verbose /patches/01-pentacoxian-v100-v3.patch \
     && git apply --verbose /patches/02-llm-bench-local.patch
+# The devel image carries no driver, only a stub libcuda.so under the toolkit's
+# stubs directory, and that directory is not on the link path. libggml-cuda.so
+# records libcuda.so.1 as a dependency through the stub, but linking llama-server
+# then cannot resolve it and the driver API comes out undefined (cuMemCreate,
+# cuMemMap and the rest of the VMM allocator). -rpath-link is what ld consults for
+# a transitive DT_NEEDED; a plain -L does not count. Nothing of the stub ends up in
+# the runtime image: the NVIDIA container runtime injects the real libcuda.so.1.
+# The stubs directory ships libcuda.so only, while its SONAME -- and so the
+# DT_NEEDED that lands in libggml-cuda.so -- is libcuda.so.1, and ld resolves a
+# transitive DT_NEEDED by that exact file name. Hence the symlink.
+ARG CUDA_STUBS=/usr/local/cuda/lib64/stubs
+RUN test -e "${CUDA_STUBS}/libcuda.so" && ln -sf libcuda.so "${CUDA_STUBS}/libcuda.so.1"
 # GGML_NATIVE is off: the build runner's CPU is not the cluster's, and the CPU half
 # of the MoE needs nothing beyond AVX2, which both have.
 RUN cmake -B build -DCMAKE_BUILD_TYPE=Release \
       -DGGML_CUDA=ON -DGGML_NATIVE=OFF \
       -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}" \
       -DCMAKE_CUDA_FLAGS=-Wno-deprecated-gpu-targets \
+      -DCMAKE_EXE_LINKER_FLAGS="-L${CUDA_STUBS} -Wl,-rpath-link,${CUDA_STUBS}" \
+      -DCMAKE_SHARED_LINKER_FLAGS="-L${CUDA_STUBS} -Wl,-rpath-link,${CUDA_STUBS}" \
       -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
     && cmake --build build --target llama-server llama-quantize -j"$(nproc)"
 

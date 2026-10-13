@@ -1,0 +1,65 @@
+# Builds the single-file GGUF this runtime serves: Unsloth's UD-Q4_K_XL trunk with
+# the MTP head's blk.48 merged in. llama.cpp reads the nextn tensors from the model
+# itself, so neither of Unsloth's separate heads can be passed with -md (the shared
+# one wants to borrow token_embd from the target, which upstream cannot do, and the
+# self-contained one is missing output_hc_norm). Needs no GPU, about 20 minutes:
+#
+#   kubectl apply -f runtimes/llama-cpp/v100/prepare-mtp.yaml
+#   kubectl -n llm-bench logs -f job/llama-cpp-v100-prepare-mtp
+#
+# Expects /models/UD-Q4_K_XL (the four shards prepare-ud-q4_k_xl.yaml checks) and
+# /models/mtp-Qwen3.8-Flash-Next-Q8_0.gguf, both from `llmbench models download`.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: llama-cpp-v100-prepare-mtp
+  namespace: llm-bench
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: inference
+          effect: NoSchedule
+      nodeSelector:
+        kubernetes.io/hostname: gpu-node-02
+      containers:
+        - name: prepare
+          image: ghcr.io/nomanoma121/llama-cpp-v100:latest
+          command: [sh, -c]
+          args:
+            - |
+              set -e
+              cd /models/UD-Q4_K_XL
+              sha256sum -c <<'SUMS'
+              4448186216b3af4cc558bbce2c3213f01608f8f8b2e5267a9767971dd3ec8082  Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
+              3f342f1c1580473f1ee94ddd5b28206e8c07a70fa1a366f59d1d6c922919a6c9  Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf
+              56758f40269cad5cd9b0d3d6fbae0f40f6d5be6de49e4ab392dbe83157d9cbd3  Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf
+              753bda48b98ba4f1636134a90a967de1b2d3908a236c026e464777342e53510a  Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf
+              SUMS
+              mkdir -p /models/flashnext-mtp
+              python3 /opt/llama-cpp-v100/tools/merge-mtp.py \
+                '/models/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-*.gguf' \
+                /models/mtp-Qwen3.8-Flash-Next-Q8_0.gguf \
+                /models/flashnext-mtp/Flash-Next-UD-Q4_K_XL-MTP.gguf
+              ls -l /models/flashnext-mtp/
+          resources:
+            # Reads and writes 107 GiB through a 16 MiB window, so it needs disk
+            # throughput rather than memory, and fits beside the running workload.
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              memory: 4Gi
+          volumeMounts:
+            - name: models
+              mountPath: /models
+      volumes:
+        - name: models
+          hostPath:
+            path: /var/lib/llama-cpp/models
+            type: Directory

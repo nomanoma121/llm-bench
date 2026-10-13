@@ -1,0 +1,32 @@
+name: llama-cpp-v100
+
+on:
+  push:
+    paths:
+      - "runtimes/llama-cpp/v100/**"
+      - ".github/workflows/llama-cpp-v100.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    # Two CUDA architectures (sm_70 for the V100 and sm_86 for the 3060s) on a
+    # runner with far fewer cores than the GPU node.
+    timeout-minutes: 300
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/llama-cpp-v100
+    steps:
+      - uses: actions/checkout@v4
+      # The CUDA 12.9 devel image and the build need more disk than the runner has free.
+      - run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+      # llama.cpp is pinned inside the Dockerfile, so this commit pins the whole image.
+      - run: echo "TAG=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_ENV"
+      - run: docker build -t "$IMAGE:$TAG" runtimes/llama-cpp/v100
+      - run: echo "${{ github.token }}" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+      - run: docker push "$IMAGE:$TAG"
+      - if: github.ref == 'refs/heads/main'
+        run: docker tag "$IMAGE:$TAG" "$IMAGE:latest" && docker push "$IMAGE:latest"

@@ -32,6 +32,9 @@ spec:
       containers:
         - name: server
           image: ghcr.io/nomanoma121/llama-cpp-v100:latest
+          # The image entrypoints llama-server; serve.sh is the measured Flash-Next
+          # configuration and has to be asked for.
+          command: [/opt/llama-cpp-v100/serve.sh]
           env:
             - name: CTX
               value: "262144"

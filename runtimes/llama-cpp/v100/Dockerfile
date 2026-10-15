@@ -60,9 +60,13 @@ WORKDIR /opt/llama-cpp-v100
 # The binaries and their shared libraries are all in build/bin.
 COPY --from=build /src/build/bin/ bin/
 COPY tools/ tools/
+# serve.sh is a helper, not the entrypoint: it hard-codes a model path and an
+# expert placement, which only suit Flash-Next at 262K. Deployments that serve
+# another model pass their own llama-server flags, so the image stays model
+# agnostic. Run it explicitly with `command: [/opt/llama-cpp-v100/serve.sh]`.
 COPY serve.sh .
 ENV LD_LIBRARY_PATH=/opt/llama-cpp-v100/bin
 ENV PATH=/opt/llama-cpp-v100/bin:$PATH
 # The sandbox runs as uid 1000.
 RUN chown -R 1000:1000 /opt/llama-cpp-v100
-ENTRYPOINT ["/opt/llama-cpp-v100/serve.sh"]
+ENTRYPOINT ["llama-server"]

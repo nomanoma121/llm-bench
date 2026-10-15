@@ -71,9 +71,11 @@ kubectl apply -f runtimes/llama-cpp/v100/prepare-mtp.yaml
 kubectl apply -f runtimes/llama-cpp/v100/serve.yaml
 ```
 
-`serve.sh` takes `CTX`, `NGRAM`, `NOSPEC`, `PIPE`, `QSA_DENSE`, `OFFL`, `THINK`,
-`THREADS`, `CPUMASK`, `UB`, `BATCH`, `MODEL`, `HOST`, `PORT`, and passes anything
-else straight to `llama-server`.
+The image entrypoints `llama-server`, so a deployment serving another model just
+passes its own flags. `serve.sh` is this node's measured Flash-Next configuration
+and has to be asked for (`command: [/opt/llama-cpp-v100/serve.sh]`); it takes `CTX`,
+`NGRAM`, `NOSPEC`, `PIPE`, `QSA_DENSE`, `OFFL`, `THINK`, `THREADS`, `CPUMASK`, `UB`,
+`BATCH`, `MODEL`, `HOST`, `PORT`, and passes anything else straight through.
 
 ## Patches
 

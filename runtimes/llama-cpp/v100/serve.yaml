@@ -35,16 +35,17 @@ spec:
           env:
             - name: CTX
               value: "262144"
-            - name: PIPE
-              value: "1"
+            # Bit-identical to the gather path and worth 1.4 GiB per device.
             - name: QSA_DENSE
               value: "1"
-            - name: OFFL
-              value: "3"
-            # Repeated prompts decode at 46.5 instead of 32 tok/s. Drop it, and
-            # OFFL, for bit-reproducible output; see README.md.
+            # Repeated prompts decode at 46.5 instead of 32 tok/s. Drop it for
+            # bit-reproducible output; see README.md.
             - name: NGRAM
               value: "1"
+            # PIPE and OFFL are deliberately absent. Together they leave under
+            # 1 GiB free on each 3060, and a 20k-token prompt then dies in the
+            # pipeline's staging pool with "cuMemCreate: out of memory" on CUDA1.
+            # They were measured on 4k prompts only; see README.md before enabling.
           ports:
             - name: http
               containerPort: 8080

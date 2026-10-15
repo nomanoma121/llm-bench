@@ -11,14 +11,21 @@ target sm_70 at all.
 
 ## Measured, 262K context, KV f16
 
-| stack | prefill (4K prompt) | decode | decode, repeated prompt |
+What `serve.yaml` runs, and the only row verified on a long prompt:
+
+| stack | prompt | prefill | decode |
 |---|---|---|---|
-| `PIPE=1 QSA_DENSE=1 OFFL=3` | 169 tok/s | 32.2 tok/s | — |
-| `PIPE=1 QSA_DENSE=1 OFFL=3 NGRAM=1` | 169 tok/s | 32.0 tok/s | **46.5 tok/s** |
-| defaults (`CTX=262144` alone) | 156-161 tok/s | 32.4 tok/s | — |
+| `QSA_DENSE=1 NGRAM=1` | 20k tokens | 151 tok/s | 30.5 tok/s |
+| `QSA_DENSE=1 NGRAM=1` | short | 146-149 tok/s | 32 tok/s, 46.5 repeated |
 
 8K context reaches 34.4 tok/s decode, because 29 expert layers fit in VRAM instead
 of 24. The quantization is never changed: all expert tensors are Q4 or above.
+
+`PIPE=1` and `OFFL=3` measured 169 tok/s prefill on 4K prompts, but they are off in
+`serve.yaml`: together they leave under 1 GiB free on each 3060, and a 20k-token
+prompt then aborts in the pipeline's staging pool with `cuMemCreate: out of memory`
+on CUDA1. Check the headroom with `nvidia-smi` against your own longest prompt
+before turning them on.
 
 ## Why the model is 24 layers on the GPUs and 24 in host RAM
 

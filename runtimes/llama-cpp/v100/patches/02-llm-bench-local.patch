@@ -1,0 +1,1694 @@
+diff --git a/ggml/src/ggml-alloc.c b/ggml/src/ggml-alloc.c
+index a71838eaf..067f88596 100644
+--- a/ggml/src/ggml-alloc.c
++++ b/ggml/src/ggml-alloc.c
+@@ -923,6 +923,13 @@ static bool ggml_gallocr_reserve_n_impl(
+             }
+         }
+         if (realloc) {
++            const bool log_realloc = getenv("GGML_ALLOC_LOG_REALLOC") != NULL;
++            if (log_realloc) {
++                size_t cur_size = galloc->buffers[i] ? ggml_vbuffer_size(galloc->buffers[i]) : 0;
++                static _Thread_local int realloc_count = 0;
++                GGML_LOG_WARN("%s: [realloc #%d] %s buffer from %.02f MiB to %.02f MiB\n",
++                    __func__, ++realloc_count, ggml_backend_buft_name(galloc->bufts[i]), cur_size / 1024.0 / 1024.0, new_size / 1024.0 / 1024.0);
++            }
+ #ifndef NDEBUG
+             {
+                 size_t cur_size = galloc->buffers[i] ? ggml_vbuffer_size(galloc->buffers[i]) : 0;
+diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
+index e68d42af4..f1cbe9142 100644
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -16,6 +16,7 @@
+ #include <assert.h>
+ #include <limits.h>
+ #include <stdarg.h>
++#include <ctime>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -1647,6 +1648,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+     GGML_ASSERT(sched);
+     struct ggml_backend_sched_split * splits = sched->splits;
+ 
++    // GGML_SPLIT_PROFILE=1: per-split wall time incl. input copies and (for async backends) a
++    // synchronize, so the totals attribute prefill time to devices at the cost of overlap
++    static const bool split_profile = getenv("GGML_SPLIT_PROFILE") != nullptr;
++    double sp_t0 = 0;
++    int64_t sp_nodes = 0;
++
+     ggml_tensor * prev_ids_tensor = nullptr;
+     std::vector<int32_t> ids;
+     std::vector<ggml_bitset_t> used_ids;
+@@ -1658,6 +1665,13 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+         int split_backend_id = split->backend_id;
+         ggml_backend_t split_backend = sched->backends[split_backend_id];
+ 
++        if (split_profile) {
++            sp_nodes = 0;
++            for (int j = 0; j < split->graph.n_nodes; j++) sp_nodes += split->graph.nodes[j]->op != GGML_OP_NONE;
++            struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
++            sp_t0 = ts.tv_sec + 1e-9*ts.tv_nsec;
++        }
++
+         // ensure the previous split's async work has completed before we start
+         // this split, the allocator may have reused buffer regions across splits
+         if (split->n_inputs == 0 && prev_backend_id >= 0 && prev_backend_id != split_backend_id) {
+@@ -1833,6 +1847,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+             if (ec != GGML_STATUS_SUCCESS) {
+                 return ec;
+             }
++            if (split_profile) {
++                ggml_backend_synchronize(split_backend);
++            }
+         } else {
+             // similar to ggml_backend_compare_graph_backend
+             for (int j0 = 0; j0 < split->graph.n_nodes; j0++) {
+@@ -1872,6 +1889,13 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+             ggml_backend_event_record(sched->events[split_backend_id][sched->cur_copy], split_backend);
+         }
+ 
++        if (split_profile) {
++            struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
++            double dt = (ts.tv_sec + 1e-9*ts.tv_nsec) - sp_t0;
++            GGML_LOG_INFO("%s: SPLIT %d backend=%s nodes=%lld ms=%.1f\n", __func__, split_id,
++                ggml_backend_name(split_backend), (long long)sp_nodes, dt*1e3);
++        }
++
+         prev_backend_id = split_backend_id;
+     }
+ 
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index 0bff0bc9f..a2b4437fb 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -1600,6 +1600,16 @@ static void ggml_compute_forward_mul_mat_id(
+     // reserved for the whole node (ggml_graph_plan sizes it without params, use_ref only skips the dispatch)
+     const bool iqp = ggml_cpu_iqp_supports_mul_mat_id(dst) && !params->use_ref;
+ 
++    // GGML_MMID_EXPERT_PAR=1 enables the expert-major queue (default: row-split path,
++    // which measured faster both for prefill and decode on V100+Zen3)
++    static int expert_par_cached = -1;
++    if (expert_par_cached == -1) {
++        const char * e = getenv("GGML_MMID_EXPERT_PAR");
++        expert_par_cached = (e != NULL && atoi(e) != 0) ? 1 : 0;
++    }
++    const bool expert_par = expert_par_cached != 0;
++    bool has_skipped_ep = false;
++
+     char * iqp_panels = NULL;
+ 
+     if (iqp) {
+@@ -1653,7 +1663,7 @@ static void ggml_compute_forward_mul_mat_id(
+         // expert cache uses it to hand routes it serves from VRAM to the GPU chain, leaving
+         // only the misses here. Such rows are skipped and their destination is zeroed, so
+         // summing the two chains reproduces the uncached result exactly.
+-        bool has_skipped = false;
++        has_skipped_ep = false;
+ 
+         // group rows by src0 matrix
+         for (int64_t iid1 = 0; iid1 < ids->ne[1]; ++iid1) {
+@@ -1661,7 +1671,7 @@ static void ggml_compute_forward_mul_mat_id(
+                 const int32_t i02 = *(const int32_t *) ((const char *) ids->data + iid1*ids->nb[1] + id*ids->nb[0]);
+ 
+                 if (i02 < 0 || i02 >= n_as) {
+-                    has_skipped = true;
++                    has_skipped_ep = true;
+                     continue;
+                 }
+ 
+@@ -1670,7 +1680,7 @@ static void ggml_compute_forward_mul_mat_id(
+             }
+         }
+ 
+-        if (has_skipped) {
++        if (has_skipped_ep) {
+             // zero everything before the barrier; the worker threads then overwrite exactly
+             // the rows they computed, leaving the skipped ones at zero
+             memset(dst->data, 0, ggml_nbytes(dst));
+@@ -1680,11 +1690,47 @@ static void ggml_compute_forward_mul_mat_id(
+     // reset current_chunk
+     for (int cur_a = ith; cur_a < n_as; cur_a += nth) {
+         atomic_int * current_chunk_ctr = (atomic_int *)(atomic_current_chunk + cur_a);
+-        *current_chunk_ctr = nth;
++        *current_chunk_ctr = expert_par ? 0 : nth;
+     }
+ 
+     ggml_barrier(params->threadpool);
+ 
++    const size_t row_size_ep = ggml_row_size(vec_dot_type, ne10);
++    const ggml_vec_dot_t vec_dot_ep = type_traits_cpu[type].vec_dot;
++    if (expert_par && !has_skipped_ep && !iqp) {
++        // Expert-major schedule: each thread claims whole experts from a shared queue and
++        // streams their matrix alone, instead of all threads converging on the same expert
++        // and row-splitting it (512 converge/diverge transitions per tensor per ubatch made
++        // 12 threads run at ~60% efficiency; the per-(row, pair) vec_dot work is identical,
++        // so results are bit-identical to the row-split path).
++        // has_skipped (moe cache) is excluded: skipped routes rely on the row path's zeroing.
++        const void * wdata_ep = (src1->type == vec_dot_type) ? src1->data : params->wdata;
++        atomic_int * expert_ctr = (atomic_int *)(atomic_current_chunk);
++        for (int cur_a = atomic_fetch_add_explicit(expert_ctr, 1, memory_order_relaxed);
++                cur_a < n_as;
++                cur_a = atomic_fetch_add_explicit(expert_ctr, 1, memory_order_relaxed)) {
++            const int64_t cne1_ep = matrix_row_counts[cur_a];
++            if (cne1_ep == 0) {
++                continue;
++            }
++            const char * src0_ep = (const char *) src0->data + cur_a * nb02;
++            for (int64_t iir1 = 0; iir1 < cne1_ep; iir1++) {
++                const struct mmid_row_mapping rm = MMID_MATRIX_ROW(cur_a, iir1);
++                const int64_t i11 = rm.i1 % ne11;
++                const int64_t i12 = rm.i2;
++                const char * src1_col = (const char *) wdata_ep +
++                    (src1_cont || src1->type != vec_dot_type
++                    ? (i11      + i12*ne11)*row_size_ep
++                    : (i11*nb11 + i12*nb12));
++                float * dst_col = (float *) ((char *) dst->data + (rm.i1*nb1 + i12*nb2));
++                for (int64_t ir0 = 0; ir0 < ne01; ir0++) {
++                    vec_dot_ep(ne00, &dst_col[ir0], 0, src0_ep + ir0*nb01, 0, src1_col, 0, 1);
++                }
++            }
++        }
++        return;
++    }
++
+     for (int cur_a = 0; cur_a < n_as; ++cur_a) {
+         const int64_t cne1 = matrix_row_counts[cur_a];
+ 
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.cpp b/ggml/src/ggml-cpu/ggml-cpu.cpp
+index 1df0f2bb9..1c2464cb1 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.cpp
++++ b/ggml/src/ggml-cpu/ggml-cpu.cpp
+@@ -7,7 +7,11 @@
+ #include "amx/amx.h"
+ 
+ #include <cctype>
++#include <condition_variable>
++#include <cstdlib>
++#include <mutex>
+ #include <string>
++#include <thread>
+ #include <vector>
+ 
+ #ifdef GGML_USE_CPU_HBM
+@@ -96,6 +100,84 @@ static bool ggml_backend_cpu_is_extra_buffer_type(ggml_backend_buffer_type_t buf
+ 
+ // CPU backend - backend (stream)
+ 
++// Runs one CPU split at a time on a dedicated thread, so ggml_backend_sched can keep submitting
++// GPU splits instead of blocking on the CPU for the whole split. The thread is persistent: ggml's
++// threadpool expects to be driven by one and the same caller.
++//
++// Enabled with GGML_CPU_ASYNC=1. With an offloaded MoE the CPU half of each layer's experts is
++// independent of the GPU half, so hiding it behind GPU work turns a step from
++// cpu + gpu into max(cpu, gpu).
++struct ggml_backend_cpu_async {
++    std::thread             thr;
++    std::mutex              mtx;
++    std::condition_variable cv;
++
++    bool has_work = false;
++    bool idle     = true;
++    bool quit     = false;
++
++    struct ggml_cgraph graph = {};
++    struct ggml_cplan  cplan = {};
++    enum ggml_status   status = GGML_STATUS_SUCCESS;
++
++    void start() {
++        thr = std::thread([this]() {
++            std::unique_lock<std::mutex> lk(mtx);
++            while (true) {
++                cv.wait(lk, [this]() { return has_work || quit; });
++                if (quit) {
++                    return;
++                }
++                has_work = false;
++                idle     = false;
++                lk.unlock();
++                const enum ggml_status st = ggml_graph_compute(&graph, &cplan);
++                lk.lock();
++                if (st != GGML_STATUS_SUCCESS) {
++                    status = st;
++                }
++                idle = true;
++                cv.notify_all();
++            }
++        });
++    }
++
++    // Block until the worker has nothing outstanding.
++    void join() {
++        std::unique_lock<std::mutex> lk(mtx);
++        cv.wait(lk, [this]() { return idle && !has_work; });
++    }
++
++    void submit(const struct ggml_cgraph * g, const struct ggml_cplan * c) {
++        std::unique_lock<std::mutex> lk(mtx);
++        cv.wait(lk, [this]() { return idle && !has_work; });
++        graph    = *g;   // shallow: the node array belongs to the scheduler and outlives the split
++        cplan    = *c;
++        has_work = true;
++        idle     = false;
++        cv.notify_all();
++    }
++
++    enum ggml_status take_status() {
++        std::unique_lock<std::mutex> lk(mtx);
++        const enum ggml_status st = status;
++        status = GGML_STATUS_SUCCESS;
++        return st;
++    }
++
++    ~ggml_backend_cpu_async() {
++        if (thr.joinable()) {
++            {
++                std::unique_lock<std::mutex> lk(mtx);
++                cv.wait(lk, [this]() { return idle && !has_work; });
++                quit = true;
++                cv.notify_all();
++            }
++            thr.join();
++        }
++    }
++};
++
+ struct ggml_backend_cpu_context {
+     int                 n_threads;
+     ggml_threadpool_t   threadpool;
+@@ -107,6 +189,8 @@ struct ggml_backend_cpu_context {
+     void *              abort_callback_data;
+ 
+     bool                use_ref;  // use reference implementation
++
++    ggml_backend_cpu_async * async = nullptr; // non-null when GGML_CPU_ASYNC=1
+ };
+ 
+ static const char * ggml_backend_cpu_get_name(ggml_backend_t backend) {
+@@ -117,11 +201,21 @@ static const char * ggml_backend_cpu_get_name(ggml_backend_t backend) {
+ 
+ static void ggml_backend_cpu_free(ggml_backend_t backend) {
+     struct ggml_backend_cpu_context * cpu_ctx = (struct ggml_backend_cpu_context *)backend->context;
++    delete cpu_ctx->async;      // joins the worker
+     delete[] cpu_ctx->work_data;
+     delete cpu_ctx;
+     delete backend;
+ }
+ 
++// ggml_backend_sched calls this before it reads anything this backend produced, so joining here
++// is what makes the asynchronous path safe.
++static void ggml_backend_cpu_synchronize(ggml_backend_t backend) {
++    struct ggml_backend_cpu_context * cpu_ctx = (struct ggml_backend_cpu_context *)backend->context;
++    if (cpu_ctx->async) {
++        cpu_ctx->async->join();
++    }
++}
++
+ struct ggml_backend_plan_cpu {
+     struct ggml_cplan cplan;
+     struct ggml_cgraph cgraph;
+@@ -172,6 +266,10 @@ static enum ggml_status ggml_backend_cpu_graph_compute(ggml_backend_t backend, s
+ 
+     struct ggml_cplan cplan = ggml_graph_plan(cgraph, cpu_ctx->n_threads, cpu_ctx->threadpool);
+ 
++    if (cpu_ctx->async && cpu_ctx->work_size < cplan.work_size) {
++        cpu_ctx->async->join();   // the pending split is still reading work_data
++    }
++
+     if (cpu_ctx->work_size < cplan.work_size) {
+         delete[] cpu_ctx->work_data;
+         cpu_ctx->work_data = new uint8_t[cplan.work_size];
+@@ -187,7 +285,19 @@ static enum ggml_status ggml_backend_cpu_graph_compute(ggml_backend_t backend, s
+     cplan.abort_callback_data = cpu_ctx->abort_callback_data;
+     cplan.use_ref             = cpu_ctx->use_ref;
+ 
+-    return ggml_graph_compute(cgraph, &cplan);
++    if (cpu_ctx->async == nullptr) {
++        return ggml_graph_compute(cgraph, &cplan);
++    }
++
++    // One split at a time: work_data is shared, and consecutive CPU splits may alias each
++    // other's buffers. submit() waits for the previous one, so only GPU work overlaps.
++    const enum ggml_status prev = cpu_ctx->async->take_status();
++    if (prev != GGML_STATUS_SUCCESS) {
++        cpu_ctx->async->join();
++        return prev;
++    }
++    cpu_ctx->async->submit(cgraph, &cplan);
++    return GGML_STATUS_SUCCESS;
+ }
+ 
+ static const struct ggml_backend_i ggml_backend_cpu_i = {
+@@ -198,7 +308,7 @@ static const struct ggml_backend_i ggml_backend_cpu_i = {
+     /* .set_tensor_2d_async     = */ NULL,
+     /* .get_tensor_2d_async     = */ NULL,
+     /* .cpy_tensor_async        = */ NULL,
+-    /* .synchronize             = */ NULL,
++    /* .synchronize             = */ ggml_backend_cpu_synchronize,
+     /* .graph_plan_create       = */ ggml_backend_cpu_graph_plan_create,
+     /* .graph_plan_free         = */ ggml_backend_cpu_graph_plan_free,
+     /* .graph_plan_update       = */ NULL,
+@@ -230,6 +340,15 @@ ggml_backend_t ggml_backend_cpu_init(void) {
+     ctx->abort_callback      = NULL;
+     ctx->abort_callback_data = NULL;
+     ctx->use_ref             = false;
++    ctx->async               = NULL;
++
++    {
++        const char * e = getenv("GGML_CPU_ASYNC");
++        if (e && atoi(e) != 0) {
++            ctx->async = new ggml_backend_cpu_async();
++            ctx->async->start();
++        }
++    }
+ 
+     ggml_backend_t cpu_backend = new ggml_backend {
+         /* .guid    = */ ggml_backend_cpu_guid(),
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 7659e43ab..4384c4c5d 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -15,6 +15,11 @@
+ #include "llama-sampler.h"
+ #include "llama.h"
+ 
++#include <condition_variable>
++#include <functional>
++#include <mutex>
++#include <thread>
++
+ #include <cinttypes>
+ #include <map>
+ #include <cmath>
+@@ -288,6 +293,37 @@ llama_context::llama_context(
+         const char * LLAMA_GRAPH_REUSE_DISABLE = getenv("LLAMA_GRAPH_REUSE_DISABLE");
+         graph_reuse_disable = LLAMA_GRAPH_REUSE_DISABLE ? (atoi(LLAMA_GRAPH_REUSE_DISABLE) != 0) : graph_reuse_disable;
+ 
++    // pipeline split (GGML_Q4_PIPE): overlap the CPU tail of one ubatch with the GPU head
++    // of the next one. the value is the layer boundary; "auto" detects the first trunk
++    // layer whose routed experts live in host memory
++    if (const char * env_pipe = getenv("GGML_Q4_PIPE")) {
++        int split = 0;
++        if (strcmp(env_pipe, "auto") == 0) {
++            for (int il = 0; il < (int) hparams.n_layer(); ++il) {
++                const ggml_tensor * t = model.layers[il].ffn_gate_exps;
++                const bool is_host = t != nullptr && t->buffer != nullptr && ggml_backend_buffer_is_host(t->buffer);
++                if (il < 26 || is_host) {
++                    fprintf(stderr, "PIPE-DETECT il=%d tensor=%p buffer=%p host=%d\n", il, (const void *) t, t ? (void *) t->buffer : nullptr, (int) is_host);
++                }
++                if (is_host) {
++                    split = il;
++                    break;
++                }
++            }
++        } else {
++            split = atoi(env_pipe);
++        }
++
++        fprintf(stderr, "PIPE-DETECT env=%s split=%d n_layer=%d\n", env_pipe, split, (int) hparams.n_layer());
++
++        if (split > 0 && split < (int) hparams.n_layer()) {
++            pipe_split = split;
++            LLAMA_LOG_INFO("%s: pipeline split enabled at layer %d (GGML_Q4_PIPE)\n", __func__, pipe_split);
++        } else if (split != 0) {
++            LLAMA_LOG_WARN("%s: ignoring invalid GGML_Q4_PIPE value '%s'\n", __func__, env_pipe);
++        }
++    }
++
+         if (graph_reuse_disable) {
+             LLAMA_LOG_WARN("%s: graph reuse disabled\n", __func__);
+         }
+@@ -350,6 +386,32 @@ llama_context::llama_context(
+             backends.emplace_back(backend);
+         }
+ 
++        // pipeline split: dedicated backend instances for the head half so that its
++        // kernels run on their own CUDA streams and overlap with the tail half
++        if (pipe_split > 0) {
++            for (const auto & dev : model.devices) {
++                ggml_backend_t backend = ggml_backend_dev_init(dev.dev, nullptr);
++                if (backend == nullptr) {
++                    LLAMA_LOG_WARN("%s: failed to initialize pipeline head backend, disabling pipeline split\n", __func__);
++                    pipe_split = 0;
++                    break;
++                }
++                pipe_backends_a.emplace_back(backend);
++            }
++            if (pipe_split > 0) {
++                // the head's CPU ops (the PLE layer) run on the producer thread, so they
++                // need their own CPU instance instead of sharing the main threadpool
++                ggml_backend_t cpu_a = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
++                if (cpu_a == nullptr) {
++                    LLAMA_LOG_WARN("%s: failed to initialize pipeline CPU backend, disabling pipeline split\n", __func__);
++                    pipe_split = 0;
++                    pipe_backends_a.clear();
++                } else {
++                    pipe_backend_cpu_a.reset(cpu_a);
++                }
++            }
++        }
++
+         // add ACCEL backends (such as BLAS)
+         for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+             ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+@@ -472,11 +534,26 @@ llama_context::llama_context(
+             const int64_t n_expert      = hparams.n_expert;
+             const int64_t n_expert_used = hparams.n_expert_used_max();
+ 
++            // Place each layer's slots on the device that already computes that layer. With a
++            // single shared device every cached weight crosses a device boundary in the graph;
++            // on a 3-GPU box that took decode from 66 graph splits to 328.
+             for (const auto & layer : model.layers) {
++                ggml_backend_buffer_type_t layer_buft = nullptr;
++                for (ggml_tensor * ref : { layer.ffn_gate_inp, layer.attn_norm, layer.ffn_norm,
++                                           layer.wq, layer.wo }) {
++                    if (ref && ref->buffer) {
++                        ggml_backend_buffer_type_t b = ggml_backend_buffer_get_type(ref->buffer);
++                        if (b && !ggml_backend_buft_is_host(b)) {
++                            layer_buft = b;
++                            break;
++                        }
++                    }
++                }
++
+                 for (ggml_tensor * w : { layer.ffn_gate_exps, layer.ffn_up_exps,
+                                          layer.ffn_down_exps, layer.ffn_gate_up_exps }) {
+                     if (w) {
+-                        moe_cache->add_tensor(w, n_expert, n_expert_used);
++                        moe_cache->add_tensor(w, n_expert, n_expert_used, layer_buft);
+                     }
+                 }
+             }
+@@ -548,7 +625,8 @@ llama_context::~llama_context() {
+ 
+     // when training, ggml_opt allocates extra buffers through the scheduler, so the sizes no longer match the expectation
+     if (!model.hparams.no_alloc && !opt_ctx) {
+-        for (size_t i = 0; i < backend_ptrs.size(); ++i) {
++    for (size_t i = 0; i < backend_ptrs.size(); ++i) {
++
+             ggml_backend_t             backend = backend_ptrs[i];
+             ggml_backend_buffer_type_t buft    = backend_buft[i];
+ 
+@@ -734,16 +812,21 @@ void llama_context::sched_reserve() {
+ 
+     const uint32_t n_outputs_pp = std::min(n_tokens, cparams.n_outputs_max);
+ 
++    // with the pipeline split, prompt processing runs on the dedicated head/tail
++    // schedulers - the main scheduler only needs the tg buffers
++    const uint32_t n_tokens_pp  = pipe_split > 0 ? 0 : n_tokens;
++    const uint32_t n_outputs_pp2 = std::min(n_tokens_pp, cparams.n_outputs_max);
++
+     // reserve pp (prompt processing) graph first so that buffers are only allocated once
+-    {
+-        auto * gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get(),
++    if (pipe_split == 0) {
++        auto * gf = graph_reserve(n_tokens_pp, n_seqs, n_outputs_pp2, mctx.get(),
+                 model.hparams.no_alloc, model.hparams.no_alloc ? backend_buf_exp_size.data() : nullptr);
+         if (!gf) {
+             if (cparams.pipeline_parallel) {
+                 LLAMA_LOG_WARN("%s: compute buffer allocation failed, retrying without pipeline parallelism\n", __func__);
+                 cparams.pipeline_parallel = false;
+                 sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, false, cparams.op_offload));
+-                gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get());
++                gf = graph_reserve(n_tokens_pp, n_seqs, n_outputs_pp2, mctx.get());
+             }
+             if (!gf) {
+                 throw std::runtime_error("failed to allocate compute pp buffers");
+@@ -770,7 +853,7 @@ void llama_context::sched_reserve() {
+     }
+ 
+     // reserve again with pp graph to avoid ggml-alloc reallocations during inference
+-    {
++    if (pipe_split == 0) {
+         // TODO: the worst case graph is not always reached for `n_seqs > 1`
+         //       need to implement a more robust mechanism that tries a few different inputs and analyzes the results
+         ggml_cgraph * gf = nullptr;
+@@ -780,10 +863,10 @@ void llama_context::sched_reserve() {
+                 // [TAG_RESERVE_DIAG_DECAY]
+                 // the `inp_diag_decay` tensor size scales with `n_seq_tokens^2` which
+                 // makes `n_seqs == 1` use more memory for the compute graph compared to `n_seqs > 1`
+-                gf = graph_reserve(n_tokens, 1,      n_outputs_pp, mctx.get(), model.hparams.no_alloc);
++                gf = graph_reserve(n_tokens_pp, 1,      n_outputs_pp2, mctx.get(), model.hparams.no_alloc);
+                 break;
+             default:
+-                gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get(), model.hparams.no_alloc);
++                gf = graph_reserve(n_tokens_pp, n_seqs, n_outputs_pp2, mctx.get(), model.hparams.no_alloc);
+         };
+ 
+         if (!gf) {
+@@ -791,6 +874,72 @@ void llama_context::sched_reserve() {
+         }
+     }
+ 
++    // pipeline split: reserve the two half graphs on their own schedulers
++    if (pipe_split > 0) {
++        const int il_split = pipe_split;
++        const int il_end   = (int) model.hparams.n_layer();
++
++        // the head half runs on dedicated backend instances (separate CUDA streams)
++        std::vector<ggml_backend_t>             ptrs_a;
++        std::vector<ggml_backend_buffer_type_t> bufts_a;
++        for (auto & b : pipe_backends_a) {
++            ptrs_a.push_back(b.get());
++            bufts_a.push_back(ggml_backend_get_default_buffer_type(b.get()));
++        }
++        if (pipe_backend_cpu_a) {
++            ptrs_a.push_back(pipe_backend_cpu_a.get());
++            bufts_a.push_back(ggml_backend_get_default_buffer_type(pipe_backend_cpu_a.get()));
++
++            // the head's CPU ops run on the producer thread, next to the main thread's
++            // tail work: keep them on a few threads to avoid oversubscribing the CPU
++            ggml_backend_cpu_set_n_threads(pipe_backend_cpu_a.get(), 2);
++        }
++
++        if (ptrs_a.size() < 2) {
++            LLAMA_LOG_WARN("%s: pipeline split disabled (no head backends)\n", __func__);
++            pipe_split = 0;
++            pipe_backends_a.clear();
++        } else {
++            sched_pipe_a.reset(ggml_backend_sched_new(ptrs_a.data(), bufts_a.data(), ptrs_a.size(), max_nodes, false, cparams.op_offload));
++        }
++    }
++
++    if (pipe_split > 0) {
++        const int il_split = pipe_split;
++        const int il_end   = (int) model.hparams.n_layer();
++
++        sched_pipe_b.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, false, cparams.op_offload));
++
++        pipe_res_a.reset(new llm_graph_result(max_nodes));
++        pipe_res_b.reset(new llm_graph_result(max_nodes));
++
++        const bool ok_a = graph_reserve_pipe(n_tokens, n_seqs, n_outputs_pp, mctx.get(), 0,        il_split, false, true,  sched_pipe_a.get(), pipe_res_a.get()) != nullptr;
++        const bool ok_b = graph_reserve_pipe(n_tokens, n_seqs, n_outputs_pp, mctx.get(), il_split, il_end,   true,  false, sched_pipe_b.get(), pipe_res_b.get()) != nullptr;
++
++        if (!ok_a || !ok_b) {
++            LLAMA_LOG_WARN("%s: pipeline split disabled (reserve failed)\n", __func__);
++            pipe_split = 0;
++            sched_pipe_a.reset();
++            sched_pipe_b.reset();
++            pipe_res_a.reset();
++            pipe_res_b.reset();
++        } else {
++            LLAMA_LOG_INFO("%s: pipeline split enabled: layers [0, %d) head, [%d, %d) tail\n",
++                    __func__, il_split, il_split, il_end);
++            if (!model.hparams.no_alloc) {
++                for (size_t i = 0; i < pipe_backends_a.size(); ++i) {
++                    const size_t sz_a = ggml_backend_sched_get_buffer_size(sched_pipe_a.get(), pipe_backends_a[i].get());
++                    const size_t sz_b = i < backend_ptrs.size() ? ggml_backend_sched_get_buffer_size(sched_pipe_b.get(), backend_ptrs[i]) : 0;
++                    if (sz_a > 1 || sz_b > 1) {
++                        LLAMA_LOG_INFO("%s: %10s pipeline buffer size = %8.2f + %8.2f MiB\n", __func__,
++                                ggml_backend_buft_name(ggml_backend_get_default_buffer_type(pipe_backends_a[i].get())),
++                                sz_a / 1024.0 / 1024.0, sz_b / 1024.0 / 1024.0);
++                    }
++                }
++            }
++        }
++    }
++
+     for (size_t i = 0; i < backend_ptrs.size(); ++i) {
+         ggml_backend_t             backend = backend_ptrs[i];
+         ggml_backend_buffer_type_t buft    = backend_buft[i];
+@@ -1817,6 +1966,334 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
+     return false; // all sequences use backend sampling
+ }
+ 
++// pipeline split (GGML_Q4_PIPE): build (or reuse) one half of the split graph
++llm_graph_result * llama_context::pipe_build_half(
++        llm_graph_result * res, bool & active,
++        const llama_ubatch & ubatch, llama_memory_context_i * mctx,
++        int il_begin, int il_end, bool res_in, bool res_out,
++        ggml_backend_sched_t sched_use) {
++    auto gparams = graph_params(res, ubatch, mctx, ctx_type_to_graph_type(cparams.ctx_type), sched_use);
++    gparams.il_begin = il_begin;
++    gparams.il_end   = il_end;
++    gparams.res_in   = res_in;
++    gparams.res_out  = res_out;
++
++    if (!graph_reuse_disable && active && res->can_reuse(gparams)) {
++        res->set_inputs(&ubatch);
++        return res;
++    }
++
++    active = false;
++
++    res->reset();
++    ggml_backend_sched_reset(sched_use);
++    ggml_backend_sched_set_eval_callback(sched_use, cparams.cb_eval, cparams.cb_eval_user_data);
++
++    ggml_cgraph * gf = model.build_graph(gparams);
++    if (!gf) {
++        LLAMA_LOG_ERROR("%s: failed to build pipeline half graph (il = [%d, %d))\n", __func__, il_begin, il_end);
++        return nullptr;
++    }
++
++    if (!ggml_backend_sched_alloc_graph(sched_use, gf)) {
++        LLAMA_LOG_ERROR("%s: failed to allocate pipeline half graph (il = [%d, %d))\n", __func__, il_begin, il_end);
++        return nullptr;
++    }
++
++    active = true;
++    res->set_inputs(&ubatch);
++
++    return res;
++}
++
++// pipeline split (GGML_Q4_PIPE): overlap the CPU tail of ubatch n-1 with the GPU head
++// of ubatch n. the model layers are split at `pipe_split` - the first layer whose routed
++// experts live in host memory:
++//   A: layers [0, pipe_split)       -> runs on the GPU
++//   B: layers [pipe_split, n_layer) -> runs on the CPU (+ GPU attention)
++// the wide residual at the boundary is staged through a host buffer. B(n-1) is computed
++// while A(n) is in flight on the GPU, so the serial "GPU head -> CPU tail" chain of
++// consecutive ubatches overlaps.
++//
++// only used for pure prompt batches: a single output on the very last token, no backend
++// samplers, no pooled embeddings, no EAGLE3-style layer extraction.
++// returns 1 if handled, 0 if not applicable (caller falls back to the normal path), <0 on error
++int llama_context::decode_pipeline(llama_memory_context_i * mctx) {
++    const int il_split = pipe_split;
++    const int il_end   = (int) model.hparams.n_layer();
++
++    if (!pipe_res_a) {
++        pipe_res_a.reset(new llm_graph_result(graph_max_nodes(std::min(cparams.n_ctx, cparams.n_ubatch))));
++    }
++
++    // host staging for the wide residual [n_embd, hc, n_ubatch]
++    {
++        const int64_t hc = model.hparams.dsv4_hc_mult;
++        const size_t nbytes = (size_t) model.hparams.n_embd * hc * cparams.n_ubatch * sizeof(float);
++        if (pipe_buf.size() < nbytes) {
++            pipe_buf.resize(nbytes);
++        }
++    }
++
++    // producer/consumer: a dedicated thread submits the head graphs on its own CUDA
++    // streams, so the head kernels run next to the tail's kernels instead of queueing
++    // ahead of them, and the (blocking) head submission overlaps the tail compute
++    std::mutex              pipe_mtx;
++    std::condition_variable pipe_cv;
++
++    int  a_built    = -1; // highest ubatch whose head graph is built
++    int  copied     = -1; // highest boundary staged into pipe_buf
++    int  consumed   = -1; // highest boundary taken by the tail thread
++    bool prod_error = false;
++    bool pipe_stop  = false;
++
++    std::thread producer([&]() {
++        for (uint32_t n = 0; ; ++n) {
++            {
++                std::unique_lock<std::mutex> lk(pipe_mtx);
++                pipe_cv.wait(lk, [&] { return prod_error || pipe_stop || a_built >= (int) n; });
++                if (prod_error || pipe_stop) {
++                    return;
++                }
++            }
++
++            const int64_t pa0 = ggml_time_us();
++            if (ggml_backend_sched_graph_compute_async(sched_pipe_a.get(), pipe_res_a->get_gf()) != GGML_STATUS_SUCCESS) {
++                std::lock_guard<std::mutex> lk(pipe_mtx);
++                prod_error = true;
++                pipe_cv.notify_all();
++                return;
++            }
++            const int64_t pa1 = ggml_time_us();
++
++            // wait for the head to finish: frees sched_pipe_a for the next build
++            ggml_backend_sched_synchronize(sched_pipe_a.get());
++            const int64_t pa2 = ggml_time_us();
++            (void) pa0; (void) pa1; (void) pa2;
++
++            // stage the boundary residual for the tail
++            {
++                std::unique_lock<std::mutex> lk(pipe_mtx);
++                pipe_cv.wait(lk, [&] { return prod_error || pipe_stop || consumed >= (int) n - 1; });
++                if (prod_error || pipe_stop) {
++                    return;
++                }
++            }
++
++            {
++                ggml_tensor * t_out = pipe_res_a->get_res_out();
++                if (t_out == nullptr || ggml_nbytes(t_out) > pipe_buf.size()) {
++                    std::lock_guard<std::mutex> lk(pipe_mtx);
++                    prod_error = true;
++                    pipe_cv.notify_all();
++                    return;
++                }
++                ggml_backend_tensor_get(t_out, pipe_buf.data(), 0, ggml_nbytes(t_out));
++            }
++
++            {
++                std::lock_guard<std::mutex> lk(pipe_mtx);
++                copied = n;
++                pipe_cv.notify_all();
++            }
++        }
++    });
++
++    auto pipe_fail = [&](const char * what) {
++        {
++            std::lock_guard<std::mutex> lk(pipe_mtx);
++            prod_error = true;
++            pipe_cv.notify_all();
++        }
++        producer.join();
++        LLAMA_LOG_ERROR("%s: pipeline %s failed\n", __func__, what);
++        return -1;
++    };
++
++    auto wait_for = [&](const std::function<bool()> & pred) {
++        std::unique_lock<std::mutex> lk(pipe_mtx);
++        pipe_cv.wait(lk, [&] { return prod_error || pred(); });
++        return !prod_error;
++    };
++
++    bool act_a = false;
++    bool act_b = false;
++
++    int64_t n_tokens_prev = 0; // tokens finalized before the ubatch being finalized now
++    int64_t n_fin_tokens  = 0; // n_tokens of the last finalized ubatch
++    llm_graph_result * res_b_prev = nullptr;
++
++    uint32_t n_ub = 0;
++    for (;;) {
++        const llama_ubatch & ubatch = mctx->get_ubatch();
++
++        if (!mctx->apply()) {
++            return pipe_fail("memory context apply");
++        }
++
++        // wait until the producer staged boundary(n-1) (and the head graph n-1 completed)
++        if (n_ub > 0 && !wait_for([&] { return copied >= (int) n_ub - 1; })) {
++            return pipe_fail("head sync");
++        }
++
++        // build the head graph (mctx state for this ubatch) and let the producer submit it;
++        // the submission overlaps the tail compute below
++        if (!pipe_build_half(pipe_res_a.get(), act_a, ubatch, mctx, 0, il_split, false, true, sched_pipe_a.get())) {
++            if (n_ub == 0) {
++                // nothing submitted yet: fall back to the normal path
++                {
++                    std::lock_guard<std::mutex> lk(pipe_mtx);
++                    pipe_stop = true;
++                    pipe_cv.notify_all();
++                }
++                producer.join();
++                return 0;
++            }
++            return pipe_fail("head build");
++        }
++        {
++            std::lock_guard<std::mutex> lk(pipe_mtx);
++            a_built = (int) n_ub;
++            pipe_cv.notify_all();
++        }
++
++        // consume boundary(n-1) and compute the tail while the producer submits the head
++        if (n_ub > 0) {
++            ggml_tensor * t_in = ggml_graph_get_tensor(res_b_prev->get_gf(), "hc_pipe_in");
++            if (t_in == nullptr || ggml_nbytes(t_in) > pipe_buf.size()) {
++                return pipe_fail("tail boundary input");
++            }
++            ggml_backend_tensor_set(t_in, pipe_buf.data(), 0, ggml_nbytes(t_in));
++
++            {
++                std::lock_guard<std::mutex> lk(pipe_mtx);
++                consumed = (int) n_ub - 1;
++                pipe_cv.notify_all();
++            }
++
++            const int64_t tb0 = ggml_time_us();
++            if (graph_compute(res_b_prev->get_gf(), true, sched_pipe_b.get()) != GGML_STATUS_SUCCESS) {
++                return pipe_fail("tail compute");
++            }
++            ggml_backend_sched_synchronize(sched_pipe_b.get());
++            const int64_t tb1 = ggml_time_us();
++            (void) tb0; (void) tb1;
++
++            // the MTP target context wants the hidden state of every prompt token
++            if (embd_nextn.data && !cparams.embeddings_nextn_masked) {
++                ggml_tensor * t_h = res_b_prev->get_h_nextn();
++                if (t_h != nullptr) {
++                    const uint32_t n_embd = model.hparams.n_embd_out();
++                    if ((n_tokens_prev + n_fin_tokens)*n_embd > (int64_t) embd_nextn.size) {
++                        return pipe_fail("nextn size");
++                    }
++                    ggml_backend_tensor_get(t_h, embd_nextn.data + n_tokens_prev*n_embd, 0, n_fin_tokens*n_embd*sizeof(float));
++                }
++            }
++            n_tokens_prev += n_fin_tokens;
++        }
++
++        // count the outputs of this ubatch and build the tail graph (B(n-1) is done, so
++        // rebuilding on the same scheduler cannot clobber it)
++        {
++            int32_t n_outputs_new = 0;
++            for (uint32_t i = 0; i < ubatch.n_tokens; i++) {
++                n_outputs_new += (int32_t) (ubatch.output[i] != 0);
++            }
++            // needs to happen before the graph is built
++            n_outputs = n_outputs_new;
++        }
++        if (!pipe_build_half(pipe_res_b.get(), act_b, ubatch, mctx, il_split, il_end, true, false, sched_pipe_b.get())) {
++            if (n_ub == 0) {
++                {
++                    std::lock_guard<std::mutex> lk(pipe_mtx);
++                    pipe_stop = true;
++                    pipe_cv.notify_all();
++                }
++                producer.join();
++                return 0;
++            }
++            return pipe_fail("tail build");
++        }
++
++        const bool more = mctx->next();
++
++        res_b_prev    = pipe_res_b.get();
++        n_fin_tokens  = ubatch.n_tokens;
++
++        n_ub++;
++        if (!more) {
++            break;
++        }
++    }
++
++    // drain: compute the last tail
++    GGML_ASSERT(res_b_prev != nullptr);
++
++    if (!wait_for([&] { return copied >= (int) n_ub - 1; })) {
++        return pipe_fail("head sync (drain)");
++    }
++    {
++        ggml_tensor * t_in = ggml_graph_get_tensor(res_b_prev->get_gf(), "hc_pipe_in");
++        if (t_in == nullptr || ggml_nbytes(t_in) > pipe_buf.size()) {
++            return pipe_fail("tail boundary input (drain)");
++        }
++        ggml_backend_tensor_set(t_in, pipe_buf.data(), 0, ggml_nbytes(t_in));
++    }
++    {
++        std::lock_guard<std::mutex> lk(pipe_mtx);
++        consumed = (int) n_ub - 1;
++        pipe_cv.notify_all();
++    }
++
++    if (graph_compute(res_b_prev->get_gf(), true, sched_pipe_b.get()) != GGML_STATUS_SUCCESS) {
++        return pipe_fail("tail compute (drain)");
++    }
++    ggml_backend_sched_synchronize(sched_pipe_b.get());
++
++    // stop the producer
++    {
++        std::lock_guard<std::mutex> lk(pipe_mtx);
++        pipe_stop = true;
++        pipe_cv.notify_all();
++    }
++    producer.join();
++
++    // extract the outputs of the final ubatch (the only one with outputs)
++    {
++        auto * res = res_b_prev;
++        auto * t_logits = res->get_logits();
++
++        const int64_t n_vocab = model.vocab.n_tokens();
++
++        if (logits.data && t_logits && n_outputs > 0) {
++            GGML_ASSERT((size_t) n_outputs*n_vocab <= logits.size);
++            ggml_backend_tensor_get(t_logits, logits.data, 0, (size_t) n_outputs*n_vocab*sizeof(float));
++        }
++
++        if (res->get_argmax() && n_outputs > 0) {
++            ggml_tensor * t_am = res->get_argmax();
++            if ((int64_t) argmax_ids.size() < n_outputs) {
++                argmax_ids.resize(n_outputs, -1);
++            }
++            ggml_backend_tensor_get(t_am, argmax_ids.data(), 0, (size_t) n_outputs*sizeof(int32_t));
++        }
++
++        if (embd_nextn.data && !cparams.embeddings_nextn_masked) {
++            ggml_tensor * t_h = res->get_h_nextn();
++            if (t_h != nullptr) {
++                const uint32_t n_embd = model.hparams.n_embd_out();
++                GGML_ASSERT((n_tokens_prev + n_fin_tokens)*n_embd <= (int64_t) embd_nextn.size);
++                ggml_backend_tensor_get(t_h, embd_nextn.data + n_tokens_prev*n_embd, 0, n_fin_tokens*n_embd*sizeof(float));
++            }
++        }
++    }
++
++    LLAMA_LOG_DEBUG("%s: pipeline split: %u ubatches, boundary layer = %d\n", __func__, n_ub, il_split);
++
++    return 1;
++}
++
+ int llama_context::decode(const llama_batch & batch_inp) {
+     // MTP hook batches carry both token (next-token id) and embd (h_nextn row),
+     // so accept either present rather than requiring exactly one.
+@@ -1981,6 +2458,42 @@ int llama_context::decode(const llama_batch & batch_inp) {
+     int64_t n_outputs_prev = 0;
+     int64_t n_tokens_prev  = 0;
+ 
++    // pipeline split (GGML_Q4_PIPE): pure prompt batches run through the overlapped
++    // head/tail path; everything else goes through the normal loop below.
++    // batches <= 64 tokens stay on the normal path: they are covered by the reduced
++    // main-scheduler pp reserve (see sched_reserve) and never overlap usefully
++    bool pipe_handled = false;
++    if (pipe_split > 0 && n_tokens_all > 64) {
++        bool pipe_ok =
++            !output_all &&
++            cparams.causal_attn &&
++            cparams.pooling_type == LLAMA_POOLING_TYPE_NONE &&
++            embd.data == nullptr &&
++            sampling.samplers.empty();
++
++        if (pipe_ok) {
++            // no outputs, or a single output on the very last token of the batch
++            const auto & out_ids = balloc->get_out_ids();
++            pipe_ok = out_ids.empty() || (out_ids.size() == 1 && out_ids[0] == (int64_t) n_tokens_all - 1);
++        }
++
++        if (pipe_ok) {
++            // no EAGLE3-style per-layer hidden state extraction
++            for (bool enabled : cparams.embeddings_layer_inp) {
++                if (enabled) { pipe_ok = false; break; }
++            }
++        }
++
++        if (pipe_ok) {
++            const int ret = decode_pipeline(mctx.get());
++            if (ret < 0) {
++                return -2;
++            }
++            pipe_handled = ret == 1;
++        }
++    }
++
++    if (!pipe_handled)
+     do {
+         const auto & ubatch = mctx->get_ubatch();
+ 
+@@ -2726,18 +3239,65 @@ ggml_cgraph * llama_context::graph_reserve(
+     return gf;
+ }
+ 
++// pipeline split: reserve one half of the split graph on the given scheduler
++ggml_cgraph * llama_context::graph_reserve_pipe(
++        uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx,
++        int il_begin, int il_end, bool res_in, bool res_out,
++        ggml_backend_sched_t sched_use, llm_graph_result * res) {
++    GGML_ASSERT(n_outputs >= 1);
++
++    if (n_tokens % n_seqs != 0) {
++        n_tokens = ((n_tokens + (n_seqs - 1)) / n_seqs) * n_seqs;
++    }
++
++    ggml_backend_sched_reset(sched_use);
++
++    const auto save_n_outputs = this->n_outputs;
++
++    this->n_outputs = n_outputs;
++
++    llama_batch_allocr balloc(model.hparams.n_pos_per_embd());
++    llama_ubatch ubatch = balloc.ubatch_reserve(n_tokens/n_seqs, n_seqs);
++
++    ubatch_prepare_reserve(ubatch, n_outputs, sampling.samplers, cparams.n_outputs_max_per_seq);
++
++    auto gparams = graph_params(res, ubatch, mctx, ctx_type_to_graph_type(cparams.ctx_type), sched_use);
++    gparams.il_begin = il_begin;
++    gparams.il_end   = il_end;
++    gparams.res_in   = res_in;
++    gparams.res_out  = res_out;
++
++    res->reset();
++
++    auto * gf = model.build_graph(gparams);
++
++    this->n_outputs = save_n_outputs;
++
++    if (!gf) {
++        return nullptr;
++    }
++
++    if (!ggml_backend_sched_reserve(sched_use, gf)) {
++        LLAMA_LOG_ERROR("%s: failed to allocate pipeline compute buffers (il = [%d, %d))\n", __func__, il_begin, il_end);
++        return nullptr;
++    }
++
++    return gf;
++}
++
+ llm_graph_params llama_context::graph_params(
+                         llm_graph_result * res,
+                       const llama_ubatch & ubatch,
+             const llama_memory_context_i * mctx,
+-                          llm_graph_type   gtype) const {
++                          llm_graph_type   gtype,
++                 ggml_backend_sched_t    sched_use) const {
+     return {
+         /*.arch        =*/ model.arch,
+         /*.hparams     =*/ model.hparams,
+         /*.cparams     =*/ cparams,
+         /*.ubatch      =*/ ubatch,
+         /*.gtype       =*/ gtype,
+-        /*.sched       =*/ sched.get(),
++        /*.sched       =*/ sched_use != nullptr ? sched_use : sched.get(),
+         /*.backend_cpu =*/ backend_cpu,
+         /*.moe_cache   =*/ moe_cache.get(),
+         /*.ft_moe      =*/ ft_moe.get(),
+@@ -2754,10 +3314,13 @@ llm_graph_params llama_context::graph_params(
+ 
+ ggml_status llama_context::graph_compute(
+             ggml_cgraph * gf,
+-                   bool   batched) {
++                   bool   batched,
++    ggml_backend_sched_t    sched_use) {
+     // any graph may reuse the memory of deferred logits: queue their copies ahead of it
+     logits_flush(false);
+ 
++    ggml_backend_sched_t sched_cur = sched_use != nullptr ? sched_use : sched.get();
++
+     int n_threads        = batched ? cparams.n_threads_batch : cparams.n_threads;
+     ggml_threadpool_t tp = batched ? threadpool_batch        : threadpool;
+ 
+@@ -2775,7 +3338,7 @@ ggml_status llama_context::graph_compute(
+     }
+ 
+     synced = false;
+-    auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
++    auto status = ggml_backend_sched_graph_compute_async(sched_cur, gf);
+     if (status != GGML_STATUS_SUCCESS) {
+         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
+     }
+diff --git a/src/llama-context.h b/src/llama-context.h
+index 45b228b3a..4776fd603 100644
+--- a/src/llama-context.h
++++ b/src/llama-context.h
+@@ -264,22 +264,40 @@ public:
+     llm_graph_result * get_gf_res_reserve() const;
+ 
+     // returns the result of ggml_backend_sched_graph_compute_async execution
+-    ggml_status graph_compute(ggml_cgraph * gf, bool batched);
++    ggml_status graph_compute(ggml_cgraph * gf, bool batched, ggml_backend_sched_t sched_use = nullptr);
+ 
+     // reserve a graph with a dummy ubatch of the specified size
+     ggml_cgraph * graph_reserve(
+         uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx, bool split_only = false, size_t * sizes = nullptr);
+ 
++    // pipeline split (GGML_Q4_PIPE): reserve one half of the split graph on `sched_use`
++    ggml_cgraph * graph_reserve_pipe(
++        uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx,
++        int il_begin, int il_end, bool res_in, bool res_out,
++        ggml_backend_sched_t sched_use, llm_graph_result * res);
++
+     bool set_sampler(llama_seq_id seq_id, llama_sampler * sampler);
+ 
+ private:
+     llm_graph_result * get_gf_res_prev();
+ 
++    // pipeline split: run the ubatch loop with the CPU tail of ubatch n-1 overlapped
++    // with the GPU head of ubatch n. returns 1 if handled, 0 if not applicable, <0 on error
++    int decode_pipeline(llama_memory_context_i * mctx);
++
++    // pipeline split: build (or reuse) one half of the split graph
++    llm_graph_result * pipe_build_half(
++        llm_graph_result * res, bool & active,
++        const llama_ubatch & ubatch, llama_memory_context_i * mctx,
++        int il_begin, int il_end, bool res_in, bool res_out,
++        ggml_backend_sched_t sched_use);
++
+     llm_graph_params graph_params(
+                         llm_graph_result * res,
+                       const llama_ubatch & ubatch,
+             const llama_memory_context_i * mctx,
+-                          llm_graph_type   gtype) const;
++                          llm_graph_type   gtype,
++                 ggml_backend_sched_t    sched_use = nullptr) const;
+ 
+     llm_graph_cb graph_get_cb() const;
+ 
+@@ -396,6 +414,19 @@ private:
+ 
+     llm_graph_result * gf_res_prev_active = nullptr;
+ 
++    // pipeline split (GGML_Q4_PIPE): overlap the CPU tail of one ubatch with the GPU
++    // head of the next one. see decode_pipeline()
++    int pipe_split = 0; // layer boundary; 0 = disabled
++    // dedicated backend instances for the head half: their kernels run on separate
++    // CUDA streams, so the head overlaps the tail instead of queueing ahead of it
++    std::vector<ggml_backend_ptr> pipe_backends_a;
++    ggml_backend_ptr pipe_backend_cpu_a; // separate CPU instance: the head's CPU ops run on the producer thread
++    ggml_backend_sched_ptr sched_pipe_a; // scheduler for the head (GPU) half
++    ggml_backend_sched_ptr sched_pipe_b; // scheduler for the tail (CPU) half
++    llm_graph_result_ptr pipe_res_a;
++    llm_graph_result_ptr pipe_res_b;
++    std::vector<uint8_t> pipe_buf; // host staging for the wide residual at the boundary
++
+     // false while work enqueued on the backends may still be running (see synchronize())
+     bool synced = true;
+ 
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 0127bca91..b47c6da4f 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -1338,6 +1338,7 @@ void llm_graph_result::reset() {
+     t_embd        = nullptr;
+     t_embd_pooled = nullptr;
+     t_h_nextn     = nullptr;
++    t_res_out     = nullptr;
+ 
+     t_layer_inp.resize(LLAMA_MAX_LAYERS + 1);
+     std::fill(t_layer_inp.begin(), t_layer_inp.end(), nullptr);
+@@ -1596,8 +1597,9 @@ ggml_tensor * llm_graph_context::build_moe_cached_mm_id(
+     m = ggml_get_rows(ctx0, m, ids);                                   // [1, n_used, n_tokens] f32
+ 
+     ggml_tensor * absent = ggml_relu(ctx0, ggml_neg(ctx0, m));         // 1 where absent, else 0
++    ggml_tensor * dpos = ct->dummy_pos ? ct->dummy_pos : moe_cache->dummy_pos;
+     ggml_tensor * slot_f = ggml_add(ctx0, ggml_relu(ctx0, m),
+-                                    ggml_mul(ctx0, absent, moe_cache->dummy_pos));
++                                    ggml_mul(ctx0, absent, dpos));
+     ggml_tensor * ids_hit = ggml_reshape_2d(ctx0, ggml_cast(ctx0, slot_f, GGML_TYPE_I32),
+                                             n_used, n_tokens);
+ 
+@@ -1612,8 +1614,25 @@ ggml_tensor * llm_graph_context::build_moe_cached_mm_id(
+     ggml_tensor * ids_miss = ggml_reshape_2d(ctx0,
+                                     ggml_get_rows(ctx0, ct->map_src, ids_flat), n_used, n_tokens);
+ 
+-    ggml_tensor * hit  = ggml_mul_mat_id(ctx0, ct->slots, cur, ids_hit);
+-    ggml_tensor * miss = ggml_mul_mat_id(ctx0, w,         cur, ids_miss);
++    // Build the host (miss) matmul BEFORE the VRAM (hit) one. The two are independent, but the
++    // scheduler submits splits in topological order and a CPU split's input copy synchronizes the
++    // producing device: with `hit` first the CPU half waits for the GPU half and the step costs
++    // cpu + gpu. Emitting `miss` first lets an asynchronous CPU backend (GGML_CPU_ASYNC=1) run it
++    // while the GPU works through `hit`, so the step approaches max(cpu, gpu).
++    static const bool miss_first = [] {
++        const char * e = getenv("LLAMA_MOE_CACHE_MISS_FIRST");
++        return e == nullptr || atoi(e) != 0;
++    }();
++
++    ggml_tensor * hit  = nullptr;
++    ggml_tensor * miss = nullptr;
++    if (miss_first) {
++        miss = ggml_mul_mat_id(ctx0, w,         cur, ids_miss);
++        hit  = ggml_mul_mat_id(ctx0, ct->slots, cur, ids_hit);
++    } else {
++        hit  = ggml_mul_mat_id(ctx0, ct->slots, cur, ids_hit);
++        miss = ggml_mul_mat_id(ctx0, w,         cur, ids_miss);
++    }
+ 
+     // The miss chain must run on the CPU, where the weights already live and where the
+     // out-of-range sentinel is understood (the CUDA kernels have no skip path and would read
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+index 8d665d628..79253df72 100644
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -822,6 +822,14 @@ struct llm_graph_params {
+ 
+     llm_graph_result * res;
+ 
++    // pipeline split support (see GGML_Q4_PIPE in llama-context): build only the layer
++    // range [il_begin, il_end) and optionally stop right after it, exposing the wide
++    // residual as an output, or start from an externally provided residual
++    int il_begin = 0;
++    int il_end   = -1; // -1 => model.n_layer_all
++    bool res_in  = false;
++    bool res_out = false;
++
+     // return true if the "other" params would result in a graph with the same topology as with the current params
+     //   having the same topology allows us to reuse the graph in some cases
+     bool allow_reuse(const llm_graph_params & other) const {
+@@ -883,6 +891,11 @@ struct llm_graph_params {
+             return false;
+         }
+ 
++        if (il_begin != other.il_begin || il_end != other.il_end || res_out != other.res_out ||
++            res_in  != other.res_in) {
++            return false;
++        }
++
+         return
+             cparams.embeddings              == other.cparams.embeddings              &&
+             cparams.embeddings_nextn        == other.cparams.embeddings_nextn        &&
+@@ -915,6 +928,9 @@ public:
+     ggml_tensor * get_embd_pooled() const { return t_embd_pooled; }
+     ggml_tensor * get_h_nextn()     const { return t_h_nextn; }
+ 
++    // pipeline split: the wide residual produced by a "res_out" graph
++    ggml_tensor * get_res_out()     const { return t_res_out; }
++
+     ggml_tensor * get_layer_inp(int il) const { return t_layer_inp[il]; }
+ 
+     ggml_cgraph  * get_gf()  const { return gf; }
+@@ -950,6 +966,7 @@ public:
+     ggml_tensor * t_embd        = nullptr;
+     ggml_tensor * t_embd_pooled = nullptr;
+     ggml_tensor * t_h_nextn     = nullptr; // [n_embd, n_outputs] hidden state before final output norm
++    ggml_tensor * t_res_out     = nullptr; // pipeline split: wide residual at the split boundary
+ 
+     std::vector<ggml_tensor *> t_layer_inp;
+ 
+diff --git a/src/llama-moe-cache.cpp b/src/llama-moe-cache.cpp
+index 3ba56aa85..a3dff3adf 100644
+--- a/src/llama-moe-cache.cpp
++++ b/src/llama-moe-cache.cpp
+@@ -11,19 +11,29 @@ llama_moe_cache::llama_moe_cache(const llama_moe_cache_params & params, ggml_bac
+ }
+ 
+ llama_moe_cache::~llama_moe_cache() {
+-    if (buf) {
+-        ggml_backend_buffer_free(buf);
+-    }
+-    if (ctx) {
+-        ggml_free(ctx);
++    for (auto & g : groups) {
++        if (g.buf) {
++            ggml_backend_buffer_free(g.buf);
++        }
++        if (g.ctx) {
++            ggml_free(g.ctx);
++        }
+     }
++    groups.clear();
+ }
+ 
+-llama_moe_cache_tensor * llama_moe_cache::add_tensor(ggml_tensor * src, int64_t n_expert, int64_t n_expert_used) {
++llama_moe_cache_tensor * llama_moe_cache::add_tensor(ggml_tensor * src, int64_t n_expert, int64_t n_expert_used,
++                                                     ggml_backend_buffer_type_t buft_pref) {
+     if (!enabled() || src == nullptr) {
+         return nullptr;
+     }
+ 
++    // Put the slots on the device that computes this layer; fall back to the shared default.
++    ggml_backend_buffer_type_t buft_use = buft_pref ? buft_pref : buft;
++    if (buft_use == nullptr) {
++        return nullptr;
++    }
++
+     // ne[2] indexes experts; anything else is not an expert tensor we know how to slot.
+     if (src->ne[2] != n_expert) {
+         LLAMA_LOG_DEBUG("%s: skipping %s, ne[2]=%" PRId64 " != n_expert=%" PRId64 "\n",
+@@ -33,7 +43,7 @@ llama_moe_cache_tensor * llama_moe_cache::add_tensor(ggml_tensor * src, int64_t
+ 
+     // A tensor already living on the accelerator needs no cache; caching it would just spend
+     // VRAM to duplicate what is already there.
+-    if (src->buffer && ggml_backend_buffer_get_type(src->buffer) == buft) {
++    if (src->buffer && ggml_backend_buffer_get_type(src->buffer) == buft_use) {
+         return nullptr;
+     }
+ 
+@@ -48,6 +58,7 @@ llama_moe_cache_tensor * llama_moe_cache::add_tensor(ggml_tensor * src, int64_t
+ 
+     llama_moe_cache_tensor ct;
+     ct.src      = src;
++    ct.buft     = buft_use;
+     ct.n_expert = n_expert;
+     ct.n_slots  = n_slots;
+     // one private dummy slot per routed expert, so ids stay distinct within a token
+@@ -90,61 +101,94 @@ bool llama_moe_cache::alloc() {
+         return true;
+     }
+ 
+-    // two tensors per cached expert tensor (slots + map), plus ggml's per-tensor overhead
+-    ggml_init_params ip = {
+-        /*.mem_size   =*/ ggml_tensor_overhead() * (tensors.size() * 3 + 1) + ggml_graph_overhead(),
+-        /*.mem_buffer =*/ nullptr,
+-        /*.no_alloc   =*/ true,
+-    };
++    // Group the registered tensors by the device their slots should live on. One shared device
++    // makes every cached weight cross a device boundary in the graph, which on a 3-GPU box took
++    // decode from 66 splits to 328 (~0.14 ms of scheduler overhead each).
++    for (auto & ct : tensors) {
++        if (ct.buft == nullptr) {
++            ct.buft = buft;
++        }
++        auto it = std::find_if(groups.begin(), groups.end(),
++                [&](const group & g) { return g.buft == ct.buft; });
++        if (it == groups.end()) {
++            group g;
++            g.buft = ct.buft;
++            g.n_tensors = 1;
++            groups.push_back(g);
++        } else {
++            it->n_tensors++;
++        }
++    }
+ 
+-    ctx = ggml_init(ip);
+-    if (!ctx) {
+-        LLAMA_LOG_ERROR("%s: failed to create ggml context\n", __func__);
+-        return false;
++    for (auto & g : groups) {
++        // slots + map + map_src per tensor, plus this group's dummy_pos
++        ggml_init_params ip = {
++            /*.mem_size   =*/ ggml_tensor_overhead() * (g.n_tensors * 3 + 2) + ggml_graph_overhead(),
++            /*.mem_buffer =*/ nullptr,
++            /*.no_alloc   =*/ true,
++        };
++        g.ctx = ggml_init(ip);
++        if (!g.ctx) {
++            LLAMA_LOG_ERROR("%s: failed to create ggml context\n", __func__);
++            return false;
++        }
+     }
+ 
++    auto group_of = [&](ggml_backend_buffer_type_t b) -> group * {
++        for (auto & g : groups) {
++            if (g.buft == b) {
++                return &g;
++            }
++        }
++        return nullptr;
++    };
++
+     for (auto & ct : tensors) {
++        group * g = group_of(ct.buft);
+         const int64_t n_total = ct.n_slots + ct.n_dummy;
+ 
+-        ct.slots = ggml_new_tensor_3d(ctx, ct.src->type, ct.src->ne[0], ct.src->ne[1], n_total);
++        ct.slots = ggml_new_tensor_3d(g->ctx, ct.src->type, ct.src->ne[0], ct.src->ne[1], n_total);
+         ggml_format_name(ct.slots, "%s#slots", ggml_get_name(ct.src));
+ 
+         // [1, n_expert] so ggml_get_rows can gather it with a flattened id vector: get_rows
+         // requires the table's ne[2] to match the index tensor's ne[1], which a 1-D table
+         // would not satisfy for multi-token batches.
+-        ct.map = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 1, ct.n_expert);
++        ct.map = ggml_new_tensor_2d(g->ctx, GGML_TYPE_F32, 1, ct.n_expert);
+         ggml_format_name(ct.map, "%s#map", ggml_get_name(ct.src));
+ 
+-        ct.map_src = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 1, ct.n_expert);
++        ct.map_src = ggml_new_tensor_2d(g->ctx, GGML_TYPE_I32, 1, ct.n_expert);
+         ggml_format_name(ct.map_src, "%s#map_src", ggml_get_name(ct.src));
+     }
+ 
+-    {
+-        // shared across tensors: n_slots + position, added to routes that have no slot
+-        const int64_t n_used = tensors.empty() ? 1 : tensors.front().n_dummy;
+-        dummy_pos = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1, n_used, 1);
+-        ggml_set_name(dummy_pos, "moe_cache#dummy_pos");
++    // One dummy_pos per device: the hit chain multiplies it in, so reading a copy that lives on
++    // another device would reintroduce the boundary this grouping exists to remove.
++    const int64_t n_used = tensors.front().n_dummy;
++    for (size_t i = 0; i < groups.size(); ++i) {
++        groups[i].dummy_pos = ggml_new_tensor_3d(groups[i].ctx, GGML_TYPE_F32, 1, n_used, 1);
++        ggml_format_name(groups[i].dummy_pos, "moe_cache#dummy_pos%zu", i);
+     }
+-
+-    buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
+-    if (!buf) {
+-        LLAMA_LOG_ERROR("%s: failed to allocate %.2f MiB for the MoE expert cache\n",
+-                __func__, total_bytes / 1024.0 / 1024.0);
+-        ggml_free(ctx);
+-        ctx = nullptr;
+-        return false;
++    for (auto & ct : tensors) {
++        ct.dummy_pos = group_of(ct.buft)->dummy_pos;
+     }
++    dummy_pos = groups.front().dummy_pos; // compatibility for callers without a tensor in hand
++
++    for (auto & g : groups) {
++        g.buf = ggml_backend_alloc_ctx_tensors_from_buft(g.ctx, g.buft);
++        if (!g.buf) {
++            LLAMA_LOG_ERROR("%s: failed to allocate the MoE expert cache on %s (%.2f MiB total)\n",
++                    __func__, ggml_backend_buft_name(g.buft), total_bytes / 1024.0 / 1024.0);
++            return false;
++        }
+ 
+-    // Dummy slots must read as zero: an uncached route lands there and has to contribute
+-    // nothing to the sum. Zero the whole buffer so the real slots start defined too.
+-    ggml_backend_buffer_clear(buf, 0);
++        // Dummy slots must read as zero: an uncached route lands there and has to contribute
++        // nothing to the sum. Zero the whole buffer so the real slots start defined too.
++        ggml_backend_buffer_clear(g.buf, 0);
+ 
+-    {
+-        std::vector<float> pos(dummy_pos->ne[1]);
++        std::vector<float> pos(n_used);
+         for (size_t p = 0; p < pos.size(); ++p) {
+             pos[p] = (float) (params.n_slots + (int32_t) p);
+         }
+-        ggml_backend_tensor_set(dummy_pos, pos.data(), 0, ggml_nbytes(dummy_pos));
++        ggml_backend_tensor_set(g.dummy_pos, pos.data(), 0, ggml_nbytes(g.dummy_pos));
+     }
+ 
+     for (auto & ct : tensors) {
+@@ -153,8 +197,11 @@ bool llama_moe_cache::alloc() {
+         ct.map_dirty = false;
+     }
+ 
+-    LLAMA_LOG_INFO("%s: MoE expert cache: %zu tensors, %d slots each, %.2f MiB VRAM\n",
+-            __func__, tensors.size(), params.n_slots, total_bytes / 1024.0 / 1024.0);
++    LLAMA_LOG_INFO("%s: MoE expert cache: %zu tensors, %d slots each, %.2f MiB VRAM over %zu device(s)\n",
++            __func__, tensors.size(), params.n_slots, total_bytes / 1024.0 / 1024.0, groups.size());
++    for (const auto & g : groups) {
++        LLAMA_LOG_INFO("%s:   %-12s %zu tensors\n", __func__, ggml_backend_buft_name(g.buft), g.n_tensors);
++    }
+ 
+     return true;
+ }
+diff --git a/src/llama-moe-cache.h b/src/llama-moe-cache.h
+index 59b1648e1..d94de4dc4 100644
+--- a/src/llama-moe-cache.h
++++ b/src/llama-moe-cache.h
+@@ -56,6 +56,15 @@ struct llama_moe_cache_params {
+ struct llama_moe_cache_tensor {
+     ggml_tensor * src = nullptr;   // host-resident weights, unchanged
+     ggml_tensor * slots = nullptr; // [ne0, ne1, n_slots + n_dummy] in VRAM
++
++    // Which device this tensor's slots live on. Chosen per layer so the slot matmul lands in
++    // the same graph split as the rest of that layer instead of forcing a device transition
++    // (one shared device turned 66 decode splits into 328 on a 3-GPU box).
++    ggml_backend_buffer_type_t buft = nullptr;
++
++    // Per-device copy of the dummy-slot positions, so the hit chain never reads a tensor that
++    // lives on another device.
++    ggml_tensor * dummy_pos = nullptr;
+     ggml_tensor * map = nullptr;     // [1, n_expert] f32, device: expert -> slot, or -1 when absent
+     ggml_tensor * map_src = nullptr; // [1, n_expert] i32, device: expert -> id for the HOST chain,
+                                      // which is the expert itself while it is not resident and a
+@@ -95,7 +104,8 @@ public:
+     // Register an expert tensor. Returns nullptr when the tensor cannot be cached (wrong shape,
+     // already resident on the accelerator, or out of VRAM), in which case the caller must build
+     // the ordinary uncached graph.
+-    llama_moe_cache_tensor * add_tensor(ggml_tensor * src, int64_t n_expert, int64_t n_expert_used);
++    llama_moe_cache_tensor * add_tensor(ggml_tensor * src, int64_t n_expert, int64_t n_expert_used,
++                                       ggml_backend_buffer_type_t buft_pref = nullptr);
+ 
+     // Look up a previously registered tensor.
+     llama_moe_cache_tensor * find(const ggml_tensor * src) const;
+@@ -140,10 +150,17 @@ private:
+     bool admit(llama_moe_cache_tensor & ct, int32_t expert);
+ 
+     llama_moe_cache_params params;
+-    ggml_backend_buffer_type_t buft = nullptr;
+-
+-    ggml_context      * ctx = nullptr;
+-    ggml_backend_buffer_t buf = nullptr;
++    ggml_backend_buffer_type_t buft = nullptr; // default / fallback device
++
++    // One ggml context and one buffer per device that holds slots.
++    struct group {
++        ggml_backend_buffer_type_t buft = nullptr;
++        ggml_context      * ctx = nullptr;
++        ggml_backend_buffer_t buf = nullptr;
++        ggml_tensor * dummy_pos = nullptr;
++        size_t n_tensors = 0;
++    };
++    std::vector<group> groups;
+ 
+     std::vector<llama_moe_cache_tensor> tensors;
+     std::unordered_map<const ggml_tensor *, size_t> by_src;
+diff --git a/src/models/qwen4exp.cpp b/src/models/qwen4exp.cpp
+index 46687af36..6254cbed5 100644
+--- a/src/models/qwen4exp.cpp
++++ b/src/models/qwen4exp.cpp
+@@ -484,12 +484,21 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
+ 
+     GGML_ASSERT(hparams.n_embd_head_v() == hparams.n_embd_head_k());
+ 
++    // pipeline split (GGML_Q4_PIPE): build only [il_begin, il_end) and optionally
++    // start from / stop at the wide residual at the split boundary
++    const int il_begin = params.il_begin;
++    const int il_end   = params.il_end < 0 ? (int) n_layer : params.il_end;
++    GGML_ASSERT(il_begin >= 0 && il_end <= (int) n_layer && il_begin < il_end);
++
+     int sections[4];
+     std::copy(std::begin(hparams.rope_sections), std::begin(hparams.rope_sections) + 4, sections);
+ 
+-    ggml_tensor * inpL = build_inp_embd(model.tok_embd);
+-    cb(inpL, "model.input_embed", -1);
+-    ggml_build_forward_expand(gf, inpL);
++    ggml_tensor * inpL = nullptr;
++    if (!params.res_in) {
++        inpL = build_inp_embd(model.tok_embd);
++        cb(inpL, "model.input_embed", -1);
++        ggml_build_forward_expand(gf, inpL);
++    }
+ 
+     auto * inp = build_inp_mem_hybrid();
+ 
+@@ -504,24 +513,38 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
+     }
+ 
+     ggml_tensor * inp_pos     = build_inp_pos();
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = il_end == (int) n_layer ? build_inp_out_ids() : nullptr;
+ 
+     ggml_tensor * ple_emb = nullptr;
+     if (hparams.ple_n_heads > 0) {
+-        ple_emb = build_inp_ple(mctx_hyb);
+-        // make sure ple_emb and build_inp_embd are in the same graph split
+-        ggml_build_forward_expand(gf, ple_emb);
++        bool half_has_ple = false;
++        for (int il = il_begin; il < il_end; ++il) {
++            half_has_ple = half_has_ple || hparams.is_ple(il);
++        }
++        if (half_has_ple) {
++            ple_emb = build_inp_ple(mctx_hyb);
++            // make sure ple_emb and build_inp_embd are in the same graph split
++            ggml_build_forward_expand(gf, ple_emb);
++        }
+     }
+ 
+-    // the wide residual starts as hc identical copies of the embedding
+-    // tensor split: a view of the CPU embedding can not be split, use a real copy
+-    ggml_tensor * inp_3d = model.split_mode() == LLAMA_SPLIT_MODE_TENSOR
+-            ? ggml_cont_3d(ctx0, inpL, n_embd, 1, n_tokens)
+-            : ggml_reshape_3d(ctx0, inpL, n_embd, 1, n_tokens);
+-    ggml_tensor * res_hc = ggml_repeat_4d(ctx0, inp_3d, n_embd, hc, n_tokens, 1);
+-    cb(res_hc, "hc_init", -1);
++    ggml_tensor * res_hc = nullptr;
++    if (params.res_in) {
++        // continue from the externally provided wide residual (pipeline split)
++        res_hc = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, n_embd, hc, n_tokens);
++        ggml_set_input(res_hc);
++        ggml_set_name(res_hc, "hc_pipe_in");
++    } else {
++        // the wide residual starts as hc identical copies of the embedding
++        // tensor split: a view of the CPU embedding can not be split, use a real copy
++        ggml_tensor * inp_3d = model.split_mode() == LLAMA_SPLIT_MODE_TENSOR
++                ? ggml_cont_3d(ctx0, inpL, n_embd, 1, n_tokens)
++                : ggml_reshape_3d(ctx0, inpL, n_embd, 1, n_tokens);
++        res_hc = ggml_repeat_4d(ctx0, inp_3d, n_embd, hc, n_tokens, 1);
++        cb(res_hc, "hc_init", -1);
++    }
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_begin; il < il_end; ++il) {
+         res->t_layer_inp[il] = res_hc;
+ 
+         if (hparams.is_ple(il)) {
+@@ -576,6 +599,15 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
+         cb(res_hc, "l_last", il);
+     }
+ 
++    if (params.res_out) {
++        // pipeline split: expose the wide residual at the boundary and stop here
++        ggml_set_output(res_hc);
++        cb(res_hc, "res_pipe_out", -1);
++        res->t_res_out = res_hc;
++        ggml_build_forward_expand(gf, res_hc);
++        return;
++    }
++
+     // The MTP head consumes the wide residual, before the head mixer collapses it. Export the
+     // combine result itself rather than a reshape of it: a pure view gets no backend assignment
+     // from the scheduler, and the readback in llama_context looks one up. It is contiguous, so
+@@ -865,7 +897,10 @@ static bool qwen4exp_qsa_blk_fast(
+         const char * env = getenv("LLAMA_QSA_DENSE");
+         return env && atoi(env) != 0;
+     }();
+-    if (disabled || ratio == 0 || !mctx->blk_ok() || !cparams.causal_attn || !cparams.flash_attn || hparams.use_alibi) {
++    // LLAMA_QSA_DENSE disables the gather fast path for PROMPT batches only (where the
++    // dense masked path is faster and avoids the 2.4 GiB per-batch gather). Decode keeps
++    // the fast path: it is what makes long-context decode independent of the cache size.
++    if ((disabled && ubatch.n_tokens > 16) || ratio == 0 || !mctx->blk_ok() || !cparams.causal_attn || !cparams.flash_attn || hparams.use_alibi) {
+         return false;
+     }
+     // the gather path materializes every query's selected rows: small batches only
+diff --git a/tests/bench_mmid.c b/tests/bench_mmid.c
+new file mode 100644
+index 000000000..01cb9fcaf
+--- /dev/null
++++ b/tests/bench_mmid.c
+@@ -0,0 +1,81 @@
++// mul_mat_id CPU kernel microbenchmark: Q4_K [2560,640,512] x f32 [2560,M] ids [10,M]
++// 実モデルの形状 (qwen4exp: n_embd=2560, n_ff_exp=640, 512 experts, 10 used)
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <time.h>
++#include "ggml.h"
++#include "ggml-cpu.h"
++#include "ggml-alloc.h"
++
++static double now_s(void){ struct timespec ts; clock_gettime(CLOCK_MONOTONIC,&ts); return ts.tv_sec+1e-9*ts.tv_nsec; }
++
++int main(int argc, char ** argv) {
++    const int64_t n_embd = argc>1 ? atoll(argv[1]) : 2560;
++    const int64_t n_ff   = argc>2 ? atoll(argv[2]) : 640;
++    const int64_t n_exp  = argc>3 ? atoll(argv[3]) : 512;
++    const int64_t n_used = argc>4 ? atoll(argv[4]) : 10;
++    const int nth        = argc>5 ? atoi(argv[5])  : 12;
++    const int M_list[] = {1, 3, 8, 16, 32, 64, 128, 256, 512};
++    const int nM = 9;
++
++    struct ggml_init_params ip = { .mem_size = 560ULL*1024*1024, .mem_buffer = NULL, .no_alloc = 0 };
++    struct ggml_context * ctx = ggml_init(ip);
++
++    struct ggml_tensor * w   = ggml_new_tensor_3d(ctx, GGML_TYPE_Q4_K, n_embd, n_ff, n_exp);
++    struct ggml_tensor * x   = ggml_new_tensor_3d(ctx, GGML_TYPE_F32,  n_embd, n_used, 512);
++    struct ggml_tensor * ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32,  n_used, 512);
++
++    srand(1234);
++    unsigned char * wbuf = (unsigned char *) w->data;
++    unsigned int st = 0x12345678u;
++    for (size_t i = 0; i < ggml_nbytes(w); i++) { st ^= st<<13; st ^= st>>17; st ^= st<<5; wbuf[i] = (unsigned char)st; }
++    float * xb = (float *) x->data;
++    for (int64_t i = 0; i < ggml_nelements(x); i++) xb[i] = (float)((rand()%2000)-1000)/512.f;
++    int32_t * ib = (int32_t *) ids->data;
++    for (int64_t i = 0; i < ggml_nelements(ids); i++) ib[i] = rand() % n_exp;
++
++    ggml_backend_t backend = ggml_backend_cpu_init();
++    ggml_backend_cpu_set_n_threads(backend, nth);
++
++    printf("n_embd=%lld n_ff=%lld n_exp=%lld n_used=%lld nth=%d  (Q4_K bank = %.1f MiB)\n",
++           (long long)n_embd,(long long)n_ff,(long long)n_exp,(long long)n_used,nth,
++           ggml_nbytes(w)/1048576.0);
++    printf("%8s %10s %12s %12s %12s\n", "M", "ms/iter", "tok/s", "GiB/s(組)", "GiB/s(実)");
++
++    for (int mi = 0; mi < nM; mi++) {
++        const int64_t M = M_list[mi];
++        struct ggml_cgraph * gf;
++        struct ggml_tensor * xM  = ggml_view_3d(ctx, x, n_embd, n_used, M, ggml_row_size(GGML_TYPE_F32,n_embd), ggml_row_size(GGML_TYPE_F32,n_embd)*n_used, 0);
++        struct ggml_tensor * idsM= ggml_view_2d(ctx, ids, n_used, M, ggml_row_size(GGML_TYPE_I32,n_used), 0);
++        struct ggml_tensor * out = ggml_mul_mat_id(ctx, w, xM, idsM);
++
++        gf = ggml_new_graph(ctx);
++        ggml_build_forward_expand(gf, out);
++
++        ggml_gallocr_t alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
++        if (!ggml_gallocr_reserve(alloc, gf)) { printf("alloc fail\n"); return 1; }
++        ggml_gallocr_alloc_graph(alloc, gf);
++
++        // warmup
++        for (int i = 0; i < 3; i++) ggml_backend_graph_compute(backend, gf);
++        const int iters = M >= 256 ? 5 : 10;
++        double t0 = now_s();
++        for (int i = 0; i < iters; i++) ggml_backend_graph_compute(backend, gf);
++        double dt = (now_s()-t0)/iters;
++
++        const double bytes_union = (double)M; // expected distinct experts hit
++        // 実読み込み量: ユニークなエキスパート数 × 1エキスパートのバンク
++        int seen[512]; memset(seen,0,sizeof(seen)); int uniq=0;
++        for (int64_t i = 0; i < n_used*M; i++) { int v=ib[i%(n_used*512)]; if(!seen[v]){seen[v]=1;uniq++;} }
++        const double exp_bytes = (double)uniq * ggml_nbytes(w)/n_exp;
++        printf("%8lld %10.2f %12.1f %12.1f %12.1f\n", (long long)M, dt*1e3,
++               M/dt, ggml_nbytes(w)/(dt*1073741824.0),
++               exp_bytes/(dt*1073741824.0));
++        ggml_gallocr_free(alloc);
++        (void)bytes_union;
++    }
++    ggml_backend_free(backend);
++    ggml_free(ctx);
++    return 0;
++}

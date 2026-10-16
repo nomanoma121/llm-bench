@@ -1,0 +1,95 @@
+# Serves the merged GGUF at 262K context with the measured-fastest stack.
+# Expects prepare-mtp.yaml to have written /models/flashnext-mtp.
+#
+#   kubectl apply -f runtimes/llama-cpp/v100/serve.yaml
+#   kubectl -n llm-bench port-forward svc/llama-cpp-v100 8080:8080
+#
+# One replica only: it takes all three GPUs and the node's 12 cores.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llama-cpp-v100
+  namespace: llm-bench
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: llama-cpp-v100
+  template:
+    metadata:
+      labels:
+        app: llama-cpp-v100
+    spec:
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: inference
+          effect: NoSchedule
+      nodeSelector:
+        kubernetes.io/hostname: gpu-node-02
+      containers:
+        - name: server
+          image: ghcr.io/nomanoma121/llama-cpp-v100:latest
+          # The image entrypoints llama-server; serve.sh is the measured Flash-Next
+          # configuration and has to be asked for.
+          command: [/opt/llama-cpp-v100/serve.sh]
+          env:
+            - name: CTX
+              value: "262144"
+            # Bit-identical to the gather path and worth 1.4 GiB per device.
+            - name: QSA_DENSE
+              value: "1"
+            # Repeated prompts decode at 46.5 instead of 32 tok/s. Drop it for
+            # bit-reproducible output; see README.md.
+            - name: NGRAM
+              value: "1"
+            # PIPE and OFFL are deliberately absent. Together they leave under
+            # 1 GiB free on each 3060, and a 20k-token prompt then dies in the
+            # pipeline's staging pool with "cuMemCreate: out of memory" on CUDA1.
+            # They were measured on 4k prompts only; see README.md before enabling.
+          ports:
+            - name: http
+              containerPort: 8080
+          # 24 of the 48 expert layers plus the 26.8 GiB embedding table are read
+          # from host RAM every token, so the page cache has to hold ~61 GiB of the
+          # 107 GiB file. The limit leaves the node its own headroom.
+          resources:
+            requests:
+              cpu: "12"
+              memory: 8Gi
+              nvidia.com/gpu: "3"
+            limits:
+              memory: 24Gi
+              nvidia.com/gpu: "3"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            # Reading 107 GiB into the page cache and filling VRAM takes minutes.
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 60
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+      volumes:
+        - name: models
+          hostPath:
+            path: /var/lib/llama-cpp/models
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llama-cpp-v100
+  namespace: llm-bench
+spec:
+  selector:
+    app: llama-cpp-v100
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

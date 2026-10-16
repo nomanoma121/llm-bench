@@ -10,6 +10,16 @@ Qwen3.8-Flash-Next:
     - UD-Q2_K_XL/*
     - mmproj-BF16.gguf
 
+# Every expert tensor is Q4 or above (Q4_K/Q5_K gate+up, Q5_1/Q8_0 down; 5.10 bpw
+# weighted). The MTP head is merged into the trunk by
+# runtimes/llama-cpp/v100/prepare-mtp.yaml, which is the only form llama.cpp loads.
+Qwen3.8-Flash-Next-UD-Q4_K_XL:
+  repo: unsloth/Qwen3.8-Flash-Next-GGUF
+  include:
+    - UD-Q4_K_XL/*
+    - mtp-Qwen3.8-Flash-Next-Q8_0.gguf
+    - mmproj-BF16.gguf
+
 Bonsai-2-27B:
   repo: prism-ml/Ternary-Bonsai-2-27B-gguf
   include:

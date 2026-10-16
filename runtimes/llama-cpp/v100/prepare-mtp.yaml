@@ -8,7 +8,10 @@
 #   kubectl -n llm-bench logs -f job/llama-cpp-v100-prepare-mtp
 #
 # Expects /models/UD-Q4_K_XL (the four shards prepare-ud-q4_k_xl.yaml checks) and
-# /models/mtp-Qwen3.8-Flash-Next-Q8_0.gguf, both from `llmbench models download`.
+# /models/mtp-Qwen3.8-Flash-Next-Q8_0.gguf. The head is the one file the trunk
+# download does not bring: fetch unsloth/Qwen3.8-Flash-Next-GGUF's
+# mtp-Qwen3.8-Flash-Next-Q8_0.gguf (3.85 GiB) to the root of /models, beside the
+# UD-Q4_K_XL directory. Both checksums are verified before the merge starts.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -40,6 +43,10 @@ spec:
               3f342f1c1580473f1ee94ddd5b28206e8c07a70fa1a366f59d1d6c922919a6c9  Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf
               56758f40269cad5cd9b0d3d6fbae0f40f6d5be6de49e4ab392dbe83157d9cbd3  Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf
               753bda48b98ba4f1636134a90a967de1b2d3908a236c026e464777342e53510a  Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf
+              SUMS
+              cd /models
+              sha256sum -c <<'SUMS'
+              58a47d6a216307e9b97172d5bfdc3436a8994b632f5e436b9bb6edf8951da8d1  mtp-Qwen3.8-Flash-Next-Q8_0.gguf
               SUMS
               mkdir -p /models/flashnext-mtp
               python3 /opt/llama-cpp-v100/tools/merge-mtp.py \

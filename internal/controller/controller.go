@@ -204,6 +204,12 @@ func (c *Controller) prepare(ctx context.Context, j Job) error {
 	if err != nil {
 		return err
 	}
+	return c.setup(ctx, j, token)
+}
+
+// setup writes the git token, the checkout and the job spec into the sandbox.
+// It is run again whenever the token is renewed, since a token lasts an hour.
+func (c *Controller) setup(ctx context.Context, j Job, token string) error {
 	spec, err := yaml.Marshal(j.Spec)
 	if err != nil {
 		return err
@@ -237,6 +243,7 @@ var errSandboxDeleted = errors.New("the sandbox was deleted while the benchmark 
 func (c *Controller) benchmark(ctx context.Context, j Job) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
+	written, _ := c.GitToken(ctx)
 	go func() {
 		for {
 			select {
@@ -247,6 +254,13 @@ func (c *Controller) benchmark(ctx context.Context, j Job) error {
 			if ok, err := c.Sandbox.Exists(ctx, j.ID); err == nil && !ok {
 				cancel(errSandboxDeleted)
 				return
+			}
+			if token, err := c.GitToken(ctx); err == nil && token != written {
+				if err := c.setup(ctx, j, token); err == nil {
+					written = token
+				} else if ctx.Err() == nil {
+					c.Logf("job %s: renew git token: %v", j.ID, err)
+				}
 			}
 		}
 	}()
